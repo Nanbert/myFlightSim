@@ -3,7 +3,7 @@
 //! orientation.
 
 use bevy::prelude::*;
-use jsbsim_sys::{autopilot, default_jsbsim_src, Fdm};
+use jsbsim_sys::{autopilot, jsbsim_src, Fdm};
 
 /// FDM step. Matches the rate JSBSim was validated against.
 pub const DT: f64 = 1.0 / 120.0;
@@ -39,7 +39,7 @@ pub struct Sim {
 
 impl Sim {
     pub fn new(model: &str) -> Self {
-        let root = default_jsbsim_src();
+        let root = jsbsim_src();
         let mut fdm = Fdm::new();
         fdm.set_root(&root);
         fdm.set_aircraft_path("aircraft");

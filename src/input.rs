@@ -152,3 +152,43 @@ fn ramp(value: &mut f64, target: f64, step: f64) {
         *value -= step;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ramp;
+
+    #[test]
+    fn ramp_moves_toward_target_by_one_step() {
+        let mut v = 0.0;
+        ramp(&mut v, 1.0, 0.3);
+        assert_eq!(v, 0.3);
+        ramp(&mut v, 1.0, 0.3);
+        assert_eq!(v, 0.6);
+    }
+
+    #[test]
+    fn ramp_moves_down_for_a_negative_target() {
+        let mut v = 0.0;
+        ramp(&mut v, -1.0, 0.25);
+        assert_eq!(v, -0.25);
+    }
+
+    #[test]
+    fn ramp_snaps_and_never_overshoots_within_a_step() {
+        // Distance to target (0.1) is within one step (0.3): land exactly on it.
+        let mut v = 0.9;
+        ramp(&mut v, 1.0, 0.3);
+        assert_eq!(v, 1.0);
+
+        // Landing on target is idempotent.
+        ramp(&mut v, 1.0, 0.3);
+        assert_eq!(v, 1.0);
+    }
+
+    #[test]
+    fn ramp_snaps_when_already_close() {
+        let mut v = 0.5;
+        ramp(&mut v, 0.5, 0.3);
+        assert_eq!(v, 0.5);
+    }
+}

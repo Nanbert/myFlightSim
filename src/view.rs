@@ -347,3 +347,34 @@ fn draw_grid(state: Res<AircraftState>, mut gizmos: Gizmos) {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{bar, signed_bar};
+
+    #[test]
+    fn signed_bar_is_centred_and_empty_at_zero() {
+        assert_eq!(signed_bar(0.0), "----|----");
+    }
+
+    #[test]
+    fn signed_bar_fills_right_for_positive_left_for_negative() {
+        assert_eq!(signed_bar(1.0), "----|####");
+        assert_eq!(signed_bar(-1.0), "####|----");
+        assert_eq!(signed_bar(0.5), "----|##--");
+    }
+
+    #[test]
+    fn signed_bar_clamps_out_of_range_values() {
+        assert_eq!(signed_bar(2.0), signed_bar(1.0));
+        assert_eq!(signed_bar(-2.0), signed_bar(-1.0));
+    }
+
+    #[test]
+    fn bar_fills_left_to_right() {
+        assert_eq!(bar(0.0), "---------");
+        assert_eq!(bar(1.0), "#########");
+        assert_eq!(bar(0.5), "#####----");
+        assert_eq!(bar(2.0), bar(1.0));
+    }
+}

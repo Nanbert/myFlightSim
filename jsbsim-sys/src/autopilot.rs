@@ -116,3 +116,37 @@ fn wrap180(mut d: f64) -> f64 {
         d
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap180_keeps_in_range_angles_unchanged() {
+        assert_eq!(wrap180(0.0), 0.0);
+        assert_eq!(wrap180(90.0), 90.0);
+        assert_eq!(wrap180(-90.0), -90.0);
+    }
+
+    #[test]
+    fn wrap180_maps_the_half_turn_to_positive_180() {
+        // The range is (-180, 180]: both ±180 collapse onto +180.
+        assert_eq!(wrap180(180.0), 180.0);
+        assert_eq!(wrap180(-180.0), 180.0);
+    }
+
+    #[test]
+    fn wrap180_folds_multi_turn_angles() {
+        assert_eq!(wrap180(181.0), -179.0);
+        assert_eq!(wrap180(-181.0), 179.0);
+        assert_eq!(wrap180(370.0), 10.0);
+        assert_eq!(wrap180(-370.0), -10.0);
+    }
+
+    #[test]
+    fn clampf_bounds_both_ends() {
+        assert_eq!(clampf(5.0, -1.0, 1.0), 1.0);
+        assert_eq!(clampf(-5.0, -1.0, 1.0), -1.0);
+        assert_eq!(clampf(0.3, -1.0, 1.0), 0.3);
+    }
+}

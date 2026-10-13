@@ -3,7 +3,7 @@
 
 use std::ffi::CString;
 use std::os::raw::c_void;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub mod autopilot;
 
@@ -132,9 +132,49 @@ fn cpath(p: impl AsRef<Path>) -> CString {
     cstr(&p.as_ref().to_string_lossy())
 }
 
-/// Default JSBSim checkout used by the smoke test unless `JSBSIM_SRC` is set.
-pub fn default_jsbsim_src() -> String {
-    std::env::var("JSBSIM_SRC").unwrap_or_else(|_| "/home/nanbert/gitrep/jsbsim".into())
+/// Locate the JSBSim source checkout that supplies the runtime data
+/// (`aircraft/`, `engine/`, `systems/`). `$JSBSIM_SRC` wins if set (and must be
+/// valid); otherwise a few conventional locations are probed. Mirrors
+/// `build.rs::resolve_jsbsim_src`, since a build script can't share code with
+/// the crate it builds.
+///
+/// Panics with an actionable message if nothing valid is found.
+pub fn jsbsim_src() -> String {
+    let marker = "src/FGFDMExec.h";
+    if let Ok(v) = std::env::var("JSBSIM_SRC") {
+        if !v.is_empty() {
+            let p = PathBuf::from(v);
+            assert!(
+                p.join(marker).is_file(),
+                "JSBSIM_SRC={} is not a JSBSim checkout (missing {marker})",
+                p.display()
+            );
+            return p.to_string_lossy().into_owned();
+        }
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        candidates.push(home.join("gitrep/jsbsim"));
+        candidates.push(home.join("jsbsim"));
+        candidates.push(home.join("src/jsbsim"));
+    }
+    candidates.push(PathBuf::from("/usr/local/src/jsbsim"));
+    candidates.push(PathBuf::from("/opt/jsbsim"));
+
+    candidates
+        .iter()
+        .find(|p| p.join(marker).is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| {
+            let tried: Vec<_> = candidates.iter().map(|p| p.display().to_string()).collect();
+            panic!(
+                "no JSBSim checkout found. Set JSBSIM_SRC to a JSBSim source tree \
+                 (e.g. `export JSBSIM_SRC=$HOME/gitrep/jsbsim`). Looked in: {}",
+                tried.join(", ")
+            )
+        })
 }
 
 #[cfg(test)]
@@ -144,7 +184,7 @@ mod tests {
     #[test]
     fn c172p_climbs_after_throttle_up() {
         let mut fdm = Fdm::new();
-        fdm.set_root(default_jsbsim_src());
+        fdm.set_root(jsbsim_src());
         fdm.set_aircraft_path("aircraft");
         fdm.set_engine_path("engine");
         fdm.set_systems_path("systems");

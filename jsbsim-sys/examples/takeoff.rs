@@ -7,7 +7,7 @@
 //! than the simulation. Runs the same `jsbsim_sys::autopilot` law the game uses.
 //! Prints a telemetry table; no window, no Bevy.
 
-use jsbsim_sys::{autopilot, default_jsbsim_src, Fdm};
+use jsbsim_sys::{autopilot, jsbsim_src, Fdm};
 
 const DT: f64 = 1.0 / 120.0;
 
@@ -16,7 +16,7 @@ const DT: f64 = 1.0 / 120.0;
 const REST_H_FT: f64 = 4.7;
 
 fn main() {
-    let root = default_jsbsim_src();
+    let root = jsbsim_src();
     let mut fdm = Fdm::new();
     fdm.set_root(&root);
     fdm.set_aircraft_path("aircraft");

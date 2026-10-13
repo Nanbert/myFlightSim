@@ -1,14 +1,8 @@
 use std::env;
 use std::path::PathBuf;
 
-const DEFAULT_JSBSIM_SRC: &str = "/home/nanbert/gitrep/jsbsim";
-
 fn main() {
-    let src = PathBuf::from(env::var("JSBSIM_SRC").unwrap_or_else(|_| DEFAULT_JSBSIM_SRC.into()));
-    assert!(
-        src.join("src/FGFDMExec.h").exists(),
-        "JSBSIM_SRC={src:?} is not a JSBSim checkout (missing src/FGFDMExec.h)"
-    );
+    let src = resolve_jsbsim_src();
 
     // Build into a stable, profile-independent directory so the runner can
     // locate libJSBSim.so without depending on this crate's hash-based OUT_DIR.
@@ -42,6 +36,51 @@ fn main() {
 
     println!("cargo:rerun-if-changed=shim/shim.cpp");
     println!("cargo:rerun-if-env-changed=JSBSIM_SRC");
+}
+
+/// Locate the JSBSim source checkout to build from. `$JSBSIM_SRC` wins if set
+/// (and must be valid); otherwise a few conventional locations are probed. No
+/// per-machine path is baked in, so a fresh clone builds on any machine that
+/// either sets `JSBSIM_SRC` or keeps its checkout somewhere standard.
+///
+/// Mirrored at runtime by `jsbsim_sys::jsbsim_src` (a build script can't share
+/// code with the crate it builds).
+fn resolve_jsbsim_src() -> PathBuf {
+    let marker = "src/FGFDMExec.h";
+    if let Ok(v) = env::var("JSBSIM_SRC") {
+        if !v.is_empty() {
+            let p = PathBuf::from(v);
+            assert!(
+                p.join(marker).exists(),
+                "JSBSIM_SRC={} is not a JSBSim checkout (missing {marker})",
+                p.display()
+            );
+            return p;
+        }
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(home) = env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        candidates.push(home.join("gitrep/jsbsim"));
+        candidates.push(home.join("jsbsim"));
+        candidates.push(home.join("src/jsbsim"));
+    }
+    candidates.push(PathBuf::from("/usr/local/src/jsbsim"));
+    candidates.push(PathBuf::from("/opt/jsbsim"));
+
+    candidates
+        .iter()
+        .find(|p| p.join(marker).exists())
+        .cloned()
+        .unwrap_or_else(|| {
+            let tried: Vec<_> = candidates.iter().map(|p| p.display().to_string()).collect();
+            panic!(
+                "no JSBSim checkout found. Set JSBSIM_SRC to a JSBSim source tree \
+                 (e.g. `export JSBSIM_SRC=$HOME/gitrep/jsbsim`). Looked in: {}",
+                tried.join(", ")
+            )
+        })
 }
 
 /// Directory shared between this crate and the top-level app for the built
