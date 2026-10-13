@@ -26,7 +26,8 @@
 //! - `velocities/{vc-kts,h-dot-fps,p-rad_sec,q-rad_sec,r-rad_sec}` — airspeed & rates
 //! - `gear/wow` — weight-on-wheels
 //! - `fcs/flap-pos-deg`, `fcs/{elevator,aileron,rudder}-cmd-norm`,
-//!   `fcs/throttle-cmd-norm`, `fcs/pitch-trim-cmd-norm` — surface feedback
+//!   `fcs/throttle-cmd-norm`, `fcs/pitch-trim-cmd-norm`,
+//!   `fcs/{roll,yaw}-trim-cmd-norm` — surface & trim feedback
 //! - `propulsion/engine[0]/engine-rpm` — engine rpm
 
 /// A flight dynamics model driven through a named-property bus.
@@ -43,4 +44,11 @@ pub trait FlightModel: Send + Sync {
 
     /// Write a named signal. Names the model doesn't expose are ignored.
     fn set(&mut self, name: &str, value: f64);
+
+    /// Solve a wings-level steady trim at `vc_kts` (calibrated airspeed) and
+    /// `alt_ft`, then seat the model on it, so a subsequent open-loop `step`
+    /// holds the point. Default is a no-op for backends that can't trim.
+    fn trim(&mut self, vc_kts: f64, alt_ft: f64) {
+        let _ = (vc_kts, alt_ft);
+    }
 }

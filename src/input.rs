@@ -141,6 +141,31 @@ fn read_input(
         *bindings = Bindings::default();
         ap.enabled = true;
     }
+    // T re-trims for the current condition; Y restarts airborne in a trimmed
+    // cruise. Both hand control to the pilot and adopt the trimmed throttle/trim
+    // into the Hold bindings, so the per-step command writes don't undo the trim.
+    if keys.just_pressed(KeyCode::KeyT) {
+        sim.trim_now();
+        ap.enabled = false;
+        adopt_trim(&mut bindings, &sim);
+    }
+    if keys.just_pressed(KeyCode::KeyY) {
+        sim.reset_cruise();
+        ap.enabled = false;
+        adopt_trim(&mut bindings, &sim);
+    }
+}
+
+/// Adopt the model's current throttle and pitch-trim into the matching Hold
+/// bindings. The app writes every binding to the model each step, so a binding
+/// left at its default would clobber the trim solver's result; seeding the
+/// binding with the readback keeps the two consistent.
+fn adopt_trim(bindings: &mut Bindings, sim: &crate::sim::Sim) {
+    for b in &mut bindings.list {
+        if matches!(b.property, "fcs/throttle-cmd-norm" | "fcs/pitch-trim-cmd-norm") {
+            b.value = sim.model.get(b.property);
+        }
+    }
 }
 
 fn ramp(value: &mut f64, target: f64, step: f64) {

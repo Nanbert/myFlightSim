@@ -5,8 +5,8 @@
 //! The model sits behind [`flight_model::FlightModel`], a named-property bus, so
 //! this file (and everything above it — `input`, `view`, the HUD, the autopilot)
 //! is identical whichever backend is loaded. `FDM_BACKEND=rust` selects the
-//! pure-Rust engine in `fdm` (P0 skeleton, not yet flying); the default is the
-//! JSBSim model in `jsbsim-sys`.
+//! pure-Rust engine in `fdm` (it flies and can be trimmed); the default is the
+//! JSBSim model in `jsbsim-sys`, whose `trim` is a no-op.
 
 use bevy::prelude::*;
 use flight_model::FlightModel;
@@ -17,6 +17,10 @@ pub const DT: f64 = 1.0 / 120.0;
 /// Height of the CG above the runway when parked (from c172p/reset00.xml).
 /// Seeding the IC at 0 buries the gear and the ground springs fling the aircraft.
 const REST_H_FT: f64 = 4.7;
+
+/// Default cruise point for the airborne trimmed start.
+const CRUISE_ALT_FT: f64 = 3000.0;
+const CRUISE_VC_KT: f64 = 110.0;
 
 const FT_TO_M: f64 = 0.3048;
 const EARTH_RADIUS_M: f64 = 6_378_137.0;
@@ -69,6 +73,34 @@ impl Sim {
         self.model.set("propulsion/set-running", -1.0);
         self.origin_lat = self.model.get("position/lat-gc-deg");
         self.origin_lon = self.model.get("position/long-gc-deg");
+    }
+
+    /// Start airborne, already trimmed for level cruise at `alt_ft` / `vc_kts`.
+    /// Trim is a no-op on backends that can't solve it (JSBSim), which then just
+    /// start airborne at the given condition.
+    pub fn reset_air(&mut self, alt_ft: f64, vc_kts: f64) {
+        self.model.set("ic/vc-kts", vc_kts);
+        self.model.set("ic/h-sl-ft", alt_ft);
+        self.model.set("ic/psi-true-deg", 0.0);
+        self.model.apply_ic();
+        self.model.set("propulsion/set-running", -1.0);
+        self.model.trim(vc_kts, alt_ft);
+        self.origin_lat = self.model.get("position/lat-gc-deg");
+        self.origin_lon = self.model.get("position/long-gc-deg");
+    }
+
+    /// Airborne trimmed start at the default cruise point.
+    pub fn reset_cruise(&mut self) {
+        self.reset_air(CRUISE_ALT_FT, CRUISE_VC_KT);
+    }
+
+    /// Re-trim for the current airspeed and altitude, keeping heading and the
+    /// flat-earth position (so it doesn't teleport the aircraft).
+    pub fn trim_now(&mut self) {
+        let vc = self.model.get("velocities/vc-kts");
+        let alt = self.model.get("position/h-sl-ft");
+        self.model.set("ic/psi-true-deg", self.model.get("attitude/psi-deg"));
+        self.model.trim(vc, alt);
     }
 
     /// World-space position (meters) and orientation for the aircraft mesh.
@@ -215,4 +247,45 @@ fn publish_state(sim: Res<Sim>, ap: Res<Autopilot>, mut state: ResMut<AircraftSt
         autopilot: ap.enabled,
         phase: ap.phase,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pure-Rust backend is the one that can trim; every entry point here
+    /// reaches the solver through the `Box<dyn FlightModel>` trait object.
+    fn rust_sim() -> Sim {
+        std::env::set_var("FDM_BACKEND", "rust");
+        Sim::new("c172p")
+    }
+
+    #[test]
+    fn reset_cruise_starts_trimmed_at_the_cruise_point() {
+        let mut sim = rust_sim();
+        sim.reset_cruise();
+        assert!((sim.model.get("position/h-sl-ft") - CRUISE_ALT_FT).abs() < 1.0);
+        assert!((sim.model.get("velocities/vc-kts") - CRUISE_VC_KT).abs() < 2.0);
+        assert!(sim.model.get("attitude/phi-deg").abs() < 0.5);
+        assert!(sim.model.get("velocities/q-rad_sec").abs() < 1e-6);
+    }
+
+    #[test]
+    fn trim_now_seats_the_current_condition() {
+        let mut sim = rust_sim();
+        sim.reset_cruise();
+        // Fly off-trim for a second (a touch of nose-up elevator), then re-trim.
+        sim.model.set("fcs/elevator-cmd-norm", -0.2);
+        for _ in 0..120 {
+            sim.model.step();
+        }
+        let (vc, alt) = (
+            sim.model.get("velocities/vc-kts"),
+            sim.model.get("position/h-sl-ft"),
+        );
+        sim.trim_now();
+        assert!((sim.model.get("velocities/vc-kts") - vc).abs() < 2.0);
+        assert!((sim.model.get("position/h-sl-ft") - alt).abs() < 1.0);
+        assert!(sim.model.get("velocities/q-rad_sec").abs() < 1e-6);
+    }
 }
