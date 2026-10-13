@@ -5,10 +5,12 @@ edition = "2021"
 
 [dependencies]
 bevy = { version = "0.20", features = ["wav"] }
+fdm = { path = "crates/fdm" }
+flight-model = { path = "crates/flight-model" }
 jsbsim-sys = { path = "jsbsim-sys" }
 
 [workspace]
-members = ["jsbsim-sys"]
+members = ["jsbsim-sys", "crates/flight-model", "crates/fdm"]
 
 # JSBSim itself is prebuilt in Release via build.rs; keep our own code fast to
 # compile while dependencies (bevy, ...) are optimized.

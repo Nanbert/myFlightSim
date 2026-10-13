@@ -5,7 +5,7 @@
 //! Shared by the `takeoff` example and the game, so the 3D view flies the exact
 //! same law that was validated headlessly.
 
-use crate::Fdm;
+use flight_model::FlightModel;
 
 const R2D: f64 = 180.0 / std::f64::consts::PI;
 
@@ -30,19 +30,19 @@ pub struct Cmds {
 
 /// Advance the outer loop one step: read the FDM state and return the surface
 /// commands plus the current phase ("roll" / "rotate" / "climb" / "cruise").
-pub fn step(fdm: &Fdm) -> (Cmds, &'static str) {
-    let alt = fdm.get_property("position/h-sl-ft");
-    let vc = fdm.get_property("velocities/vc-kts");
-    let vs = fdm.get_property("velocities/h-dot-fps") * 60.0; // fpm
-    let theta = fdm.get_property("attitude/theta-deg");
-    let phi = fdm.get_property("attitude/phi-deg");
-    let psi = fdm.get_property("attitude/psi-deg");
-    let q = fdm.get_property("velocities/q-rad_sec") * R2D; // deg/s
-    let p = fdm.get_property("velocities/p-rad_sec") * R2D;
-    let r = fdm.get_property("velocities/r-rad_sec") * R2D;
+pub fn step(fdm: &dyn FlightModel) -> (Cmds, &'static str) {
+    let alt = fdm.get("position/h-sl-ft");
+    let vc = fdm.get("velocities/vc-kts");
+    let vs = fdm.get("velocities/h-dot-fps") * 60.0; // fpm
+    let theta = fdm.get("attitude/theta-deg");
+    let phi = fdm.get("attitude/phi-deg");
+    let psi = fdm.get("attitude/psi-deg");
+    let q = fdm.get("velocities/q-rad_sec") * R2D; // deg/s
+    let p = fdm.get("velocities/p-rad_sec") * R2D;
+    let r = fdm.get("velocities/r-rad_sec") * R2D;
     // WOW is the reliable ground cue: the CG sits a few feet above the runway at
     // rest, so AGL alone reads "airborne" while still on the ground.
-    let airborne = fdm.get_property("gear/wow") < 0.5;
+    let airborne = fdm.get("gear/wow") < 0.5;
 
     // ---- Outer loop: decide throttle + target pitch ------------------------
     let (throttle, theta_cmd, phase) = if !airborne {
@@ -95,12 +95,12 @@ pub fn step(fdm: &Fdm) -> (Cmds, &'static str) {
 }
 
 /// Write `cmds` to the FDM's control channels (clears pitch trim).
-pub fn apply(fdm: &mut Fdm, cmds: &Cmds) {
-    fdm.set_property("fcs/throttle-cmd-norm", cmds.throttle);
-    fdm.set_property("fcs/elevator-cmd-norm", cmds.elevator);
-    fdm.set_property("fcs/pitch-trim-cmd-norm", 0.0);
-    fdm.set_property("fcs/aileron-cmd-norm", cmds.aileron);
-    fdm.set_property("fcs/rudder-cmd-norm", cmds.rudder);
+pub fn apply(fdm: &mut dyn FlightModel, cmds: &Cmds) {
+    fdm.set("fcs/throttle-cmd-norm", cmds.throttle);
+    fdm.set("fcs/elevator-cmd-norm", cmds.elevator);
+    fdm.set("fcs/pitch-trim-cmd-norm", 0.0);
+    fdm.set("fcs/aileron-cmd-norm", cmds.aileron);
+    fdm.set("fcs/rudder-cmd-norm", cmds.rudder);
 }
 
 fn clampf(x: f64, lo: f64, hi: f64) -> f64 {

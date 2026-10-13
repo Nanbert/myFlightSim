@@ -1,6 +1,7 @@
 //! Rust bindings to JSBSim (LGPL-2.1-or-later), built from a local checkout and
 //! linked as a shared library. The C ABI shim lives in `shim/shim.cpp`.
 
+use flight_model::FlightModel;
 use std::ffi::CString;
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
@@ -110,6 +111,23 @@ impl Fdm {
     pub fn ic_heading_deg(&mut self, deg: f64) {
         unsafe { ffi::jsbsim_ic_heading_deg(self.ptr, deg) };
     }
+
+    /// Construct a model, point it at the local JSBSim checkout, and load
+    /// `name` at timestep `dt`. Panics if the checkout or model is missing.
+    pub fn load(name: &str, dt: f64) -> Self {
+        let root = jsbsim_src();
+        let mut fdm = Fdm::new();
+        fdm.set_root(&root);
+        fdm.set_aircraft_path("aircraft");
+        fdm.set_engine_path("engine");
+        fdm.set_systems_path("systems");
+        fdm.set_dt(dt);
+        assert!(
+            fdm.load_model(name),
+            "failed to load JSBSim model '{name}' from {root}"
+        );
+        fdm
+    }
 }
 
 impl Default for Fdm {
@@ -121,6 +139,26 @@ impl Default for Fdm {
 impl Drop for Fdm {
     fn drop(&mut self) {
         unsafe { ffi::jsbsim_free(self.ptr) };
+    }
+}
+
+/// JSBSim behind the app's neutral property bus (`run`/`get`/`set`/`RunIC`).
+/// See `flight_model` for the canonical property-name contract.
+impl FlightModel for Fdm {
+    fn step(&mut self) {
+        let _ = self.run();
+    }
+
+    fn apply_ic(&mut self) {
+        assert!(self.run_ic(), "JSBSim RunIC failed");
+    }
+
+    fn get(&self, name: &str) -> f64 {
+        self.get_property(name)
+    }
+
+    fn set(&mut self, name: &str, value: f64) {
+        self.set_property(name, value);
     }
 }
 

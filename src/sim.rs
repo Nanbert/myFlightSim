@@ -1,9 +1,15 @@
-//! Bridges the JSBSim 6-DoF model into the Bevy world: drives the FDM at a
+//! Bridges a flight dynamics model into the Bevy world: drives the FDM at a
 //! fixed rate and converts its geodetic state into Bevy-space position and
 //! orientation.
+//!
+//! The model sits behind [`flight_model::FlightModel`], a named-property bus, so
+//! this file (and everything above it — `input`, `view`, the HUD, the autopilot)
+//! is identical whichever backend is loaded. `FDM_BACKEND=rust` selects the
+//! pure-Rust engine in `fdm` (P0 skeleton, not yet flying); the default is the
+//! JSBSim model in `jsbsim-sys`.
 
 use bevy::prelude::*;
-use jsbsim_sys::{autopilot, jsbsim_src, Fdm};
+use flight_model::FlightModel;
 
 /// FDM step. Matches the rate JSBSim was validated against.
 pub const DT: f64 = 1.0 / 120.0;
@@ -30,29 +36,22 @@ fn axis_map() -> Mat3 {
 
 #[derive(Resource)]
 pub struct Sim {
-    pub fdm: Fdm,
-    pub model: String,
-    root: String,
+    /// The loaded flight model, behind the neutral property bus.
+    pub model: Box<dyn FlightModel>,
     origin_lat: f64,
     origin_lon: f64,
 }
 
 impl Sim {
-    pub fn new(model: &str) -> Self {
-        let root = jsbsim_src();
-        let mut fdm = Fdm::new();
-        fdm.set_root(&root);
-        fdm.set_aircraft_path("aircraft");
-        fdm.set_engine_path("engine");
-        fdm.set_systems_path("systems");
-        fdm.set_dt(DT);
-        if !fdm.load_model(model) {
-            panic!("failed to load JSBSim model '{model}' from {root}");
-        }
+    pub fn new(name: &str) -> Self {
+        // Backend selection. `FDM_BACKEND=rust` picks the pure-Rust engine
+        // (P0: skeleton, sits still); anything else uses JSBSim.
+        let model: Box<dyn FlightModel> = match std::env::var("FDM_BACKEND").as_deref() {
+            Ok("rust") => Box::new(fdm::Fdm::new(name)),
+            _ => Box::new(jsbsim_sys::Fdm::load(name, DT)),
+        };
         let mut sim = Sim {
-            fdm,
-            model: model.to_string(),
-            root,
+            model,
             origin_lat: 0.0,
             origin_lon: 0.0,
         };
@@ -62,36 +61,30 @@ impl Sim {
 
     /// Parked on the runway at the threshold, at rest, pointing north.
     pub fn reset_ground(&mut self) {
-        self.fdm.ic_speed_kts(0.0);
-        self.fdm.ic_altitude_ft(REST_H_FT);
-        self.fdm.ic_heading_deg(0.0);
-        self.apply_ic();
-    }
-
-    fn apply_ic(&mut self) {
-        if !self.fdm.run_ic() {
-            panic!("RunIC failed for model '{}' in {}", self.model, self.root);
-        }
+        self.model.set("ic/vc-kts", 0.0);
+        self.model.set("ic/h-sl-ft", REST_H_FT);
+        self.model.set("ic/psi-true-deg", 0.0);
+        self.model.apply_ic();
         // Light the engine; without this the throttle commands produce no thrust.
-        self.fdm.set_property("propulsion/set-running", -1.0);
-        self.origin_lat = self.fdm.get_property("position/lat-gc-deg");
-        self.origin_lon = self.fdm.get_property("position/long-gc-deg");
+        self.model.set("propulsion/set-running", -1.0);
+        self.origin_lat = self.model.get("position/lat-gc-deg");
+        self.origin_lon = self.model.get("position/long-gc-deg");
     }
 
     /// World-space position (meters) and orientation for the aircraft mesh.
     pub(crate) fn pose(&self) -> (Vec3, Quat, f32) {
-        let lat = self.fdm.get_property("position/lat-gc-deg");
-        let lon = self.fdm.get_property("position/long-gc-deg");
-        let alt_m = self.fdm.get_property("position/h-sl-ft") * FT_TO_M;
+        let lat = self.model.get("position/lat-gc-deg");
+        let lon = self.model.get("position/long-gc-deg");
+        let alt_m = self.model.get("position/h-sl-ft") * FT_TO_M;
         let north = (lat - self.origin_lat).to_radians() * EARTH_RADIUS_M;
         let east = (lon - self.origin_lon).to_radians()
             * self.origin_lat.to_radians().cos()
             * EARTH_RADIUS_M;
         let pos = Vec3::new(east as f32, alt_m as f32, -(north as f32));
 
-        let phi = self.fdm.get_property("attitude/phi-rad") as f32;
-        let theta = self.fdm.get_property("attitude/theta-rad") as f32;
-        let psi = self.fdm.get_property("attitude/psi-rad") as f32;
+        let phi = self.model.get("attitude/phi-rad") as f32;
+        let theta = self.model.get("attitude/theta-rad") as f32;
+        let psi = self.model.get("attitude/psi-rad") as f32;
 
         let r_nb = Mat3::from_rotation_z(psi)
             * Mat3::from_rotation_y(theta)
@@ -163,25 +156,23 @@ impl Plugin for SimPlugin {
 }
 
 fn advance_fdm(mut sim: ResMut<Sim>, bindings: Res<crate::input::Bindings>, mut ap: ResMut<Autopilot>) {
-    let fdm = &mut sim.fdm;
-
     // Pilot bindings drive every property the loaded model exposes. This runs
     // unconditionally so flaps and brakes stay live even under the autopilot.
     for b in &bindings.list {
-        fdm.set_property(b.property, b.value);
+        sim.model.set(b.property, b.value);
     }
 
     // The autopilot, when engaged, takes over the channels it owns (elevator,
     // aileron, rudder, throttle, trim) by writing them after the bindings.
     if ap.enabled {
-        let (cmds, phase) = autopilot::step(fdm);
+        let (cmds, phase) = jsbsim_sys::autopilot::step(&*sim.model);
         ap.phase = phase;
-        autopilot::apply(fdm, &cmds);
+        jsbsim_sys::autopilot::apply(&mut *sim.model, &cmds);
     } else {
         ap.phase = "manual";
     }
 
-    fdm.run();
+    sim.model.step();
 }
 
 /// Shift the fixed-step pose buffer forward each FDM step (runs right after
@@ -205,22 +196,22 @@ fn capture_render_pose(sim: Res<Sim>, mut rp: ResMut<RenderPose>) {
 
 fn publish_state(sim: Res<Sim>, ap: Res<Autopilot>, mut state: ResMut<AircraftState>) {
     let (pos, _, _) = sim.pose();
-    let fdm = &sim.fdm;
+    let m = &sim.model;
     *state = AircraftState {
         pos,
-        alt_ft: fdm.get_property("position/h-sl-ft"),
-        cas_kts: fdm.get_property("velocities/vc-kts"),
-        heading_deg: fdm.get_property("attitude/psi-deg"),
-        pitch_deg: fdm.get_property("attitude/theta-deg"),
-        roll_deg: fdm.get_property("attitude/phi-deg"),
+        alt_ft: m.get("position/h-sl-ft"),
+        cas_kts: m.get("velocities/vc-kts"),
+        heading_deg: m.get("attitude/psi-deg"),
+        pitch_deg: m.get("attitude/theta-deg"),
+        roll_deg: m.get("attitude/phi-deg"),
         // Report what is actually driving the surfaces, auto or manual.
-        throttle: fdm.get_property("fcs/throttle-cmd-norm"),
-        elevator: fdm.get_property("fcs/elevator-cmd-norm"),
-        aileron: fdm.get_property("fcs/aileron-cmd-norm"),
-        rudder: fdm.get_property("fcs/rudder-cmd-norm"),
-        elevator_trim: fdm.get_property("fcs/pitch-trim-cmd-norm"),
-        flap_deg: fdm.get_property("fcs/flap-pos-deg"),
-        rpm: fdm.get_property("propulsion/engine[0]/engine-rpm"),
+        throttle: m.get("fcs/throttle-cmd-norm"),
+        elevator: m.get("fcs/elevator-cmd-norm"),
+        aileron: m.get("fcs/aileron-cmd-norm"),
+        rudder: m.get("fcs/rudder-cmd-norm"),
+        elevator_trim: m.get("fcs/pitch-trim-cmd-norm"),
+        flap_deg: m.get("fcs/flap-pos-deg"),
+        rpm: m.get("propulsion/engine[0]/engine-rpm"),
         autopilot: ap.enabled,
         phase: ap.phase,
     };

@@ -6,6 +6,9 @@ build = "build.rs"
 links = "JSBSim"
 description = "Raw + safe Rust bindings to JSBSim built from a local checkout"
 
+[dependencies]
+flight-model = { path = "../crates/flight-model" }
+
 [build-dependencies]
 cmake = "0.1"
 cc = "1"
