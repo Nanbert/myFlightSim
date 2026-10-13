@@ -1,0 +1,11 @@
+[package]
+name = "jsbsim-sys"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+links = "JSBSim"
+description = "Raw + safe Rust bindings to JSBSim built from a local checkout"
+
+[build-dependencies]
+cmake = "0.1"
+cc = "1"

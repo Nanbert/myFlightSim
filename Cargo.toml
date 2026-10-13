@@ -1,0 +1,19 @@
+[package]
+name = "my_flight_sim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = "0.20"
+jsbsim-sys = { path = "jsbsim-sys" }
+
+[workspace]
+members = ["jsbsim-sys"]
+
+# JSBSim itself is prebuilt in Release via build.rs; keep our own code fast to
+# compile while dependencies (bevy, ...) are optimized.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
