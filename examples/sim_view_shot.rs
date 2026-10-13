@@ -10,6 +10,8 @@ mod input;
 mod sim;
 #[path = "../src/view.rs"]
 mod view;
+#[path = "../src/weather.rs"]
+mod weather;
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
@@ -28,7 +30,12 @@ fn main() {
             ..default()
         }))
         .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
-        .add_plugins((sim::SimPlugin, input::InputPlugin, view::ViewPlugin))
+        .add_plugins((
+            sim::SimPlugin,
+            input::InputPlugin,
+            view::ViewPlugin,
+            weather::WeatherPlugin,
+        ))
         // Manual control, so nothing fights the pinned inputs below.
         .insert_resource(sim::Autopilot {
             enabled: false,

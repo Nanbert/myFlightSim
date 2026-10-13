@@ -1,11 +1,13 @@
 //! Scene setup and per-frame visualisation: aircraft mesh, ground grid,
 //! chase camera and an on-screen HUD.
 
+use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 use bevy::text::FontSize;
 use std::collections::HashMap;
 
 use crate::sim::{AircraftState, RenderPose};
+use crate::weather::Weather;
 
 /// The only model in `assets/` with a control-surface bone rig (see session
 /// notes / `examples/confirm_controls.rs`).
@@ -73,6 +75,7 @@ impl Plugin for ViewPlugin {
                     update_hud,
                     draw_grid,
                     toggle_ui,
+                    dim_lights,
                     capture_rig,
                     drive_surfaces,
                 ),
@@ -99,6 +102,15 @@ fn setup_scene(mut commands: Commands, assets: Res<AssetServer>) {
 
     commands.spawn((
         Camera3d::default(),
+        // Far plane must clear the sky dome (radius 8000, see `sky.rs`) and the
+        // ground grid (half-extent 3000) so neither is clipped.
+        Projection::Perspective(PerspectiveProjection {
+            far: 20_000.0,
+            ..default()
+        }),
+        // Keep the sky's authored colours (the default filmic tonemapper washes
+        // the gradient toward grey).
+        Tonemapping::None,
         Transform::from_xyz(-18.0, 8.0, 22.0).looking_at(Vec3::ZERO, Vec3::Y),
         AmbientLight {
             color: Color::WHITE,
@@ -253,6 +265,22 @@ fn toggle_ui(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<Ui>) {
     }
 }
 
+/// Overcast weather dims the sun and ambient fill (the sky texture greys out on
+/// its own, in `sky.rs`). Idempotent, so it just runs every frame.
+fn dim_lights(
+    weather: Res<Weather>,
+    mut sun: Query<&mut DirectionalLight>,
+    mut ambient: Query<&mut AmbientLight>,
+) {
+    let k = 1.0 - 0.55 * weather.rain;
+    for mut light in &mut sun {
+        light.illuminance = 8_000.0 * k;
+    }
+    for mut amb in &mut ambient {
+        amb.brightness = 250.0 * k;
+    }
+}
+
 /// Bar filling outward from a centre marker, for a value in [-1, 1].
 /// ASCII only, so it renders with Bevy's default font.
 fn signed_bar(v: f64) -> String {
@@ -274,7 +302,12 @@ fn bar(v: f64) -> String {
     (0..N).map(|i| if i < n { '#' } else { '-' }).collect()
 }
 
-fn update_hud(state: Res<AircraftState>, ui: Res<Ui>, mut q: Query<&mut Text, With<Hud>>) {
+fn update_hud(
+    state: Res<AircraftState>,
+    ui: Res<Ui>,
+    weather: Res<Weather>,
+    mut q: Query<&mut Text, With<Hud>>,
+) {
     let Ok(mut text) = q.single_mut() else {
         return;
     };
@@ -286,9 +319,10 @@ fn update_hud(state: Res<AircraftState>, ui: Res<Ui>, mut q: Query<&mut Text, Wi
 
     // Instrument readings — what a real panel shows (RPM, not "throttle %").
     let mut out = format!(
-        "myFlightSim — JSBSim c172p   [{mode}]\n\
+        "myFlightSim — JSBSim c172p   [{mode}]   WX: {}\n\
          ALT {:>4.0} ft   IAS {:>3.0} kt   RPM {:>4.0}   FLAP {:>4.1}°   TRIM {:+.2}\n\
          HDG {:>3.0}°   PITCH {:>5.1}°   ROLL {:>5.1}°",
+        weather.label(),
         state.alt_ft,
         state.cas_kts,
         state.rpm,
@@ -318,7 +352,7 @@ fn update_hud(state: Res<AircraftState>, ui: Res<Ui>, mut q: Query<&mut Text, Wi
     out.push_str(
         "\n\n\
          W/S pitch   A/D roll   Q/E yaw   Shift/Ctrl throttle   X/Z trim\n\
-         F/V flaps   B brakes   G autopilot   R reset   H inputs",
+         F/V flaps   B brakes   G autopilot   R reset   H inputs   T weather",
     );
 
     text.0 = out;

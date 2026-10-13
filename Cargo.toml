@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bevy = "0.20"
+bevy = { version = "0.20", features = ["wav"] }
 jsbsim-sys = { path = "jsbsim-sys" }
 
 [workspace]

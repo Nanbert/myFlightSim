@@ -1,6 +1,9 @@
 mod input;
 mod sim;
+mod sky;
+mod sound;
 mod view;
+mod weather;
 
 use bevy::prelude::*;
 
@@ -14,6 +17,13 @@ fn main() {
             ..default()
         }))
         .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
-        .add_plugins((sim::SimPlugin, input::InputPlugin, view::ViewPlugin))
+        .add_plugins((
+            sim::SimPlugin,
+            input::InputPlugin,
+            view::ViewPlugin,
+            sky::SkyPlugin,
+            sound::SoundPlugin,
+            weather::WeatherPlugin,
+        ))
         .run();
 }
