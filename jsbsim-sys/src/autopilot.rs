@@ -26,6 +26,9 @@ pub struct Cmds {
     pub elevator: f64,
     pub aileron: f64,
     pub rudder: f64,
+    /// Gear selector: down for the roll and rotate, up once airborne. Written as
+    /// `gear/gear-cmd-norm` (1 = down, 0 = up); ignored by fixed-gear aircraft.
+    pub gear_down: bool,
 }
 
 /// Advance the outer loop one step: read the FDM state and return the surface
@@ -89,6 +92,8 @@ pub fn step(fdm: &dyn FlightModel) -> (Cmds, &'static str) {
             elevator,
             aileron,
             rudder,
+            // Gear down on the ground, up as soon as it lifts off.
+            gear_down: !airborne,
         },
         phase,
     )
@@ -101,6 +106,7 @@ pub fn apply(fdm: &mut dyn FlightModel, cmds: &Cmds) {
     fdm.set("fcs/pitch-trim-cmd-norm", 0.0);
     fdm.set("fcs/aileron-cmd-norm", cmds.aileron);
     fdm.set("fcs/rudder-cmd-norm", cmds.rudder);
+    fdm.set("gear/gear-cmd-norm", if cmds.gear_down { 1.0 } else { 0.0 });
 }
 
 fn clampf(x: f64, lo: f64, hi: f64) -> f64 {

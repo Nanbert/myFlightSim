@@ -42,20 +42,30 @@ fn axis_map() -> Mat3 {
 pub struct Sim {
     /// The loaded flight model, behind the neutral property bus.
     pub model: Box<dyn FlightModel>,
+    /// Human-readable "<backend> <aircraft>" for the HUD title.
+    pub label: String,
+    /// Aircraft id ("c172p" / "f22"), for choosing the visual model.
+    pub name: String,
     origin_lat: f64,
     origin_lon: f64,
 }
 
 impl Sim {
     pub fn new(name: &str) -> Self {
+        // Aircraft selection: `AIRCRAFT=f22` overrides the caller's default.
+        let name = std::env::var("AIRCRAFT").unwrap_or_else(|_| name.to_owned());
         // Backend selection. `FDM_BACKEND=rust` picks the pure-Rust engine
         // (P0: skeleton, sits still); anything else uses JSBSim.
-        let model: Box<dyn FlightModel> = match std::env::var("FDM_BACKEND").as_deref() {
-            Ok("rust") => Box::new(fdm::Fdm::new(name)),
-            _ => Box::new(jsbsim_sys::Fdm::load(name, DT)),
-        };
+        let (model, backend): (Box<dyn FlightModel>, &str) =
+            match std::env::var("FDM_BACKEND").as_deref() {
+                Ok("rust") => (Box::new(fdm::Fdm::new(&name)), "Rust"),
+                _ => (Box::new(jsbsim_sys::Fdm::load(&name, DT)), "JSBSim"),
+            };
+        let label = format!("{backend} {name}");
         let mut sim = Sim {
             model,
+            label,
+            name,
             origin_lat: 0.0,
             origin_lon: 0.0,
         };
@@ -69,6 +79,10 @@ impl Sim {
         self.model.set("ic/h-sl-ft", REST_H_FT);
         self.model.set("ic/psi-true-deg", 0.0);
         self.model.apply_ic();
+        // Gear down on the ground — snapped, not commanded: teleporting onto the
+        // runway with the gear mid-retraction would leave nothing to land on.
+        self.model.set("gear/gear-cmd-norm", 1.0);
+        self.model.set("gear/gear-pos-norm", 1.0);
         // Light the engine; without this the throttle commands produce no thrust.
         self.model.set("propulsion/set-running", -1.0);
         self.origin_lat = self.model.get("position/lat-gc-deg");
@@ -83,6 +97,10 @@ impl Sim {
         self.model.set("ic/h-sl-ft", alt_ft);
         self.model.set("ic/psi-true-deg", 0.0);
         self.model.apply_ic();
+        // Cruise is a clean config: gear up. Seat it before the trim below, or
+        // the solver seats the (much draggier) gear-down jet.
+        self.model.set("gear/gear-cmd-norm", 0.0);
+        self.model.set("gear/gear-pos-norm", 0.0);
         self.model.set("propulsion/set-running", -1.0);
         self.model.trim(vc_kts, alt_ft);
         self.origin_lat = self.model.get("position/lat-gc-deg");
@@ -145,6 +163,14 @@ pub struct AircraftState {
     pub rpm: f64,
     pub autopilot: bool,
     pub phase: &'static str,
+    /// Thrust vectoring switched on (`fcs/tvc-enable`).
+    pub tvc_on: bool,
+    /// Whether the loaded model supports TVC at all (F-22 only).
+    pub tvc_available: bool,
+    /// Achieved landing-gear position (`gear/gear-pos-norm`): 1 = down, 0 = up.
+    pub gear_pos: f64,
+    /// Whether the loaded model's gear retracts at all (F-22 only).
+    pub gear_available: bool,
 }
 
 /// The two most recent *fixed-step* poses. The FDM advances at 120 Hz while the
@@ -246,6 +272,10 @@ fn publish_state(sim: Res<Sim>, ap: Res<Autopilot>, mut state: ResMut<AircraftSt
         rpm: m.get("propulsion/engine[0]/engine-rpm"),
         autopilot: ap.enabled,
         phase: ap.phase,
+        tvc_on: m.get("fcs/tvc-enable") > 0.5,
+        tvc_available: m.has_tvc(),
+        gear_pos: m.get("gear/gear-pos-norm"),
+        gear_available: m.has_retractable_gear(),
     };
 }
 
@@ -258,6 +288,12 @@ mod tests {
     fn rust_sim() -> Sim {
         std::env::set_var("FDM_BACKEND", "rust");
         Sim::new("c172p")
+    }
+
+    /// Retractable-gear variant (the F-22) for the reset tests.
+    fn rust_f22() -> Sim {
+        std::env::set_var("FDM_BACKEND", "rust");
+        Sim::new("f22")
     }
 
     #[test]
@@ -287,5 +323,38 @@ mod tests {
         assert!((sim.model.get("velocities/vc-kts") - vc).abs() < 2.0);
         assert!((sim.model.get("position/h-sl-ft") - alt).abs() < 1.0);
         assert!(sim.model.get("velocities/q-rad_sec").abs() < 1e-6);
+    }
+
+    #[test]
+    fn reset_air_retracts_the_gear_before_trimming() {
+        let mut sim = rust_f22();
+        sim.reset_ground();
+        assert!(sim.model.get("gear/gear-pos-norm") > 0.99, "parked gear down");
+        sim.reset_air(15_000.0, 350.0);
+        assert!(sim.model.get("gear/gear-pos-norm") < 0.01, "cruise gear up");
+        // Trim ran on the gear-up jet, so the seated point must hold. Seating a
+        // gear-down trim (much more drag) then flying gear-up would sag away.
+        let vc0 = sim.model.get("velocities/vc-kts");
+        for _ in 0..240 {
+            sim.model.step();
+        }
+        let vc1 = sim.model.get("velocities/vc-kts");
+        assert!((vc1 - vc0).abs() < 4.0, "gear-up trim must hold: {vc0} -> {vc1}");
+    }
+
+    #[test]
+    fn reset_ground_from_a_gear_up_cruise_does_not_fall_through() {
+        let mut sim = rust_f22();
+        sim.reset_cruise(); // aircraft airborne, gear up
+        assert!(sim.model.get("gear/gear-pos-norm") < 0.01);
+        sim.reset_ground();
+        for _ in 0..240 {
+            sim.model.step();
+        }
+        assert!(
+            sim.model.get("position/h-sl-ft") > 0.0,
+            "must rest on the runway, not sink through it"
+        );
+        assert!(sim.model.get("gear/wow") > 0.5, "back on the wheels");
     }
 }

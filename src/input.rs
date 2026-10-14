@@ -141,6 +141,19 @@ fn read_input(
         *bindings = Bindings::default();
         ap.enabled = true;
     }
+    // J toggles thrust vectoring. A no-op on models without it (the c172
+    // ignores the property); the F-22's FBW reads it.
+    if keys.just_pressed(KeyCode::KeyJ) {
+        let on = sim.model.get("fcs/tvc-enable") > 0.5;
+        sim.model.set("fcs/tvc-enable", if on { 0.0 } else { 1.0 });
+    }
+    // U raises/lowers the gear (`gear/gear-cmd-norm`: 1 = down, 0 = up). A
+    // no-op on fixed-gear aircraft; the F-22 ignores a "gear up" command while
+    // on the wheels (weight-on-wheels interlock).
+    if keys.just_pressed(KeyCode::KeyU) {
+        let down = sim.model.get("gear/gear-cmd-norm") > 0.5;
+        sim.model.set("gear/gear-cmd-norm", if down { 0.0 } else { 1.0 });
+    }
     // T re-trims for the current condition; Y restarts airborne in a trimmed
     // cruise. Both hand control to the pilot and adopt the trimmed throttle/trim
     // into the Hold bindings, so the per-step command writes don't undo the trim.

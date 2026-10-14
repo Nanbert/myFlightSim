@@ -6,18 +6,50 @@ use bevy::prelude::*;
 use bevy::text::FontSize;
 use std::collections::HashMap;
 
-use crate::sim::{AircraftState, RenderPose};
+use crate::sim::{AircraftState, RenderPose, Sim};
 use crate::weather::Weather;
 
-/// The only model in `assets/` with a control-surface bone rig (see session
-/// notes / `examples/confirm_controls.rs`).
-const MODEL: &str = "cessna_172.glb";
+/// Per-aircraft visual config: which mesh to load and how to seat it on the
+/// sim's CG (the root the mesh is parented to). All models here use the same
+/// mesh axes — +X fwd / +Y up / +Z right — so the fixed +90° yaw aligns every
+/// one; only scale and the origin drop differ.
+struct ModelSpec {
+    /// glTF file in `assets/`.
+    file: &'static str,
+    /// Uniform scale. Free models come at arbitrary authoring scales (the
+    /// rigged F-22 is authored at ~1/6.8; the c172 reads as metres already).
+    scale: f32,
+    /// Mesh-origin drop below the CG reference (m): the child is translated by
+    /// `(0, -drop, 0)`. Set so the model sits on its wheels at rest.
+    drop: f32,
+    /// Yaw that seats the model's authored forward onto Bevy's -Z. The c172 is
+    /// +X-forward (+90°); the rigged F-22 is +Z-forward (+180°). Yaw alone
+    /// suffices — both models share the same handedness (+Y up), so no mirror.
+    yaw: f32,
+}
 
-/// The model's origin sits at the belly (bind-pose y ≈ 0), but JSBSim's
-/// reference point is the CG, ~4.7 ft up when parked. Dropping the mesh by
-/// that much puts the wheels on the ground at rest (and keeps it honest in
-/// the air, since the offset just tracks CG-above-belly).
-const MODEL_DROP: f32 = 1.4326;
+fn model_spec(name: &str) -> ModelSpec {
+    match name {
+        // Rigged F-22 (model A): per-surface pivots, driven in `drive_surfaces`.
+        // `drop` seats the deployed wheels on the runway: the FDM settles the CG
+        // at ~5.56 ft, and the model's lowest gear vertex sits at −0.116 model
+        // units, so drop = 1.694 − 6.8·0.116 ≈ 0.90.
+        "f22" => ModelSpec {
+            file: "f22.glb",
+            scale: 6.8,
+            drop: 0.90,
+            yaw: std::f32::consts::PI,
+        },
+        // Default: the c172, whose control-surface bone rig is driven in
+        // `drive_surfaces` (names in `is_control_bone`).
+        _ => ModelSpec {
+            file: "cessna_172.glb",
+            scale: 1.0,
+            drop: 1.4326,
+            yaw: std::f32::consts::FRAC_PI_2,
+        },
+    }
+}
 
 /// Hinge axis of each control bone, in the bone's LOCAL (bind-pose) frame.
 /// Each is the surface's leading-edge direction (its span, found from the
@@ -37,6 +69,66 @@ const PROP: [f32; 3] = [0.0, 0.0, -1.0];
 const MAX_DEFLECT: f32 = 0.35;
 /// Visual prop-spin rate per RPM. Tuned so cruise reads as a fast blur.
 const PROP_SPIN: f32 = 0.01;
+
+// --- F-22 (`f22.glb`, model A) control pivots ---
+// The model authors +X left / +Y up / +Z nose, and its control surfaces hang
+// off empty pivot nodes whose names carry Blender's export suffix. Each entry
+// is `(hinge axis in the pivot's bind frame, sign)`, the sign folding in the
+// per-side mirroring so that `sign * cmd` gives the physically correct motion:
+// trailing edge DOWN for a positive elevator/aileron, trailing edge LEFT (+X)
+// for a positive rudder — verified from the bind geometry (hinge axis × the
+// surface's offset-from-hinge). The pivot names are otherwise opaque; they map
+// to roles only by position (`Object_NN` mesh nodes sit under them).
+const F22_STAB_L: ([f32; 3], f32) = ([-1.0, 0.0, 0.0], 1.0); // Cube.043_66  (x=+0.47)
+const F22_STAB_R: ([f32; 3], f32) = ([1.0, 0.0, 0.0], -1.0); // Cube.044_79  (x=-0.47)
+const F22_AIL_LI: ([f32; 3], f32) = ([1.0, 0.0, 0.0], -1.0); // Empty.009_39 (left inboard)
+const F22_AIL_LO: ([f32; 3], f32) = ([-1.0, 0.0, 0.0], 1.0); // Empty.010_41 (left outboard)
+const F22_AIL_RI: ([f32; 3], f32) = ([1.0, 0.0, 0.0], 1.0); // Empty.011_43  (right inboard)
+const F22_AIL_RO: ([f32; 3], f32) = ([-1.0, 0.0, 0.0], -1.0); // Empty.012_45 (right outboard)
+const F22_RUD_L: ([f32; 3], f32) = ([-0.05, 0.90, 0.43], -1.0); // Empty.008_37 (left v-tail)
+const F22_RUD_R: ([f32; 3], f32) = ([-0.05, -0.91, -0.41], 1.0); // Empty.007_35 (right v-tail)
+
+/// One landing-gear moving part: the node's local pose fully down and fully up,
+/// read from the model's gear-cycle animation (its first key = gear down, last
+/// key = gear up). `drive_gear` slerps/lerps between them by the live gear
+/// position, so the doors and struts fold exactly as the model's author drew
+/// them. The model's single clip also opens the weapon bays and swings the
+/// boarding ladder, so only the gear-subset nodes appear here.
+struct GearPart {
+    name: &'static str,
+    /// Local rotation (quaternion x,y,z,w) with the gear down.
+    down_rot: [f32; 4],
+    /// Local rotation with the gear up.
+    up_rot: [f32; 4],
+    /// Local translation with the gear down.
+    down_trans: [f32; 3],
+    /// Local translation with the gear up.
+    up_trans: [f32; 3],
+}
+
+/// F-22 model-A gear nodes: nose strut + doors, both main struts + doors, and
+/// the main gear-bay doors. (The weapon-bay doors `Cube.058/061/062/064` and the
+/// missiles `Cube.068/069` are deliberately omitted.)
+const F22_GEAR: &[GearPart] = &[
+    // Nose gear strut and its doors.
+    GearPart { name: "Empty.003_12", down_rot: [0.0, 0.0, 0.0, 1.0], up_rot: [-0.766, 0.0, 0.0, 0.643], down_trans: [0.0, 0.045, 0.466], up_trans: [0.0, 0.045, 0.466] },
+    GearPart { name: "Empty.004_16", down_rot: [0.0, 0.0, 0.0, 1.0], up_rot: [-0.200, 0.0, 0.0, 0.980], down_trans: [0.0, -0.042, 0.452], up_trans: [0.0, 0.055, 0.552] },
+    GearPart { name: "Empty.005_18", down_rot: [0.0, 0.0, 0.0, 1.0], up_rot: [-0.767, 0.0, 0.0, 0.642], down_trans: [0.0, 0.057, 0.426], up_trans: [0.0, 0.025, 0.441] },
+    GearPart { name: "Cube.048_91", down_rot: [0.0, 0.0, -0.468, 0.884], up_rot: [0.0, 0.0, 0.0, 1.0], down_trans: [-0.027, 0.032, 0.509], up_trans: [-0.027, 0.032, 0.509] },
+    GearPart { name: "Cube.049_92", down_rot: [0.0, 0.0, 0.468, 0.884], up_rot: [0.0, 0.0, 0.0, 1.0], down_trans: [0.027, 0.032, 0.509], up_trans: [0.027, 0.032, 0.509] },
+    // Main gear struts.
+    GearPart { name: "Cylinder.013_25", down_rot: [0.0, 0.0, 0.0, 1.0], up_rot: [0.0, 0.0, 0.869, 0.494], down_trans: [0.161, 0.037, -0.448], up_trans: [0.161, 0.037, -0.448] },
+    GearPart { name: "Cylinder.018_31", down_rot: [0.0, 0.0, 0.0, 1.0], up_rot: [0.0, 0.0, -0.869, 0.494], down_trans: [-0.161, 0.037, -0.448], up_trans: [-0.161, 0.037, -0.448] },
+    // Main gear doors.
+    GearPart { name: "Cube.055_27", down_rot: [0.0, 0.0, 0.183, 0.983], up_rot: [0.0, 0.0, -0.494, 0.869], down_trans: [0.197, 0.041, -0.448], up_trans: [0.139, 0.066, -0.448] },
+    GearPart { name: "Cube.056_28", down_rot: [0.0, 0.0, 0.0, 1.0], up_rot: [0.0, 0.0, -0.667, 0.745], down_trans: [0.180, 0.089, -0.448], up_trans: [0.180, 0.089, -0.448] },
+    GearPart { name: "Cube.059_32", down_rot: [0.0, 0.0, 0.193, 0.981], up_rot: [0.0, 0.0, 0.783, 0.622], down_trans: [-0.197, 0.040, -0.448], up_trans: [-0.139, 0.067, -0.448] },
+    GearPart { name: "Cube.060_33", down_rot: [0.0, 0.0, -0.790, 0.614], up_rot: [0.0, 0.0, -0.214, 0.977], down_trans: [-0.179, 0.090, -0.448], up_trans: [-0.179, 0.090, -0.448] },
+    GearPart { name: "Cube.016_68", down_rot: [0.0, 0.0, 0.906, 0.423], up_rot: [0.0, 0.0, 0.0, 1.0], down_trans: [-0.172, 0.014, -0.444], up_trans: [-0.172, 0.014, -0.444] },
+    GearPart { name: "Cube.051_70", down_rot: [0.0, 0.0, -0.906, 0.423], up_rot: [0.0, 0.0, 0.0, 1.0], down_trans: [0.172, 0.014, -0.444], up_trans: [0.172, 0.014, -0.444] },
+    GearPart { name: "Cube.050_69", down_rot: [0.0, 0.0, -0.537, 0.843], up_rot: [0.0, 0.0, 0.0, 1.0], down_trans: [-0.300, 0.136, -0.420], up_trans: [-0.300, 0.136, -0.420] },
+    GearPart { name: "Cube.052_71", down_rot: [0.0, 0.0, 0.537, 0.843], up_rot: [0.0, 0.0, 0.0, 1.0], down_trans: [0.300, 0.136, -0.420], up_trans: [0.300, 0.136, -0.420] },
+];
 
 #[derive(Component)]
 struct AircraftRoot;
@@ -78,24 +170,28 @@ impl Plugin for ViewPlugin {
                     dim_lights,
                     capture_rig,
                     drive_surfaces,
+                    drive_gear,
+                    hide_scene_junk,
                 ),
             );
     }
 }
 
-fn setup_scene(mut commands: Commands, assets: Res<AssetServer>) {
+fn setup_scene(mut commands: Commands, assets: Res<AssetServer>, sim: Res<Sim>) {
+    let spec = model_spec(&sim.name);
     let root = commands
         .spawn((AircraftRoot, Transform::default(), Visibility::default()))
         .id();
 
-    // Rigged aircraft, parented to the sim-driven root. The model frame is
-    // +X fwd / +Y up / +Z right; Bevy is -Z fwd, so yaw +90° to align.
+    // Aircraft mesh, parented to the sim-driven root. Each model authors its
+    // own forward axis (+Y is up for all of them), so the yaw in `spec` seats
+    // it onto Bevy's -Z forward.
     commands.spawn((
-        WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(MODEL))),
+        WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(spec.file))),
         Transform {
-            translation: Vec3::new(0.0, -MODEL_DROP, 0.0),
-            rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
-            scale: Vec3::ONE,
+            translation: Vec3::new(0.0, -spec.drop, 0.0),
+            rotation: Quat::from_rotation_y(spec.yaw),
+            scale: Vec3::splat(spec.scale),
         },
         ChildOf(root),
     ));
@@ -181,8 +277,25 @@ fn capture_rig(names: Query<(Entity, &Name, &Transform)>, mut rig: ResMut<Contro
 fn is_control_bone(name: &str) -> bool {
     matches!(
         name,
+        // c172 bone rig (skinned).
         "aileron-left_3" | "aileron-right_2" | "elevator_0" | "rudder_4" | "flaps_1" | "prop_5"
+        // F-22 model-A pivots (plain node transforms).
+        | "Cube.043_66" | "Cube.044_79"
+        | "Empty.009_39" | "Empty.010_41" | "Empty.011_43" | "Empty.012_45"
+        | "Empty.007_35" | "Empty.008_37"
     )
+}
+
+/// The rigged F-22 glTF ships a few props that aren't the aircraft: a 1.8 m
+/// ground-grid quad (`Object_113`) and a boarding ladder (`Object_89`) parked
+/// off the left side. Hide them so they don't fly with the jet. Idempotent.
+fn hide_scene_junk(mut q: Query<(&Name, &mut Visibility)>) {
+    const JUNK: [&str; 2] = ["Object_113", "Object_89"];
+    for (name, mut vis) in &mut q {
+        if JUNK.contains(&name.as_str()) && *vis != Visibility::Hidden {
+            *vis = Visibility::Hidden;
+        }
+    }
 }
 
 /// Rotate the control bones from the live JSBSim surface commands. Angles are
@@ -221,9 +334,41 @@ fn drive_surfaces(
             // Flap position already comes in degrees (0..~30).
             "flaps_1" => (FLAPS, (state.flap_deg as f32).to_radians()),
             "prop_5" => (PROP, prop_phase),
+
+            // F-22 model-A pivots. Stabilators take the elevator command; the
+            // four flaperons take aileron (per-side sign already in the const,
+            // so left drops and right lifts for a positive roll); both v-tails
+            // take rudder. (The real jet also rolls with differential tail and
+            // vectors with TVC — neither is shown on the mesh.)
+            "Cube.043_66" => (F22_STAB_L.0, F22_STAB_L.1 * state.elevator as f32 * MAX_DEFLECT),
+            "Cube.044_79" => (F22_STAB_R.0, F22_STAB_R.1 * state.elevator as f32 * MAX_DEFLECT),
+            "Empty.009_39" => (F22_AIL_LI.0, F22_AIL_LI.1 * state.aileron as f32 * MAX_DEFLECT),
+            "Empty.010_41" => (F22_AIL_LO.0, F22_AIL_LO.1 * state.aileron as f32 * MAX_DEFLECT),
+            "Empty.011_43" => (F22_AIL_RI.0, F22_AIL_RI.1 * state.aileron as f32 * MAX_DEFLECT),
+            "Empty.012_45" => (F22_AIL_RO.0, F22_AIL_RO.1 * state.aileron as f32 * MAX_DEFLECT),
+            "Empty.007_35" => (F22_RUD_R.0, F22_RUD_R.1 * state.rudder as f32 * MAX_DEFLECT),
+            "Empty.008_37" => (F22_RUD_L.0, F22_RUD_L.1 * state.rudder as f32 * MAX_DEFLECT),
             _ => continue,
         };
         tf.rotation = *base * Quat::from_axis_angle(Vec3::from_array(axis).normalize(), angle);
+    }
+}
+
+/// Fold the landing gear between the model's authored down and up poses by the
+/// live gear position. The FDM rate-limits the travel over ~4.5 s, so the blend
+/// reads as a smooth cycle without any easing here.
+fn drive_gear(state: Res<AircraftState>, mut q: Query<(&Name, &mut Transform)>) {
+    if !state.gear_available {
+        return;
+    }
+    // 0 at gear-down, 1 at gear-up.
+    let t = (1.0 - state.gear_pos as f32).clamp(0.0, 1.0);
+    for (name, mut tf) in &mut q {
+        let Some(p) = F22_GEAR.iter().find(|p| p.name == name.as_str()) else {
+            continue;
+        };
+        tf.rotation = Quat::from_array(p.down_rot).slerp(Quat::from_array(p.up_rot), t);
+        tf.translation = Vec3::from_array(p.down_trans).lerp(Vec3::from_array(p.up_trans), t);
     }
 }
 
@@ -306,6 +451,7 @@ fn update_hud(
     state: Res<AircraftState>,
     ui: Res<Ui>,
     weather: Res<Weather>,
+    sim: Res<Sim>,
     mut q: Query<&mut Text, With<Hud>>,
 ) {
     let Ok(mut text) = q.single_mut() else {
@@ -317,11 +463,36 @@ fn update_hud(
         "MANUAL".to_string()
     };
 
+    // Thrust-vectoring status, shown only for aircraft that have it (F-22).
+    let tvc = if state.tvc_available {
+        if state.tvc_on {
+            "   TVC ON"
+        } else {
+            "   TVC OFF"
+        }
+    } else {
+        ""
+    };
+
+    // Landing-gear state, shown only for aircraft whose gear retracts (F-22).
+    let gear = if state.gear_available {
+        if state.gear_pos > 0.99 {
+            "   GEAR DOWN"
+        } else if state.gear_pos < 0.01 {
+            "   GEAR UP"
+        } else {
+            "   GEAR ..."
+        }
+    } else {
+        ""
+    };
+
     // Instrument readings — what a real panel shows (RPM, not "throttle %").
     let mut out = format!(
-        "myFlightSim — JSBSim c172p   [{mode}]   WX: {}\n\
+        "myFlightSim — {}   [{mode}]{tvc}{gear}   WX: {}\n\
          ALT {:>4.0} ft   IAS {:>3.0} kt   RPM {:>4.0}   FLAP {:>4.1}°   TRIM {:+.2}\n\
          HDG {:>3.0}°   PITCH {:>5.1}°   ROLL {:>5.1}°",
+        sim.label,
         weather.label(),
         state.alt_ft,
         state.cas_kts,
@@ -352,7 +523,7 @@ fn update_hud(
     out.push_str(
         "\n\n\
          W/S pitch   A/D roll   Q/E yaw   Shift/Ctrl throttle   X/Z trim\n\
-         F/V flaps   B brakes   G autopilot   R reset   H inputs   T weather",
+         F/V flaps   B brakes   G autopilot   J TVC   U gear   R reset   H inputs   T weather",
     );
 
     text.0 = out;
