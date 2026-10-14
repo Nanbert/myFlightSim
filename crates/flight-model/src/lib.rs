@@ -19,6 +19,9 @@
 //! - `fcs/{elevator,aileron,rudder}-cmd-norm`, `fcs/throttle-cmd-norm`,
 //!   `fcs/pitch-trim-cmd-norm`, `fcs/flap-cmd-norm`,
 //!   `fcs/{left,right}-brake-cmd-norm` — pilot commands
+//! - `gear/gear-cmd-norm` — gear selector (1 = down); `gear/gear-pos-norm` —
+//!   seat the achieved position directly (a reset convenience; a no-op on
+//!   fixed-gear models)
 //!
 //! Read by the app:
 //! - `position/{lat-gc-deg,long-gc-deg,h-sl-ft}` — world position
@@ -50,5 +53,20 @@ pub trait FlightModel: Send + Sync {
     /// holds the point. Default is a no-op for backends that can't trim.
     fn trim(&mut self, vc_kts: f64, alt_ft: f64) {
         let _ = (vc_kts, alt_ft);
+    }
+
+    /// Whether the model implements thrust vectoring (a `fcs/tvc-enable` switch).
+    /// Default `false`; the F-22's fly-by-wire overrides it. The app uses this
+    /// only to decide whether to show the TVC control on the HUD.
+    fn has_tvc(&self) -> bool {
+        false
+    }
+
+    /// Whether the gear retracts, driven by `gear/gear-cmd-norm` and reported
+    /// through `gear/gear-pos-norm` (1 = down, 0 = up). Default `false` (fixed
+    /// gear); the app uses this only to decide whether to show the gear state on
+    /// the HUD and whether to animate it.
+    fn has_retractable_gear(&self) -> bool {
+        false
     }
 }

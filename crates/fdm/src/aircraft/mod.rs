@@ -6,9 +6,11 @@
 //! laws, and gear layouts land as further structs here.
 
 pub mod c172;
+pub mod f22;
 
 use crate::aero::Aerodynamics;
-use crate::engine::{PistonSpec, PropSpec};
+use crate::engine::PowerplantSpec;
+use crate::fcs::ControlSystem;
 use crate::gear::Gear;
 use crate::state::{Inertia, Vec3};
 
@@ -32,20 +34,6 @@ pub struct MassSpec {
     pub points: &'static [PointMass],
 }
 
-/// Flight-control-surface geometry: gains from a normalized command to radians,
-/// and deflection limits. Mirrors the `<flight_control>` block.
-pub struct Fcs {
-    pub elevator_gain: f64,
-    pub elevator_lim_deg: (f64, f64),
-    pub aileron_gain: f64,
-    pub aileron_lim_deg: (f64, f64),
-    pub rudder_gain: f64,
-    pub rudder_lim_deg: (f64, f64),
-    pub flap_max_deg: f64,
-    /// Seconds for the flaps to travel from 0 to full.
-    pub flap_time_s: f64,
-}
-
 /// A complete airframe definition — data only.
 pub struct Aircraft {
     pub name: &'static str,
@@ -54,11 +42,15 @@ pub struct Aircraft {
     pub wing_chord_ft: f64,
     pub mass: MassSpec,
     pub aero: Aerodynamics,
-    pub fcs: Fcs,
-    pub piston: PistonSpec,
-    pub prop: PropSpec,
+    /// The control system: direct gains (c172p) or a rate-command FBW (F-22).
+    pub control: ControlSystem,
+    pub power: PowerplantSpec,
     /// Landing-gear contact points (from `<ground_reactions>`).
     pub gear: &'static [Gear],
+    /// Whether the gear retracts in flight. Fixed-gear aircraft (c172p) ignore
+    /// the gear command and are always down; retractable ones (F-22) drive
+    /// `gear/gear-pos-norm` from the pilot's `gear/gear-cmd-norm`.
+    pub gear_retractable: bool,
 }
 
 impl Aircraft {

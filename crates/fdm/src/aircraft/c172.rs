@@ -6,9 +6,10 @@
 //!
 //! Values are imperial: areas ft², arms ft, moments slug·ft², positions inches.
 
-use super::{Aircraft, Fcs, MassSpec, PointMass};
+use super::{Aircraft, MassSpec, PointMass};
 use crate::aero::{Aerodynamics, Axis, Factor, Function, NamedFn};
-use crate::engine::{PistonSpec, PropSpec};
+use crate::engine::{PistonSpec, PowerplantSpec, PropSpec};
+use crate::fcs::{ControlSystem, DirectFcs};
 use crate::gear::{BrakeGroup, ContactType, Gear};
 use crate::table::{Table1, Table2};
 
@@ -351,7 +352,7 @@ const PROP: PropSpec = PropSpec {
     location: [-37.7, 0.0, 26.6],
 };
 
-const FCS: Fcs = Fcs {
+const FCS: DirectFcs = DirectFcs {
     elevator_gain: 0.01745,
     elevator_lim_deg: (-28.0, 23.0),
     aileron_gain: 0.01745,
@@ -431,8 +432,12 @@ pub const C172: Aircraft = Aircraft {
         yaw: YAW,
         aerorp_in: [43.2, 0.0, 59.4],
     },
-    fcs: FCS,
-    piston: PISTON,
-    prop: PROP,
+    control: ControlSystem::Direct(FCS),
+    power: PowerplantSpec::Piston {
+        engine: PISTON,
+        prop: PROP,
+    },
     gear: GEAR,
+    // The 172 has fixed (welded) spring-steel gear.
+    gear_retractable: false,
 };

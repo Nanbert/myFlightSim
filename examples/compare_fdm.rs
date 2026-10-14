@@ -2,7 +2,15 @@
 //! conditions and print their trajectories side by side, so the Rust model can
 //! be checked against the C++ reference frame by frame.
 //!
-//! Run: `cargo run --release --example compare_fdm`
+//! Run: `cargo run --release --example compare_fdm [aircraft]`
+//!   aircraft = c172p (default) or f22.
+//!
+//! Caveat (f22): JSBSim's bundled F-22 model (2009) has `<lag>0.0</lag>` on
+//! every aerodynamic actuator. Current JSBSim reads `<lag>` as 1/τ, so lag=0
+//! latches each actuator at its first output (~0) — the surfaces never move,
+//! and the statically-unstable airframe departs. So the JSBSim f22 column here
+//! is garbage out of the box; a meaningful comparison needs a patched reference
+//! (drop the `<lag>` lines). The c172 comparison is valid as-is.
 
 use flight_model::FlightModel;
 
@@ -53,19 +61,34 @@ fn moment_sample(m: &dyn FlightModel) -> MomentRow {
     }
 }
 
-fn main() {
-    let mut jsb: Box<dyn FlightModel> = Box::new(jsbsim_sys::Fdm::load("c172p", DT));
-    let mut rust: Box<dyn FlightModel> = Box::new(fdm::Fdm::new("c172p"));
+/// Seed both models at the same flight condition, engine lit, full throttle.
+fn seed(m: &mut dyn FlightModel, vc: f64, alt: f64) {
+    m.set("ic/vc-kts", vc);
+    m.set("ic/h-sl-ft", alt);
+    m.set("ic/psi-true-deg", 0.0);
+    m.apply_ic();
+    m.set("propulsion/set-running", -1.0);
+    m.set("fcs/throttle-cmd-norm", 1.0);
+    // Our Rust model flies the F-22 in the clean (gear-up) configuration; raise
+    // the JSBSim reference's gear too so the drag model matches.
+    m.set("gear/gear-cmd-norm", 0.0);
+}
 
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let ac = args.get(1).cloned().unwrap_or_else(|| "c172p".into());
+    let (vc, alt) = match ac.as_str() {
+        "f22" => (350.0, 15000.0),
+        _ => (120.0, 3000.0),
+    };
+
+    let mut jsb: Box<dyn FlightModel> = Box::new(jsbsim_sys::Fdm::load(&ac, DT));
+    let mut rust: Box<dyn FlightModel> = Box::new(fdm::Fdm::new(&ac));
     for m in [&mut jsb, &mut rust] {
-        m.set("ic/vc-kts", 120.0);
-        m.set("ic/h-sl-ft", 3000.0);
-        m.set("ic/psi-true-deg", 0.0);
-        m.apply_ic();
-        m.set("propulsion/set-running", -1.0);
-        m.set("fcs/throttle-cmd-norm", 1.0);
+        seed(m.as_mut(), vc, alt);
     }
 
+    println!("aircraft = {ac}   IC: {vc} kt at {alt} ft, full throttle\n");
     println!(
         "{:>5} | {:>9} {:>7} {:>7} {:>7} | {:>9} {:>7} {:>7} {:>7} | {:>8} {:>8}",
         "t", "h_jsb", "vc_jsb", "th_jsb", "rpm_jsb", "h_rust", "vc_rust", "th_rust", "rpm_rust",
@@ -102,15 +125,10 @@ fn main() {
         "t", "al_jsb", "al_rs", "qbar_jsb", "fbz_jsb", "thr_j", "maero_j", "mprop_j", "qbar_rs",
         "fbz_rs", "thr_r", "maero_r", "mprop_r"
     );
-    let mut jsb2: Box<dyn FlightModel> = Box::new(jsbsim_sys::Fdm::load("c172p", DT));
-    let mut rust2: Box<dyn FlightModel> = Box::new(fdm::Fdm::new("c172p"));
+    let mut jsb2: Box<dyn FlightModel> = Box::new(jsbsim_sys::Fdm::load(&ac, DT));
+    let mut rust2: Box<dyn FlightModel> = Box::new(fdm::Fdm::new(&ac));
     for m in [&mut jsb2, &mut rust2] {
-        m.set("ic/vc-kts", 120.0);
-        m.set("ic/h-sl-ft", 3000.0);
-        m.set("ic/psi-true-deg", 0.0);
-        m.apply_ic();
-        m.set("propulsion/set-running", -1.0);
-        m.set("fcs/throttle-cmd-norm", 1.0);
+        seed(m.as_mut(), vc, alt);
     }
     for i in 0..=600 {
         if i > 0 {

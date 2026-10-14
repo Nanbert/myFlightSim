@@ -146,6 +146,26 @@ impl Isa {
         (SH_RATIO * RDRY * self.temperature(geometric_alt_ft)).sqrt()
     }
 
+    /// Geometric altitude (ft) at which the standard atmosphere has density
+    /// `rho`, by bisection on the monotone density profile (JSBSim's
+    /// `GetDensityAltitude` — which likewise returns *geometric* altitude). The
+    /// turbine thrust tables are indexed by `atmosphere/density-altitude`.
+    pub fn density_altitude(&self, rho: f64) -> f64 {
+        let (mut lo, mut hi) = (-1000.0_f64, 300_000.0_f64);
+        if rho >= self.density(lo) {
+            return lo;
+        }
+        for _ in 0..64 {
+            let mid = 0.5 * (lo + hi);
+            if self.density(mid) > rho {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        0.5 * (lo + hi)
+    }
+
     /// Calibrated -> true airspeed (ft/s) at a geometric altitude, via the
     /// subsonic pitot relation (JSBSim's `SetVcalibratedKtsIC`). This is what
     /// turns a programmed `ic/vc-kts` into the model's actual TAS.
@@ -222,5 +242,14 @@ mod tests {
         let p2 = isa.pressure(20000.0);
         assert!(p0 > p1 && p1 > p2);
         assert!(isa.density(0.0) > isa.density(10000.0));
+    }
+
+    #[test]
+    fn density_altitude_inverts_density() {
+        let isa = Isa::new();
+        for alt in [0.0, 5000.0, 20000.0, 40000.0] {
+            let back = isa.density_altitude(isa.density(alt));
+            assert!((back - alt).abs() < 1.0, "alt {alt} -> {back}");
+        }
     }
 }

@@ -153,10 +153,14 @@ pub struct Aerodynamics {
     pub aerorp_in: Vec3,
 }
 
-/// Body-axis force and moment produced by a single aero evaluation.
+/// Body-axis force and moment produced by a single aero evaluation, plus the
+/// wind-axis lift coefficient `CL = L / (qbar·S)`. JSBSim publishes `CL²` as
+/// `aero/cl-squared` for the *next* frame's induced drag (same-frame use would
+/// be circular); the FDM stores this and feeds it back on the following step.
 pub struct AeroResult {
     pub force_body: Vec3,
     pub moment_body: Vec3,
+    pub cl: f64,
 }
 
 impl Aerodynamics {
@@ -196,9 +200,15 @@ impl Aerodynamics {
         // Moments are about the AeroRP (body axes); transfer to the CG.
         let moment_body = add([roll, pitch, yaw], cross(rp_offset, force_body));
 
+        // Lift coefficient for the induced-drag feedback term. Guarded on a
+        // non-trivial qbar·S so a stationary aircraft doesn't divide by ~zero.
+        let qbar_sw = props.get("aero/qbar-psf") * props.get("metrics/Sw-sqft");
+        let cl = if qbar_sw.abs() > 1e-9 { lift / qbar_sw } else { 0.0 };
+
         AeroResult {
             force_body,
             moment_body,
+            cl,
         }
     }
 }

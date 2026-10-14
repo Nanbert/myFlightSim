@@ -26,15 +26,17 @@ mod aero;
 mod aircraft;
 mod atmos;
 mod engine;
+mod fcs;
 mod gear;
 mod state;
 mod table;
 
 use crate::aero::{AeroResult, PropMap};
-use crate::aircraft::{c172::C172, Aircraft, INCH_TO_FT};
+use crate::aircraft::{c172::C172, f22::F22, Aircraft, INCH_TO_FT};
 use crate::atmos::{Isa, G0};
 use crate::engine::{EngineOutput, Powerplant};
-use crate::gear::{ground_force, Ground};
+use crate::fcs::{scale, ControlSystem, Fbw, FcsInputs, Surfaces};
+use crate::gear::{ground_force, Gear, Ground};
 use crate::state::{rk4, State, Vec3};
 use flight_model::FlightModel;
 
@@ -46,6 +48,8 @@ const FPS_TO_KT: f64 = 1.0 / KT_TO_FPS;
 /// Feet per degree of latitude, chosen so the app's NED->world round-trip is
 /// exact for its `EARTH_RADIUS_M = 6_378_137 m`: `(pi/180)*R/0.3048`.
 const FT_PER_DEG_LAT: f64 = 365_221.79;
+/// Landing-gear full travel time (s), down <-> up. Roughly the real jet's cycle.
+const GEAR_CYCLE_S: f64 = 4.5;
 
 /// A per-step snapshot of the aero/propulsion force and moment split, published
 /// through the property bus so the validation harness can diff it against
@@ -54,20 +58,11 @@ const FT_PER_DEG_LAT: f64 = 365_221.79;
 struct Diag {
     alpha: f64,
     qbar: f64,
+    cl: f64,
     force_aero: Vec3,
     moment_aero: Vec3,
     moment_prop: Vec3,
     thrust: f64,
-}
-
-/// Resolved control-surface positions for one step (radians, except flap in deg).
-#[derive(Clone, Copy, Default)]
-struct Surfaces {
-    elevator_rad: f64,
-    mag_elevator_rad: f64,
-    aileron_rad: f64,
-    rudder_rad: f64,
-    flap_deg: f64,
 }
 
 /// A flight model instance for one aircraft.
@@ -76,6 +71,14 @@ pub struct Fdm {
     state: State,
     isa: Isa,
     power: Powerplant,
+    /// Running fly-by-wire integrators. Unused (stays zero) for direct-FCS
+    /// aircraft like the c172p.
+    fbw: Fbw,
+    /// Previous frame's lift coefficient squared, fed to `aero/cl-squared` for
+    /// the induced-drag term (JSBSim's one-frame feedback).
+    cl_sq: f64,
+    /// The surfaces resolved on the last step, for read-back (`fcs/*-pos-rad`).
+    surf: Surfaces,
     props: PropMap,
     // Mass properties are fixed (the point masses don't move), so cache them.
     mass: f64,
@@ -111,6 +114,14 @@ pub struct Fdm {
     engine_power_hp: f64,
     // True when any gear is in contact with the ground on the last step.
     wow: bool,
+    // Pilot master switch for thrust vectoring (`fcs/tvc-enable`). On by
+    // default; only the F-22's FBW uses it.
+    tvc_enable: bool,
+    // Landing gear. `gear_cmd` is the pilot's selector (true = down); `gear_pos`
+    // is the achieved position (1 = down, 0 = up) rolled toward the command at
+    // the gear-cycle rate. Fixed-gear aircraft stay at 1.
+    gear_cmd: bool,
+    gear_pos: f64,
     // Last step's force/moment breakdown, for frame-by-frame comparison against
     // JSBSim (`forces/*`, `moments/*`).
     diag: Diag,
@@ -121,21 +132,25 @@ pub struct Fdm {
 }
 
 impl Fdm {
-    /// Construct a model for `aircraft` (e.g. `"c172p"`).
+    /// Construct a model for `aircraft` (e.g. `"c172p"`, `"f22"`).
     pub fn new(aircraft: &str) -> Self {
         let ac: &'static Aircraft = match aircraft {
+            "f22" => &F22,
             "c172p" | "c172" => &C172,
             _ => &C172,
         };
         let cg_in = ac.loaded_cg_in();
-        let prop_arm_ft = struct_to_body(ac.prop.location, cg_in);
+        let prop_arm_ft = struct_to_body(ac.power.location_in(), cg_in);
         let rp_offset_ft = struct_to_body(ac.aero.aerorp_in, cg_in);
         let gear_arms_ft = ac.gear.iter().map(|g| struct_to_body(g.pos_in, cg_in)).collect();
         Fdm {
             ac,
             state: State::default(),
             isa: Isa::new(),
-            power: Powerplant::new(ac.piston, ac.prop),
+            power: Powerplant::new(ac.power),
+            fbw: Fbw::default(),
+            cl_sq: 0.0,
+            surf: Surfaces::default(),
             props: PropMap::new(),
             mass: ac.mass_slug(),
             inertia: ac.inertia(),
@@ -159,6 +174,9 @@ impl Fdm {
             engine_rpm: 0.0,
             engine_power_hp: 0.0,
             wow: false,
+            tvc_enable: true,
+            gear_cmd: true,
+            gear_pos: 1.0,
             diag: Diag::default(),
             origin_lat: 0.0,
             origin_lon: 0.0,
@@ -176,31 +194,55 @@ impl Fdm {
         -self.state.pos[2]
     }
 
-    /// Resolve the control commands into surface deflections. Mirrors the c172p
-    /// `<flight_control>` channels: the pitch trim is summed into the elevator
-    /// command and clipped to ±1 (`summer`), then a single `aerosurface_scale`
-    /// maps that onto the elevator deg range (`zero_centered`, so sign picks max
-    /// vs min) and the gain converts to radians.
-    fn surfaces(&self) -> Surfaces {
-        let fcs = &self.ac.fcs;
-        let elevator_rad =
-            scale(self.elevator_cmd + self.pitch_trim_cmd, fcs.elevator_lim_deg) * fcs.elevator_gain;
-        let aileron_rad =
-            scale(self.aileron_cmd + self.roll_trim_cmd, fcs.aileron_lim_deg) * fcs.aileron_gain;
-        let rudder_rad =
-            scale(self.rudder_cmd + self.yaw_trim_cmd, fcs.rudder_lim_deg) * fcs.rudder_gain;
-        Surfaces {
-            elevator_rad,
-            mag_elevator_rad: elevator_rad.abs(),
-            aileron_rad,
-            rudder_rad,
-            flap_deg: self.flap_pos_deg,
-        }
+    /// Resolve the pilot commands (and the sensed body rates) into surface
+    /// deflections. The `Direct` path is the c172p's command-to-surface mapping;
+    /// the `Fbw` path is the F-22's rate-command loop, which advances its
+    /// integrators by `dt`. Called once per step, so the surfaces are frozen
+    /// across the RK4 stages — the same once-per-frame cadence JSBSim's FCS
+    /// module runs at.
+    fn resolve_surfaces(
+        &mut self,
+        mach: f64,
+        rho: f64,
+        pressure_psf: f64,
+        thrust_lbs: f64,
+        dt: f64,
+    ) -> Surfaces {
+        let ac = self.ac;
+        let (u, v, w) = (self.state.vel[0], self.state.vel[1], self.state.vel[2]);
+        let vt = (u * u + v * v + w * w).sqrt().max(1e-6);
+        let alpha = w.atan2(u);
+        let qbar = 0.5 * rho * vt * vt;
+        let inputs = FcsInputs {
+            p: self.state.omega[0],
+            q: self.state.omega[1],
+            r: self.state.omega[2],
+            alpha,
+            mach,
+            qbar,
+            pressure_psf,
+            wow: self.wow,
+            gear_down: self.gear_pos > 0.5,
+            tvc_enable: self.tvc_enable,
+            elevator_cmd: self.elevator_cmd,
+            aileron_cmd: self.aileron_cmd,
+            rudder_cmd: self.rudder_cmd,
+            pitch_trim_cmd: self.pitch_trim_cmd,
+            roll_trim_cmd: self.roll_trim_cmd,
+            yaw_trim_cmd: self.yaw_trim_cmd,
+            flap_pos_deg: self.flap_pos_deg,
+            thrust_lbs,
+            engine_count: ac.power.engine_count(),
+        };
+        ac.control.resolve(&mut self.fbw, &inputs, dt)
     }
 
     /// Roll the flaps toward the commanded deflection at the model's flap rate.
+    /// Fly-by-wire aircraft (F-22) have no trailing-edge flaps in this model.
     fn step_flap(&mut self, dt: f64) {
-        let fcs = &self.ac.fcs;
+        let ControlSystem::Direct(fcs) = &self.ac.control else {
+            return;
+        };
         let target = self.flap_cmd * fcs.flap_max_deg;
         let rate = fcs.flap_max_deg / fcs.flap_time_s;
         let max_move = rate * dt;
@@ -212,17 +254,41 @@ impl Fdm {
         };
     }
 
+    /// Roll the landing gear toward its commanded position. Fixed-gear aircraft
+    /// stay down; retractable ones move at the gear-cycle rate, and retraction
+    /// is inhibited on the ground (the weight-on-wheels interlock), so the gear
+    /// only stows in flight — as on the real jet.
+    fn step_gear(&mut self, dt: f64) {
+        let down = !self.ac.gear_retractable || (self.wow && !self.gear_cmd) || self.gear_cmd;
+        let target = if down { 1.0 } else { 0.0 };
+        let step = dt / GEAR_CYCLE_S;
+        let err = target - self.gear_pos;
+        self.gear_pos = if err.abs() <= step {
+            target
+        } else {
+            self.gear_pos + step * err.signum()
+        };
+    }
+
     /// Advance the whole model one fixed timestep.
     fn advance(&mut self, dt: f64) {
+        // Gear travels toward the commanded position first, so this step's LEF
+        // schedule, aero drag and ground reaction all see the same position.
+        self.step_gear(dt);
         let alt = self.alt_ft();
         let rho = self.isa.density(alt);
         let pressure = self.isa.pressure(alt);
         let temp = self.isa.temperature(alt);
         let sound = self.isa.sound_speed(alt);
 
+        let vt = self.state.airspeed().max(1e-6);
+        let mach = vt / sound.max(1.0);
+
         // Powerplant spins up once per step (quasi-steady); its thrust, induced
         // slipstream, and reaction torque then hold constant over the step, the
-        // same once-per-frame cadence JSBSim's propulsion module uses.
+        // same once-per-frame cadence JSBSim's propulsion module uses. The
+        // turbofan's thrust tables are indexed by Mach, so it needs the step's
+        // Mach number too.
         let out = self.power.step(
             dt,
             self.throttle_cmd,
@@ -231,18 +297,21 @@ impl Fdm {
             temp,
             self.state.vel[0],
             sound,
+            mach,
         );
         self.engine_rpm = out.rpm;
         self.engine_power_hp = out.power_hp;
         let thrust = out.thrust;
         let torque_x = out.torque_x;
         let induced = out.induced_velocity;
-        // Propeller moment about the CG: the engine's reaction torque about the
-        // roll axis, plus the thrust's off-axis arm (M = r x F, F = [thrust,0,0]).
+        // Thruster moment about the CG: the propeller's reaction torque about
+        // the roll axis, plus the thrust's off-axis arm (M = r x F, F = [T,0,0]).
         let arm = self.prop_arm_ft;
         let mprop = [torque_x, arm[2] * thrust, -arm[1] * thrust];
 
-        let surf = self.surfaces();
+        // Resolve the surfaces once per step (the FBW advances its integrators
+        // here), so every RK4 stage flies the same frozen deflection.
+        let surf = self.resolve_surfaces(mach, rho, pressure, thrust, dt);
         self.step_flap(dt);
 
         let ac = self.ac;
@@ -252,14 +321,20 @@ impl Fdm {
         let rp_offset = self.rp_offset_ft;
         // Ground-reaction inputs: the gear layout, its precomputed arms, the
         // nosewheel steer angle, and the brake channels — held constant over the
-        // step (the steer angle comes from the rudder command).
-        let gears = ac.gear;
+        // step (the steer angle comes from the rudder command). With the gear
+        // retracted there is nothing to touch the ground, so no contact is
+        // summed (a gear-up descent is simply unsupported).
+        let gear_pos = self.gear_pos;
+        let gears: &[Gear] = if gear_pos > 0.99 { ac.gear } else { &[] };
         let arms = &self.gear_arms_ft;
         let rudder = self.rudder_cmd;
         let brake = [self.left_brake_cmd, self.right_brake_cmd];
         // Reuse the scratch map's allocation across steps; take it out of `self`
         // so the aero closure can hold it mutably without borrowing all of `self`.
         let mut props = std::mem::take(&mut self.props);
+        // The induced-drag term reads last frame's lift coefficient (JSBSim's
+        // one-frame feedback, avoiding a same-frame circular dependency).
+        props.set("aero/cl-squared", self.cl_sq);
 
         // Aero is recomputed at each RK4 stage from the trial state; thrust and
         // its moment are constant over the step. The snapshot keeps the last
@@ -268,12 +343,14 @@ impl Fdm {
         // Ground reaction is also recomputed per stage; keep the last stage's.
         let mut ground = Ground::default();
         let next = rk4(&state, dt, mass, &inertia, |s: &State| {
-            fill_props(&mut props, ac, s, &surf, induced, rho);
+            fill_props(&mut props, ac, s, &surf, induced, rho, sound);
+            props.set("gear/gear-pos-norm", gear_pos);
             let aero = ac.aero.evaluate(&mut props, rp_offset);
             ground = ground_force(s, gears, arms, rudder, brake, dt);
             diag = Diag {
                 alpha: props.get("aero/alpha-rad"),
                 qbar: props.get("aero/qbar-psf"),
+                cl: aero.cl,
                 force_aero: aero.force_body,
                 moment_aero: aero.moment_body,
                 moment_prop: mprop,
@@ -293,7 +370,9 @@ impl Fdm {
             )
         });
         self.props = props;
+        self.cl_sq = diag.cl * diag.cl;
         self.diag = diag;
+        self.surf = surf;
         self.wow = ground.wow;
         self.state = next;
     }
@@ -304,11 +383,64 @@ impl Fdm {
     }
 
     /// Evaluate the aero forces/moments and the (steady) powerplant at a trial
-    /// trim point: bank angle `phi`, angle of attack `alpha`, the four surface
-    /// commands, and throttle. Returns the aero result, the engine output, and
-    /// gravity in body axes. Shared by the longitudinal and lateral trim
-    /// residuals. `phi` tilts gravity (and so the lateral force) — the bank that
-    /// balances side force, matching JSBSim's `tFull` trim.
+    /// trim point: angle of attack `alpha`, bank `phi`, a resolved `surf`, and
+    /// throttle. Returns the aero result, the engine output, and gravity in body
+    /// axes. `cl_sq` seeds the induced-drag feedback (0 for a first pass).
+    /// Shared by the longitudinal and lateral trim residuals. `phi` tilts
+    /// gravity (and so the lateral force) — the bank that balances side force,
+    /// matching JSBSim's `tFull` trim.
+    #[allow(clippy::too_many_arguments)]
+    fn trim_eval_surf(
+        &self,
+        alpha: f64,
+        phi: f64,
+        surf: &Surfaces,
+        throttle: f64,
+        vt: f64,
+        alt: f64,
+        cl_sq: f64,
+    ) -> (AeroResult, EngineOutput, Vec3) {
+        let rho = self.isa.density(alt);
+        let pressure = self.isa.pressure(alt);
+        let temp = self.isa.temperature(alt);
+        let sound = self.isa.sound_speed(alt);
+
+        // The prop sees the body-forward airspeed u = V cos(alpha).
+        let u = vt * alpha.cos();
+        let mach = vt / sound.max(1.0);
+        let eng = self
+            .power
+            .steady_output(throttle, rho, pressure, temp, u, sound, mach);
+
+        // Flight-path-level, sideslip-free: pitch attitude equals alpha, bank is
+        // `phi` (body velocity stays [u, 0, w], so alpha is unaffected by bank).
+        let state = State {
+            pos: [0.0, 0.0, -alt],
+            vel: [u, 0.0, vt * alpha.sin()],
+            quat: euler_to_quat(phi, alpha, 0.0),
+            omega: [0.0; 3],
+        };
+        let mut props = PropMap::new();
+        props.set("aero/cl-squared", cl_sq);
+        // Trim the *live* configuration, so a trim seat is a true fixed point
+        // (gear drag and the LEF schedule depend on the gear position).
+        fill_props(
+            &mut props,
+            self.ac,
+            &state,
+            surf,
+            eng.induced_velocity,
+            rho,
+            sound,
+        );
+        props.set("gear/gear-pos-norm", self.gear_pos);
+        let aero = self.ac.aero.evaluate(&mut props, self.rp_offset_ft);
+        let grav = state.ned_to_body([0.0, 0.0, G0]);
+        (aero, eng, grav)
+    }
+
+    /// Direct-FCS trim evaluation (c172p): build the surfaces from the pilot
+    /// commands the way the live loop does, then evaluate.
     #[allow(clippy::too_many_arguments)]
     fn trim_eval(
         &self,
@@ -321,39 +453,20 @@ impl Fdm {
         vt: f64,
         alt: f64,
     ) -> (AeroResult, EngineOutput, Vec3) {
-        let rho = self.isa.density(alt);
-        let pressure = self.isa.pressure(alt);
-        let temp = self.isa.temperature(alt);
-        let sound = self.isa.sound_speed(alt);
-
-        // The prop sees the body-forward airspeed u = V cos(alpha).
-        let u = vt * alpha.cos();
-        let eng = self
-            .power
-            .steady_output(throttle, rho, pressure, temp, u, sound);
-
-        let fcs = &self.ac.fcs;
+        let ControlSystem::Direct(fcs) = &self.ac.control else {
+            unreachable!("trim_eval (direct) called on a fly-by-wire aircraft")
+        };
         let elevator_rad = scale(trim_cmd, fcs.elevator_lim_deg) * fcs.elevator_gain;
+        let aileron_rad = scale(aileron_cmd, fcs.aileron_lim_deg) * fcs.aileron_gain;
         let surf = Surfaces {
             elevator_rad,
             mag_elevator_rad: elevator_rad.abs(),
-            aileron_rad: scale(aileron_cmd, fcs.aileron_lim_deg) * fcs.aileron_gain,
+            aileron_rad,
+            right_aileron_rad: -aileron_rad,
             rudder_rad: scale(rudder_cmd, fcs.rudder_lim_deg) * fcs.rudder_gain,
-            flap_deg: 0.0,
+            ..Default::default()
         };
-        // Flight-path-level, sideslip-free: pitch attitude equals alpha, bank is
-        // `phi` (body velocity stays [u, 0, w], so alpha is unaffected by bank).
-        let state = State {
-            pos: [0.0, 0.0, -alt],
-            vel: [u, 0.0, vt * alpha.sin()],
-            quat: euler_to_quat(phi, alpha, 0.0),
-            omega: [0.0; 3],
-        };
-        let mut props = PropMap::new();
-        fill_props(&mut props, self.ac, &state, &surf, eng.induced_velocity, rho);
-        let aero = self.ac.aero.evaluate(&mut props, self.rp_offset_ft);
-        let grav = state.ned_to_body([0.0, 0.0, G0]);
-        (aero, eng, grav)
+        self.trim_eval_surf(alpha, phi, &surf, throttle, vt, alt, 0.0)
     }
 
     /// Longitudinal residual `[Fx, Fz, My]` (weight-normalized), zero at trim.
@@ -385,9 +498,158 @@ impl Fdm {
             aero.moment_body[2] / scale,
         ]
     }
+
+    /// Longitudinal residual for a fly-by-wire aircraft, in the same
+    /// weight-normalized form as the direct path but with the elevator *surface
+    /// angle* as the direct unknown (the rate-command loop has no trim-command
+    /// channel to solve). `x = [alpha_rad, elevator_rad, throttle]`. The
+    /// induced-drag feedback is bootstrapped in one pass (evaluate, then reseed
+    /// with the resulting CL²) since the trim solves alpha and drag together.
+    fn fbw_long_residual(&self, x: [f64; 3], vt: f64, alt: f64) -> [f64; 3] {
+        let spec = match self.ac.control {
+            ControlSystem::Fbw(s) => s,
+            ControlSystem::Direct(_) => {
+                unreachable!("fbw_long_residual called on a direct-FCS aircraft")
+            }
+        };
+        let (alpha, elevator_rad, throttle) = (x[0], x[1], x[2]);
+        let rho = self.isa.density(alt);
+        let pressure = self.isa.pressure(alt);
+        let sound = self.isa.sound_speed(alt);
+        let mach = vt / sound.max(1.0);
+        let qbar = 0.5 * rho * vt * vt;
+        let surf = Surfaces {
+            elevator_rad,
+            mag_elevator_rad: elevator_rad.abs(),
+            lef_rad: spec.lef_rad(alpha, qbar, pressure, false, mach),
+            ..Default::default()
+        };
+        let (aero0, eng, grav) = self.trim_eval_surf(alpha, 0.0, &surf, throttle, vt, alt, 0.0);
+        let (aero, _, _) =
+            self.trim_eval_surf(alpha, 0.0, &surf, throttle, vt, alt, aero0.cl * aero0.cl);
+        let weight = self.mass * G0;
+        let fx = aero.force_body[0] + eng.thrust + grav[0] * self.mass;
+        let fz = aero.force_body[2] + grav[2] * self.mass;
+        let my = aero.moment_body[1] + self.prop_arm_ft[2] * eng.thrust;
+        [fx / weight, fz / weight, my / (weight * self.ac.wing_chord_ft)]
+    }
+
+    /// Seat a fly-by-wire aircraft on a wings-level steady trim at `vc_kts` and
+    /// `alt_ft`. Because the loop commands *rates*, the equilibrium is an
+    /// (alpha, elevator_rad, throttle) that nulls the longitudinal residual with
+    /// the rate error zero; the solved elevator is pre-loaded into the pitch
+    /// integrator (`elevator = -Ki·I` at zero rate error) so the loop reproduces
+    /// it and the trimmed state is a true fixed point. Lateral stays neutral.
+    fn trim_fbw(&mut self, vc_kts: f64, alt_ft: f64) {
+        let spec = match self.ac.control {
+            ControlSystem::Fbw(s) => s,
+            ControlSystem::Direct(_) => unreachable!("trim_fbw on a direct-FCS aircraft"),
+        };
+        let vt = self.isa.cas_to_tas(vc_kts * KT_TO_FPS, alt_ft);
+        const H: f64 = 1e-4;
+        let n3 = |r: [f64; 3]| (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+
+        let mut xl = [0.05, 0.0, 0.5];
+        for _ in 0..60 {
+            let r = self.fbw_long_residual(xl, vt, alt_ft);
+            let rnorm = n3(r);
+            if rnorm < 1e-7 {
+                break;
+            }
+            let mut j = [[0.0; 3]; 3];
+            for k in 0..3 {
+                let mut xp = xl;
+                xp[k] += H;
+                let rp = self.fbw_long_residual(xp, vt, alt_ft);
+                for i in 0..3 {
+                    j[i][k] = (rp[i] - r[i]) / H;
+                }
+            }
+            let Some(dx) = solve_n(j, [-r[0], -r[1], -r[2]]) else {
+                break;
+            };
+            let mut step = 1.0;
+            let mut xnew = xl;
+            for _ in 0..24 {
+                for k in 0..3 {
+                    xnew[k] = xl[k] + step * dx[k];
+                }
+                clamp_fbw_long(&mut xnew, spec.elevator_lim_rad);
+                if n3(self.fbw_long_residual(xnew, vt, alt_ft)) < rnorm {
+                    break;
+                }
+                step *= 0.5;
+            }
+            xl = xnew;
+        }
+
+        let (alpha, elevator_rad) = (xl[0], xl[1]);
+        // Level-flight seat at the solved alpha; lateral neutral (symmetric
+        // airframe, sideslip-free).
+        let [px, py, _] = self.state.pos;
+        self.state = State {
+            pos: [px, py, -alt_ft],
+            vel: [vt * alpha.cos(), 0.0, vt * alpha.sin()],
+            quat: euler_to_quat(0.0, alpha, self.ic_psi_deg * D2R),
+            omega: [0.0; 3],
+        };
+        self.elevator_cmd = 0.0;
+        self.aileron_cmd = 0.0;
+        self.rudder_cmd = 0.0;
+        self.pitch_trim_cmd = 0.0;
+        self.roll_trim_cmd = 0.0;
+        self.yaw_trim_cmd = 0.0;
+        self.throttle_cmd = xl[2].clamp(0.0, 1.0);
+        self.flap_pos_deg = 0.0;
+        self.ic_vc_kts = vc_kts;
+        self.ic_alt_ft = alt_ft;
+
+        // Pre-load the integrators so the loop's output equals the solved
+        // elevator at zero rate error: elevator = -(Kp·0 + Ki·I) => I = -elev/Ki.
+        self.fbw.pitch_int =
+            (-elevator_rad / spec.pitch_ki).clamp(-spec.pitch_int_limit, spec.pitch_int_limit);
+        self.fbw.roll_int = 0.0;
+        self.fbw.yaw_int = 0.0;
+
+        // Seed the induced-drag feedback so the first step's drag is consistent.
+        let rho = self.isa.density(alt_ft);
+        let pressure = self.isa.pressure(alt_ft);
+        let temp = self.isa.temperature(alt_ft);
+        let sound = self.isa.sound_speed(alt_ft);
+        let mach = vt / sound.max(1.0);
+        let u = vt * alpha.cos();
+        let qbar = 0.5 * rho * vt * vt;
+        let surf = Surfaces {
+            elevator_rad,
+            mag_elevator_rad: elevator_rad.abs(),
+            lef_rad: spec.lef_rad(alpha, qbar, pressure, false, mach),
+            ..Default::default()
+        };
+        let (aero, _, _) =
+            self.trim_eval_surf(alpha, 0.0, &surf, self.throttle_cmd, vt, alt_ft, 0.0);
+        self.cl_sq = aero.cl * aero.cl;
+
+        // Seat the live powerplant on the trim point so the first step is
+        // already consistent (otherwise it would start cold and re-spool).
+        let eng = self
+            .power
+            .steady_at(self.throttle_cmd, rho, pressure, temp, u, sound, mach);
+        self.engine_rpm = eng.rpm;
+        self.engine_power_hp = eng.power_hp;
+    }
 }
 
 impl FlightModel for Fdm {
+    /// The F-22's FBW drives thrust vectoring; direct-FCS aircraft don't.
+    fn has_tvc(&self) -> bool {
+        matches!(self.ac.control, ControlSystem::Fbw(_))
+    }
+
+    /// Whether the gear retracts (F-22) or is fixed (c172p).
+    fn has_retractable_gear(&self) -> bool {
+        self.ac.gear_retractable
+    }
+
     /// Solve a wings-level, steady trim at `vc_kts` (calibrated) and `alt_ft`,
     /// then seat the model on it. Longitudinal unknowns — angle of attack,
     /// pitch-trim command, throttle — null the axial/vertical force and pitch
@@ -396,7 +658,15 @@ impl FlightModel for Fdm {
     /// reaction torque). Each is a Newton iteration with a finite-difference
     /// Jacobian. The trimmed state is then a fixed point, so the aircraft holds
     /// the point open-loop.
+    ///
+    /// A fly-by-wire aircraft (F-22) has no trim-command channel to solve, so it
+    /// takes the [`Fdm::trim_fbw`] path instead: solve the equilibrium elevator
+    /// angle and pre-load it into the rate loop's integrator.
     fn trim(&mut self, vc_kts: f64, alt_ft: f64) {
+        if let ControlSystem::Fbw(_) = self.ac.control {
+            self.trim_fbw(vc_kts, alt_ft);
+            return;
+        }
         let vt = self.isa.cas_to_tas(vc_kts * KT_TO_FPS, alt_ft);
         const H: f64 = 1e-4;
 
@@ -506,8 +776,9 @@ impl FlightModel for Fdm {
         let pressure = self.isa.pressure(alt_ft);
         let temp = self.isa.temperature(alt_ft);
         let sound = self.isa.sound_speed(alt_ft);
+        let mach = vt / sound.max(1.0);
         let (throttle, u) = (self.throttle_cmd, vt * alpha.cos());
-        let eng = self.power.steady_at(throttle, rho, pressure, temp, u, sound);
+        let eng = self.power.steady_at(throttle, rho, pressure, temp, u, sound, mach);
         self.engine_rpm = eng.rpm;
         self.engine_power_hp = eng.power_hp;
     }
@@ -529,7 +800,7 @@ impl FlightModel for Fdm {
             quat: euler_to_quat(0.0, 0.0, self.ic_psi_deg * D2R),
             omega: [0.0; 3],
         };
-        self.flap_pos_deg = self.flap_cmd * self.ac.fcs.flap_max_deg;
+        self.flap_pos_deg = self.flap_cmd * self.ac.control.flap_max_deg();
     }
 
     fn get(&self, name: &str) -> f64 {
@@ -554,6 +825,9 @@ impl FlightModel for Fdm {
                 self.isa.tas_to_cas(self.state.airspeed(), self.alt_ft()) * FPS_TO_KT
             }
             "velocities/h-dot-fps" => self.h_dot_fps(),
+            "velocities/mach" => {
+                self.state.airspeed() / self.isa.sound_speed(self.alt_ft()).max(1.0)
+            }
             "velocities/p-rad_sec" => self.state.omega[0],
             "velocities/q-rad_sec" => self.state.omega[1],
             "velocities/r-rad_sec" => self.state.omega[2],
@@ -565,7 +839,20 @@ impl FlightModel for Fdm {
                     0.0
                 }
             }
+            // Achieved gear position (1 = down, 0 = up) and the selector.
+            "gear/gear-pos-norm" => self.gear_pos,
+            "gear/gear-cmd-norm" => self.gear_cmd as i32 as f64,
             "fcs/flap-pos-deg" => self.flap_pos_deg,
+            // Last-step resolved surface positions (radians) and the normalized
+            // thrust the aero model saw.
+            "fcs/elevator-pos-rad" => self.surf.elevator_rad,
+            "fcs/left-aileron-pos-rad" => self.surf.aileron_rad,
+            "fcs/right-aileron-pos-rad" => self.surf.right_aileron_rad,
+            "fcs/rudder-pos-rad" => self.surf.rudder_rad,
+            "fcs/lef-pos-rad" => self.surf.lef_rad,
+            "fcs/tvc-pos-rad" => self.surf.tvc_rad,
+            "fcs/tvc-enable" => self.tvc_enable as i32 as f64,
+            "fcs/thrust-norm" => self.surf.thrust_norm,
             "fcs/elevator-cmd-norm" => self.elevator_cmd,
             "fcs/aileron-cmd-norm" => self.aileron_cmd,
             "fcs/rudder-cmd-norm" => self.rudder_cmd,
@@ -579,7 +866,9 @@ impl FlightModel for Fdm {
             // Last-step aero/propulsion split (same spelling JSBSim uses), so
             // the validation harness can diff forces and moments frame by frame.
             "aero/alpha-rad" => self.diag.alpha,
+            "aero/alpha-deg" => self.diag.alpha * R2D,
             "aero/qbar-psf" => self.diag.qbar,
+            "aero/cl-squared" => self.cl_sq,
             "forces/fbx-aero-lbs" => self.diag.force_aero[0],
             "forces/fby-aero-lbs" => self.diag.force_aero[1],
             "forces/fbz-aero-lbs" => self.diag.force_aero[2],
@@ -620,6 +909,16 @@ impl FlightModel for Fdm {
             "fcs/roll-trim-cmd-norm" => self.roll_trim_cmd = value,
             "fcs/yaw-trim-cmd-norm" => self.yaw_trim_cmd = value,
             "fcs/flap-cmd-norm" => self.flap_cmd = value,
+            "fcs/tvc-enable" => self.tvc_enable = value != 0.0,
+            // Gear selector: 1 = down, 0 = up (JSBSim's convention). The
+            // achieved position rolls toward it; fixed-gear aircraft ignore it.
+            "gear/gear-cmd-norm" => self.gear_cmd = value > 0.5,
+            // Seat the achieved position directly (skipping the 4.5 s travel).
+            // Used by the app's resets: teleporting to the runway with the gear
+            // still retracting would leave no wheels to touch down on. Not part
+            // of JSBSim's writable set, but harmless on the fixed-gear paths
+            // (`step_gear` overwrites it next step).
+            "gear/gear-pos-norm" => self.gear_pos = value.clamp(0.0, 1.0),
             "fcs/left-brake-cmd-norm" => self.left_brake_cmd = value,
             "fcs/right-brake-cmd-norm" => self.right_brake_cmd = value,
             _ => {}
@@ -627,7 +926,9 @@ impl FlightModel for Fdm {
     }
 }
 
-/// Fill the named-property scratch map the aero evaluator reads.
+/// Fill the named-property scratch map the aero evaluator reads. The gear
+/// position (`gear/gear-pos-norm`, driving the CDgear drag term) is set by the
+/// caller, since it's a whole-aircraft state rather than a resolved surface.
 fn fill_props(
     props: &mut PropMap,
     ac: &Aircraft,
@@ -635,6 +936,7 @@ fn fill_props(
     surf: &Surfaces,
     induced_fps: f64,
     rho: f64,
+    sound_speed: f64,
 ) {
     let (u, v, w) = (s.vel[0], s.vel[1], s.vel[2]);
     let vt = (u * u + v * v + w * w).sqrt().max(1e-6);
@@ -653,7 +955,9 @@ fn fill_props(
     props.set("aero/ci2vel", ac.wing_chord_ft / (2.0 * vt));
     props.set("aero/h_b-mac-ft", -s.pos[2] / ac.wing_chord_ft);
     props.set("aero/alphadot-rad_sec", 0.0);
+    props.set("aero/betadot-rad_sec", 0.0);
     props.set("aero/stall-hyst-norm", 0.0);
+    props.set("velocities/mach", vt / sound_speed.max(1.0));
     props.set("velocities/p-aero-rad_sec", s.omega[0]);
     props.set("velocities/q-aero-rad_sec", s.omega[1]);
     props.set("velocities/r-aero-rad_sec", s.omega[2]);
@@ -663,8 +967,14 @@ fn fill_props(
     props.set("fcs/elevator-pos-rad", surf.elevator_rad);
     props.set("fcs/mag-elevator-pos-rad", surf.mag_elevator_rad);
     props.set("fcs/left-aileron-pos-rad", surf.aileron_rad);
+    props.set("fcs/right-aileron-pos-rad", surf.right_aileron_rad);
     props.set("fcs/rudder-pos-rad", surf.rudder_rad);
     props.set("fcs/flap-pos-deg", surf.flap_deg);
+    props.set("fcs/flap-pos-norm", surf.flap_norm);
+    props.set("fcs/lef-pos-rad", surf.lef_rad);
+    props.set("fcs/speedbrake-pos-norm", surf.speedbrake_norm);
+    props.set("fcs/tvc-pos-rad", surf.tvc_rad);
+    props.set("fcs/thrust-norm", surf.thrust_norm);
 }
 
 /// Structural frame (X aft, Y right, Z **up**; inches from the datum) to body
@@ -678,17 +988,6 @@ fn struct_to_body(r_in: Vec3, cg_in: Vec3) -> Vec3 {
     ]
 }
 
-/// A zero-centered `aerosurface_scale`: a positive command maps onto `lim.1`
-/// (max), a negative one onto `lim.0` (min). Input is clamped to [-1, 1].
-fn scale(cmd: f64, lim: (f64, f64)) -> f64 {
-    let cmd = cmd.clamp(-1.0, 1.0);
-    if cmd >= 0.0 {
-        cmd * lim.1
-    } else {
-        -cmd * lim.0
-    }
-}
-
 /// Keep the longitudinal trim unknowns `[alpha_rad, pitch_trim_cmd, throttle]`
 /// in a smooth, physical range: angle of attack within +/-20 deg, the trim
 /// command within its normalized authority, and throttle clear of the engine's
@@ -696,6 +995,15 @@ fn scale(cmd: f64, lim: (f64, f64)) -> f64 {
 fn clamp_long(x: &mut [f64; 3]) {
     x[0] = x[0].clamp(-0.35, 0.35);
     x[1] = x[1].clamp(-1.0, 1.0);
+    x[2] = x[2].clamp(0.02, 0.995);
+}
+
+/// Keep the FBW trim unknowns `[alpha_rad, elevator_rad, throttle]` physical:
+/// alpha within +/-20 deg, the elevator within its surface limit, and throttle
+/// clear of the engine's clamps (same reason as `clamp_long`).
+fn clamp_fbw_long(x: &mut [f64; 3], elevator_lim_rad: f64) {
+    x[0] = x[0].clamp(-0.35, 0.35);
+    x[1] = x[1].clamp(-elevator_lim_rad, elevator_lim_rad);
     x[2] = x[2].clamp(0.02, 0.995);
 }
 
@@ -1002,5 +1310,280 @@ mod tests {
             phi_no_tabs.abs() > 20.0,
             "without tabs the roll should be far worse, got {phi_no_tabs}"
         );
+    }
+
+    // ---------------------------- F-22 Raptor ------------------------------
+
+    #[test]
+    fn f22_constructs_and_is_named() {
+        let m = Fdm::new("f22");
+        assert_eq!(m.aircraft(), "f22");
+    }
+
+    #[test]
+    fn f22_full_throttle_accelerates() {
+        // Two F119s at full afterburner should produce far more thrust than the
+        // c172's single piston engine, and the trim solver should seat the jet in
+        // the air with a sensible (sub-unity) cruise throttle.
+        let mut m = Fdm::new("f22");
+        m.trim(350.0, 15000.0);
+        println!(
+            "trim: h={} vc={} theta={} throttle={} alpha={} cl2={}",
+            m.get("position/h-sl-ft"),
+            m.get("velocities/vc-kts"),
+            m.get("attitude/theta-deg"),
+            m.get("fcs/throttle-cmd-norm"),
+            m.get("aero/alpha-deg"),
+            m.get("aero/cl-squared"),
+        );
+        assert!(
+            m.get("fcs/throttle-cmd-norm") < 1.0,
+            "cruise should not need full throttle: {}",
+            m.get("fcs/throttle-cmd-norm")
+        );
+    }
+
+    #[test]
+    fn f22_fbw_holds_level() {
+        // The rate-command FBW makes the statically-unstable airframe hold a
+        // steady trim: flown open-loop for 30 s, altitude and airspeed barely
+        // move and the attitude stays bounded.
+        let mut m = Fdm::new("f22");
+        m.trim(350.0, 15000.0);
+        let (h0, vc0) = (m.get("position/h-sl-ft"), m.get("velocities/vc-kts"));
+        let mut max_q = 0.0_f64;
+        for _ in 0..120 * 30 {
+            m.step();
+            max_q = max_q.max(m.get("velocities/q-rad_sec").abs());
+        }
+        let (h, vc) = (m.get("position/h-sl-ft"), m.get("velocities/vc-kts"));
+        println!(
+            "30s: h {h0:.0} -> {h:.0}, vc {vc0:.1} -> {vc:.1}, theta {} phi {} max|q| {max_q:.4}",
+            m.get("attitude/theta-deg"),
+            m.get("attitude/phi-deg"),
+        );
+        assert!((h - h0).abs() < 100.0, "altitude drifted {h0} -> {h}");
+        assert!((vc - vc0).abs() < 10.0, "airspeed drifted {vc0} -> {vc}");
+        assert!(max_q < 1.0, "pitch rate diverged: max|q| = {max_q}");
+    }
+
+    #[test]
+    fn f22_fbw_tracks_pitch_rate_command_and_damps() {
+        // The statically-unstable airframe only flies because the rate loop
+        // closes it. A held nose-up command should drive a roughly-constant
+        // pitch rate; releasing it should let the rate fall back to ~0 without
+        // diverging.
+        let mut m = Fdm::new("f22");
+        m.trim(350.0, 15000.0);
+        // +elevator-cmd is nose-down, so -0.3 commands nose-up.
+        m.set("fcs/elevator-cmd-norm", -0.3);
+        for _ in 0..120 {
+            m.step();
+        }
+        let q_held = m.get("velocities/q-rad_sec");
+        m.set("fcs/elevator-cmd-norm", 0.0);
+        for _ in 0..120 * 5 {
+            m.step();
+        }
+        let q_after = m.get("velocities/q-rad_sec");
+        let theta = m.get("attitude/theta-deg");
+        println!("q held {q_held:.4}, q after release {q_after:.4}, theta {theta:.1}");
+        assert!(q_held > 0.1, "should pitch nose-up under the command: q = {q_held}");
+        assert!(q_after.abs() < 0.05, "pitch rate should damp back to ~0: {q_after}");
+        assert!(theta.abs() < 45.0, "attitude should stay bounded: {theta}");
+    }
+
+    #[test]
+    fn f22_gear_carries_the_weight() {
+        // Parked on the runway with the engine running, the F-22 should settle
+        // onto its three gear struts rather than sinking through the ground.
+        let mut m = Fdm::new("f22");
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", 6.0);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        for _ in 0..120 * 5 {
+            m.step();
+        }
+        let h = m.get("position/h-sl-ft");
+        println!("f22 parked: h={h} wow={}", m.get("gear/wow"));
+        assert!(h > 0.0, "the aircraft sank through the ground: h = {h}");
+        assert!(m.get("gear/wow") > 0.5, "should report weight-on-wheels");
+    }
+
+    #[test]
+    fn f22_gear_cmd_roundtrips() {
+        let mut m = Fdm::new("f22");
+        assert!(m.get("gear/gear-cmd-norm") > 0.5, "selector defaults down");
+        m.set("gear/gear-cmd-norm", 0.0);
+        assert!(m.get("gear/gear-cmd-norm") < 0.5);
+    }
+
+    #[test]
+    fn f22_gear_pos_seats_directly_for_resets() {
+        // The app's resets seat the achieved position (skipping the 4.5 s
+        // travel), so a teleport to the runway lands on deployed gear.
+        let mut m = f22_cruise(false);
+        m.set("gear/gear-cmd-norm", 0.0);
+        for _ in 0..120 * 8 {
+            m.step();
+        }
+        assert!(m.get("gear/gear-pos-norm") < 0.01, "up in flight");
+        m.set("gear/gear-cmd-norm", 1.0);
+        m.set("gear/gear-pos-norm", 1.0);
+        assert!(m.get("gear/gear-pos-norm") > 0.99, "seated down at once");
+    }
+
+    #[test]
+    fn f22_gear_retracts_in_flight_and_redeploys() {
+        // A gear cycle is ~4.5 s; give each direction 8 s to complete.
+        let mut m = f22_cruise(false);
+        assert!(m.get("gear/gear-pos-norm") > 0.99, "starts down");
+        m.set("gear/gear-cmd-norm", 0.0);
+        for _ in 0..120 * 8 {
+            m.step();
+        }
+        assert!(
+            m.get("gear/gear-pos-norm") < 0.01,
+            "gear should be fully up in flight: {}",
+            m.get("gear/gear-pos-norm")
+        );
+        m.set("gear/gear-cmd-norm", 1.0);
+        for _ in 0..120 * 8 {
+            m.step();
+        }
+        assert!(
+            m.get("gear/gear-pos-norm") > 0.99,
+            "gear should redeploy: {}",
+            m.get("gear/gear-pos-norm")
+        );
+    }
+
+    #[test]
+    fn f22_gear_retraction_inhibited_on_the_ground() {
+        // On the wheels the gear cannot be raised (weight-on-wheels interlock),
+        // so a gear-up command while parked is ignored.
+        let mut m = Fdm::new("f22");
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", 6.0);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        for _ in 0..120 {
+            m.step();
+        }
+        assert!(m.get("gear/wow") > 0.5, "should be on the wheels");
+        m.set("gear/gear-cmd-norm", 0.0);
+        for _ in 0..120 * 8 {
+            m.step();
+        }
+        assert!(
+            m.get("gear/gear-pos-norm") > 0.99,
+            "gear must stay down on the ground: {}",
+            m.get("gear/gear-pos-norm")
+        );
+        assert!(m.get("gear/wow") > 0.5, "and keep carrying the weight");
+    }
+
+    #[test]
+    fn c172_gear_is_fixed() {
+        // The 172 has welded spring-steel gear: the command is a no-op.
+        let mut m = Fdm::new("c172p");
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", 4.7);
+        m.apply_ic();
+        for _ in 0..120 {
+            m.step();
+        }
+        m.set("gear/gear-cmd-norm", 0.0);
+        for _ in 0..120 * 8 {
+            m.step();
+        }
+        assert!(m.get("gear/gear-pos-norm") > 0.99, "the 172's gear is welded down");
+    }
+
+    #[test]
+    fn retractable_gear_is_reported_per_aircraft() {
+        assert!(Fdm::new("f22").has_retractable_gear());
+        assert!(!Fdm::new("c172p").has_retractable_gear());
+    }
+
+    #[test]
+    fn f22_tvc_enable_roundtrips() {
+        let mut m = Fdm::new("f22");
+        assert!(m.get("fcs/tvc-enable") > 0.5, "TVC should default on");
+        m.set("fcs/tvc-enable", 0.0);
+        assert!(m.get("fcs/tvc-enable") < 0.5);
+        m.set("fcs/tvc-enable", 1.0);
+        assert!(m.get("fcs/tvc-enable") > 0.5);
+    }
+
+    /// Cruise-seeded F-22 with thrust vectoring switched as requested, ready for
+    /// a pitch input.
+    fn f22_cruise(tvc: bool) -> Fdm {
+        let mut m = Fdm::new("f22");
+        m.set("ic/vc-kts", 350.0);
+        m.set("ic/h-sl-ft", 15000.0);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        m.set("fcs/tvc-enable", if tvc { 1.0 } else { 0.0 });
+        m.trim(350.0, 15000.0);
+        m
+    }
+
+    /// Fly a hard pull to high alpha (1.5 s), then release, and return the peak
+    /// angle of attack seen over the next 20 s — the Cobra-like maneuver a pilot
+    /// actually flies, as opposed to a sustained max-stick hold.
+    fn f22_pull_then_release(tvc: bool) -> f64 {
+        let mut m = f22_cruise(tvc);
+        let mut peak_alpha = 0.0_f64;
+        for i in 0..=120 * 20 {
+            if i > 0 {
+                m.step();
+            }
+            m.set("fcs/elevator-cmd-norm", if i <= 180 { -1.0 } else { 0.0 });
+            peak_alpha = peak_alpha.max(m.get("aero/alpha-deg"));
+        }
+        peak_alpha
+    }
+
+    #[test]
+    fn f22_tvc_on_holds_high_alpha() {
+        // With the nozzles backing up the tail, the hard pull stays inside the
+        // (raised) envelope: alpha peaks in the high-alpha band and never runs
+        // past vertical into a tumble.
+        let peak = f22_pull_then_release(true);
+        println!("TVC ON peak alpha = {peak:.1}");
+        assert!(peak < 90.0, "TVC on should hold alpha below 90: peak = {peak:.1}");
+    }
+
+    #[test]
+    fn f22_tvc_off_departs() {
+        // Without vectoring the stabilator is authority-limited at high alpha,
+        // so the same pull departs into a tumble (alpha runs past inverted).
+        let peak = f22_pull_then_release(false);
+        println!("TVC OFF peak alpha = {peak:.1}");
+        assert!(peak > 120.0, "TVC off should depart into a tumble: peak = {peak:.1}");
+    }
+
+    #[test]
+    fn f22_tvc_inhibited_on_ground() {
+        // The nozzles are gated off while the gear is down (`fcs/tvc-inhibit`),
+        // so on the runway a nose-up command never deflects them.
+        let mut m = Fdm::new("f22");
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", 6.0);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        m.set("fcs/tvc-enable", 1.0);
+        for _ in 0..120 {
+            m.set("fcs/elevator-cmd-norm", -1.0);
+            m.step();
+        }
+        assert!(m.get("gear/wow") > 0.5, "should still be on the wheels");
+        assert_eq!(m.get("fcs/tvc-pos-rad"), 0.0, "TVC must be inhibited on the ground");
     }
 }

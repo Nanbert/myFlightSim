@@ -10,8 +10,9 @@
 //! angular-momentum term. Each is small for a normally-aspirated c172 in the
 //! cruise regime this model is first validated in.
 
+use crate::atmos::Isa;
 use crate::state::Vec3;
-use crate::table::Table1;
+use crate::table::{Table1, Table2};
 
 /// ft·lbf per second in one horsepower.
 const HP_TO_FTLBS: f64 = 550.0;
@@ -84,8 +85,8 @@ pub struct EngineOutput {
     pub rpm: f64,
 }
 
-/// Running powerplant state.
-pub struct Powerplant {
+/// Running reciprocating engine + propeller state.
+pub struct PistonEngine {
     piston: PistonSpec,
     prop: PropSpec,
     // Derived at init:
@@ -98,7 +99,7 @@ pub struct Powerplant {
     pub running: bool,
 }
 
-impl Powerplant {
+impl PistonEngine {
     pub fn new(piston: PistonSpec, prop: PropSpec) -> Self {
         let max_map = piston.max_map_inhg.min(29.9) * INHG_TO_PA;
         let min_map = piston.min_map_inhg * INHG_TO_PA;
@@ -124,7 +125,7 @@ impl Powerplant {
                 / (9411.0 * (piston.max_hp + hp_loss - piston.static_friction_hp))
         };
 
-        Powerplant {
+        PistonEngine {
             piston,
             prop,
             z_airbox,
@@ -231,7 +232,7 @@ impl Powerplant {
         vel_x: f64,
         sound_speed: f64,
     ) -> EngineOutput {
-        let mut scratch = Powerplant::new(self.piston, self.prop);
+        let mut scratch = PistonEngine::new(self.piston, self.prop);
         scratch.steady_at(throttle, rho, pressure_psf, temperature_r, vel_x, sound_speed)
     }
 
@@ -392,6 +393,242 @@ fn mixture_efficiency(far: f64) -> f64 {
     Table1::new(&XS, &YS).lookup(far)
 }
 
+/// Turbofan configuration — one engine *type*; `count` instances share this and
+/// are modelled as one thrust applied at the mean thruster location. Follows
+/// JSBSim's `FGTurbine`, here the F119 that powers the F-22.
+#[derive(Clone, Copy)]
+pub struct TurbineSpec {
+    /// Military (dry) rated thrust, per engine (lbf).
+    pub milthrust: f64,
+    /// Maximum (afterburning) thrust, per engine (lbf).
+    pub maxthrust: f64,
+    /// Whether this engine has an afterburner.
+    pub augmented: bool,
+    /// Idle core speed (% N2) — the floor of the thrust-vs-throttle curve.
+    pub idle_n2: f64,
+    /// Max core speed (% N2).
+    pub max_n2: f64,
+    /// Number of engines on the airframe (F-22: 2).
+    pub count: usize,
+    /// Mean thruster location in the structural frame (inches from the datum).
+    pub location: Vec3,
+    /// Idle-thrust fraction, indexed by (mach, density altitude).
+    pub idle_thrust: Table2,
+    /// Military-thrust fraction, indexed by (mach, density altitude).
+    pub mil_thrust: Table2,
+    /// Afterburning-thrust fraction, indexed by (mach, density altitude).
+    pub aug_thrust: Table2,
+}
+
+/// Running turbofan state. Quasi-steady: N2 tracks throttle directly, so there
+/// is no spool transient to integrate (the F-22's FBW is what matters here, not
+/// the engine's second-by-second lag). That keeps `step` a pure function of the
+/// current flight condition plus the running flag.
+pub struct Turbine {
+    spec: TurbineSpec,
+    isa: Isa,
+    running: bool,
+}
+
+impl Turbine {
+    pub fn new(spec: TurbineSpec) -> Self {
+        Turbine {
+            spec,
+            isa: Isa::new(),
+            running: false,
+        }
+    }
+
+    /// Light the engine — a no-op past the running flag (see the quasi-steady
+    /// note above).
+    pub fn start(&mut self) {
+        self.running = true;
+    }
+
+    /// Steady thrust (lbf, summed over `count` engines) at `throttle`, `mach`,
+    /// and air density `rho` — JSBSim's `FGTurbine::Run` with N2 at its
+    /// quasi-steady value (`N2norm == throttle`), so the spool-up lag drops out.
+    pub fn thrust_at(&self, throttle: f64, mach: f64, rho: f64) -> f64 {
+        let throttle = throttle.clamp(0.0, 1.0);
+        let da = self.isa.density_altitude(rho);
+        let idlethrust = self.spec.milthrust * self.spec.idle_thrust.lookup(mach, da);
+        let milthrust = (self.spec.milthrust - idlethrust) * self.spec.mil_thrust.lookup(mach, da);
+        let n2norm = throttle;
+        let mut thrust = idlethrust + milthrust * n2norm * n2norm;
+        // Augmentation (augmethod 1): full afterburner above 99% throttle, where
+        // N2 is necessarily above the 97% gate.
+        if self.spec.augmented && throttle > 0.99 {
+            thrust = self.spec.aug_thrust.lookup(mach, da) * self.spec.maxthrust;
+        }
+        thrust * self.spec.count as f64
+    }
+
+    /// Output (thrust and N2) at a flight condition; independent of running
+    /// state, so the trim solver can evaluate it on a not-yet-lit engine.
+    fn output_at(&self, throttle: f64, mach: f64, rho: f64) -> EngineOutput {
+        let throttle = throttle.clamp(0.0, 1.0);
+        EngineOutput {
+            thrust: self.thrust_at(throttle, mach, rho),
+            torque_x: 0.0,
+            induced_velocity: 0.0,
+            power_hp: 0.0,
+            rpm: self.spec.idle_n2 + throttle * (self.spec.max_n2 - self.spec.idle_n2),
+        }
+    }
+
+    pub fn step(&mut self, _dt: f64, throttle: f64, rho: f64, mach: f64) -> EngineOutput {
+        if !self.running {
+            return EngineOutput {
+                thrust: 0.0,
+                torque_x: 0.0,
+                induced_velocity: 0.0,
+                power_hp: 0.0,
+                rpm: 0.0,
+            };
+        }
+        self.output_at(throttle, mach, rho)
+    }
+
+    pub fn steady_at(&mut self, throttle: f64, rho: f64, mach: f64) -> EngineOutput {
+        self.running = true;
+        self.output_at(throttle, mach, rho)
+    }
+
+    pub fn steady_output(&self, throttle: f64, rho: f64, mach: f64) -> EngineOutput {
+        self.output_at(throttle, mach, rho)
+    }
+}
+
+/// The powerplant a model file describes — a piston+prop or a turbofan. This is
+/// the seam swapped per aircraft; everything downstream goes through
+/// [`Powerplant`]. `Copy` so an aircraft `const` can hand its spec to a running
+/// engine without cloning.
+#[derive(Clone, Copy)]
+pub enum PowerplantSpec {
+    Piston { engine: PistonSpec, prop: PropSpec },
+    Turbine(TurbineSpec),
+}
+
+impl PowerplantSpec {
+    /// Thruster (prop or jet nozzle) location in the structural frame, inches
+    /// from the datum — the arm the thrust acts on.
+    pub fn location_in(&self) -> Vec3 {
+        match self {
+            PowerplantSpec::Piston { prop, .. } => prop.location,
+            PowerplantSpec::Turbine(t) => t.location,
+        }
+    }
+
+    /// Number of engines on the airframe (the piston model is single-engine).
+    pub fn engine_count(&self) -> usize {
+        match self {
+            PowerplantSpec::Piston { .. } => 1,
+            PowerplantSpec::Turbine(t) => t.count,
+        }
+    }
+}
+
+/// A running powerplant. Wraps whichever engine the aircraft carries and
+/// dispatches the lifecycle methods, so `Fdm` never branches on engine type.
+/// The turbofan needs `mach` (its thrust tables are indexed by it); the piston
+/// arm ignores it.
+pub enum Powerplant {
+    Piston(PistonEngine),
+    Turbine(Turbine),
+}
+
+impl Powerplant {
+    pub fn new(spec: PowerplantSpec) -> Self {
+        match spec {
+            PowerplantSpec::Piston { engine, prop } => {
+                Powerplant::Piston(PistonEngine::new(engine, prop))
+            }
+            PowerplantSpec::Turbine(t) => Powerplant::Turbine(Turbine::new(t)),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn start(
+        &mut self,
+        rho: f64,
+        pressure_psf: f64,
+        temperature_r: f64,
+        vel_x: f64,
+        sound_speed: f64,
+    ) {
+        match self {
+            Powerplant::Piston(e) => {
+                e.start(rho, pressure_psf, temperature_r, vel_x, sound_speed)
+            }
+            Powerplant::Turbine(t) => t.start(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn steady_at(
+        &mut self,
+        throttle: f64,
+        rho: f64,
+        pressure_psf: f64,
+        temperature_r: f64,
+        vel_x: f64,
+        sound_speed: f64,
+        mach: f64,
+    ) -> EngineOutput {
+        match self {
+            Powerplant::Piston(e) => {
+                e.steady_at(throttle, rho, pressure_psf, temperature_r, vel_x, sound_speed)
+            }
+            Powerplant::Turbine(t) => t.steady_at(throttle, rho, mach),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn steady_output(
+        &self,
+        throttle: f64,
+        rho: f64,
+        pressure_psf: f64,
+        temperature_r: f64,
+        vel_x: f64,
+        sound_speed: f64,
+        mach: f64,
+    ) -> EngineOutput {
+        match self {
+            Powerplant::Piston(e) => {
+                e.steady_output(throttle, rho, pressure_psf, temperature_r, vel_x, sound_speed)
+            }
+            Powerplant::Turbine(t) => t.steady_output(throttle, rho, mach),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn step(
+        &mut self,
+        dt: f64,
+        throttle: f64,
+        rho: f64,
+        pressure_psf: f64,
+        temperature_r: f64,
+        vel_x: f64,
+        sound_speed: f64,
+        mach: f64,
+    ) -> EngineOutput {
+        match self {
+            Powerplant::Piston(e) => e.step(
+                dt,
+                throttle,
+                rho,
+                pressure_psf,
+                temperature_r,
+                vel_x,
+                sound_speed,
+            ),
+            Powerplant::Turbine(t) => t.step(dt, throttle, rho, mach),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,6 +638,13 @@ mod tests {
     const SL_PRESSURE: f64 = 2116.228;
     const SL_TEMP_R: f64 = 518.67;
     const SL_SOUND: f64 = 1116.45;
+
+    fn piston_pp() -> Powerplant {
+        Powerplant::new(PowerplantSpec::Piston {
+            engine: io320(),
+            prop: prop(),
+        })
+    }
 
     fn io320() -> PistonSpec {
         PistonSpec {
@@ -445,7 +689,7 @@ mod tests {
 
     #[test]
     fn full_throttle_produces_power_near_rated() {
-        let mut pp = Powerplant::new(io320(), prop());
+        let mut pp = piston_pp();
         // `start` spools to a steady state, so it should already be at cruise.
         pp.start(SL_RHO, SL_PRESSURE, SL_TEMP_R, 0.0, SL_SOUND);
         let out = pp_step(&mut pp, 1.0);
@@ -460,7 +704,7 @@ mod tests {
 
     #[test]
     fn idle_throttle_produces_little_thrust() {
-        let mut pp = Powerplant::new(io320(), prop());
+        let mut pp = piston_pp();
         pp.start(SL_RHO, SL_PRESSURE, SL_TEMP_R, 0.0, SL_SOUND);
         for _ in 0..600 {
             pp_step(&mut pp, 0.1);
@@ -470,6 +714,59 @@ mod tests {
     }
 
     fn pp_step(pp: &mut Powerplant, throttle: f64) -> EngineOutput {
-        pp.step(1.0 / 120.0, throttle, SL_RHO, SL_PRESSURE, SL_TEMP_R, 0.0, SL_SOUND)
+        pp.step(1.0 / 120.0, throttle, SL_RHO, SL_PRESSURE, SL_TEMP_R, 0.0, SL_SOUND, 0.0)
+    }
+
+    // A 1×1 turbine: constant fractions, so the thrust-vs-throttle law is the
+    // only thing under test. The real F119 tables live in `f22.rs`.
+    fn turbine_spec() -> TurbineSpec {
+        TurbineSpec {
+            milthrust: 26950.0,
+            maxthrust: 37000.0,
+            augmented: true,
+            idle_n2: 53.0,
+            max_n2: 100.0,
+            count: 2,
+            location: [684.131, 0.0, 0.0],
+            idle_thrust: Table2::new(&[0.0], &[0.0], &[0.0488]),
+            mil_thrust: Table2::new(&[0.0], &[0.0], &[1.0]),
+            aug_thrust: Table2::new(&[0.0], &[0.0], &[1.0]),
+        }
+    }
+
+    fn turbine_pp() -> Powerplant {
+        Powerplant::new(PowerplantSpec::Turbine(turbine_spec()))
+    }
+
+    fn turb_step(pp: &mut Powerplant, throttle: f64) -> EngineOutput {
+        pp.step(1.0 / 60.0, throttle, SL_RHO, SL_PRESSURE, SL_TEMP_R, 0.0, SL_SOUND, 0.0)
+    }
+
+    #[test]
+    fn turbine_is_dead_until_started() {
+        let mut pp = turbine_pp();
+        let out = turb_step(&mut pp, 1.0);
+        assert_eq!(out.thrust, 0.0);
+        pp.start(SL_RHO, SL_PRESSURE, SL_TEMP_R, 0.0, SL_SOUND);
+        assert!(turb_step(&mut pp, 1.0).thrust > 0.0);
+    }
+
+    #[test]
+    fn turbine_full_throttle_lights_the_afterburner() {
+        let mut pp = turbine_pp();
+        pp.start(SL_RHO, SL_PRESSURE, SL_TEMP_R, 0.0, SL_SOUND);
+        let out = turb_step(&mut pp, 1.0);
+        // 2×F119 max (afterburning) thrust = 74000 lbf.
+        assert!((out.thrust - 74000.0).abs() < 1.0, "got {}", out.thrust);
+        assert!(out.rpm >= 99.9, "expected near-max N2, got {}", out.rpm);
+    }
+
+    #[test]
+    fn turbine_military_thrust_short_of_afterburner() {
+        let mut pp = turbine_pp();
+        pp.start(SL_RHO, SL_PRESSURE, SL_TEMP_R, 0.0, SL_SOUND);
+        // 95% throttle is dry (no augmentation) and below full military thrust.
+        let out = turb_step(&mut pp, 0.95);
+        assert!(out.thrust > 30000.0 && out.thrust < 53900.0, "got {}", out.thrust);
     }
 }
