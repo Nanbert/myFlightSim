@@ -33,7 +33,9 @@ mod state;
 mod table;
 
 use crate::aero::{AeroResult, PropMap};
-use crate::aircraft::{ah1s::AH1S, c172::C172, f22::F22, Aircraft, INCH_TO_FT};
+use crate::aircraft::{
+    ah1s::AH1S, b737::B737, c172::C172, f22::F22, Aircraft, INCH_TO_FT,
+};
 use crate::atmos::{Isa, G0};
 use crate::engine::{EngineOutput, Powerplant};
 use crate::fcs::{scale, ControlSystem, Fbw, FcsInputs, Surfaces};
@@ -50,8 +52,9 @@ const FPS_TO_KT: f64 = 1.0 / KT_TO_FPS;
 /// Feet per degree of latitude, chosen so the app's NED->world round-trip is
 /// exact for its `EARTH_RADIUS_M = 6_378_137 m`: `(pi/180)*R/0.3048`.
 const FT_PER_DEG_LAT: f64 = 365_221.79;
-/// Landing-gear full travel time (s), down <-> up. Roughly the real jet's cycle.
-const GEAR_CYCLE_S: f64 = 4.5;
+/// Landing-gear full travel time (s), down <-> up. Matches the gear kinematic in
+/// the JSBSim models (both the F-22 and 737 traversals are 5 s).
+const GEAR_CYCLE_S: f64 = 5.0;
 
 /// A per-step snapshot of the aero/propulsion force and moment split, published
 /// through the property bus so the validation harness can diff it against
@@ -145,6 +148,7 @@ impl Fdm {
         let ac: &'static Aircraft = match aircraft {
             "f22" => &F22,
             "ah1s" | "ah-1s" => &AH1S,
+            "737" | "b737" => &B737,
             "c172p" | "c172" => &C172,
             _ => &C172,
         };
@@ -521,8 +525,9 @@ impl Fdm {
         (aero, eng, grav)
     }
 
-    /// Direct-FCS trim evaluation (c172p): build the surfaces from the pilot
-    /// commands the way the live loop does, then evaluate.
+    /// Direct-FCS trim evaluation (c172p/737): build the surfaces from the pilot
+    /// commands the way the live loop does, then evaluate. `cl_sq` seeds the
+    /// induced-drag feedback (0 for a first pass).
     #[allow(clippy::too_many_arguments)]
     fn trim_eval(
         &self,
@@ -534,6 +539,7 @@ impl Fdm {
         throttle: f64,
         vt: f64,
         alt: f64,
+        cl_sq: f64,
     ) -> (AeroResult, EngineOutput, Vec3) {
         let ControlSystem::Direct(fcs) = &self.ac.control else {
             unreachable!("trim_eval (direct) called on a fly-by-wire aircraft")
@@ -548,13 +554,19 @@ impl Fdm {
             rudder_rad: scale(rudder_cmd, fcs.rudder_lim_deg) * fcs.rudder_gain,
             ..Default::default()
         };
-        self.trim_eval_surf(alpha, phi, &surf, throttle, vt, alt, 0.0)
+        self.trim_eval_surf(alpha, phi, &surf, throttle, vt, alt, cl_sq)
     }
 
     /// Longitudinal residual `[Fx, Fz, My]` (weight-normalized), zero at trim.
     /// `x = [alpha_rad, pitch_trim_cmd, throttle]`.
     fn trim_long_residual(&self, x: [f64; 3], vt: f64, alt: f64) -> [f64; 3] {
-        let (aero, eng, grav) = self.trim_eval(x[0], 0.0, 0.0, 0.0, x[1], x[2], vt, alt);
+        // Bootstrap the induced-drag feedback: the CDi term keys on CL², unknown
+        // until alpha is evaluated, so evaluate once for CL and reseed (the same
+        // one-pass trick the FBW path uses). Without it the trim omits induced
+        // drag and the seat drifts — visible on the 737, whose CDi is real.
+        let (aero0, _, _) = self.trim_eval(x[0], 0.0, 0.0, 0.0, x[1], x[2], vt, alt, 0.0);
+        let (aero, eng, grav) =
+            self.trim_eval(x[0], 0.0, 0.0, 0.0, x[1], x[2], vt, alt, aero0.cl * aero0.cl);
         let weight = self.mass * G0;
         let fx = aero.force_body[0] + eng.thrust + grav[0] * self.mass;
         let fz = aero.force_body[2] + grav[2] * self.mass;
@@ -569,8 +581,19 @@ impl Fdm {
     /// absorbing the engine's reaction torque (a real c172 counters it with
     /// aileron trim).
     fn trim_lat_residual(&self, x: [f64; 3], long: [f64; 3], vt: f64, alt: f64) -> [f64; 3] {
-        let (aero, eng, grav) =
-            self.trim_eval(long[0], x[0], x[1], x[2], long[1], long[2], vt, alt);
+        let (aero0, _, _) =
+            self.trim_eval(long[0], x[0], x[1], x[2], long[1], long[2], vt, alt, 0.0);
+        let (aero, eng, grav) = self.trim_eval(
+            long[0],
+            x[0],
+            x[1],
+            x[2],
+            long[1],
+            long[2],
+            vt,
+            alt,
+            aero0.cl * aero0.cl,
+        );
         let weight = self.mass * G0;
         let scale = weight * self.ac.wing_span_ft;
         let fy = aero.force_body[1] + grav[1] * self.mass;
@@ -895,15 +918,12 @@ impl FlightModel for Fdm {
         !self.rotors.is_empty()
     }
 
-    /// Parked CG height. A helicopter rests on its skids (~6 ft for the AH-1S,
-    /// from the `ah1s_parks_on_skids` settle); the fixed-wing models park at the
-    /// c172p reset height.
+    /// Parked CG height above the runway. Each airframe carries its own value:
+    /// the c172p/F-22 reset heights, a helicopter's ski-sole height, or the
+    /// 737's `altitude 49 IN` reset. Seeding at the wrong height buries the
+    /// gear and the ground springs launch the aircraft.
     fn rest_h_ft(&self) -> f64 {
-        if self.rotors.is_empty() {
-            4.7
-        } else {
-            6.0
-        }
+        self.ac.rest_h_ft
     }
 
     /// Solve a wings-level, steady trim at `vc_kts` (calibrated) and `alt_ft`,
@@ -1194,7 +1214,7 @@ impl FlightModel for Fdm {
             // Gear selector: 1 = down, 0 = up (JSBSim's convention). The
             // achieved position rolls toward it; fixed-gear aircraft ignore it.
             "gear/gear-cmd-norm" => self.gear_cmd = value > 0.5,
-            // Seat the achieved position directly (skipping the 4.5 s travel).
+            // Seat the achieved position directly (skipping the gear travel).
             // Used by the app's resets: teleporting to the runway with the gear
             // still retracting would leave no wheels to touch down on. Not part
             // of JSBSim's writable set, but harmless on the fixed-gear paths
@@ -1735,7 +1755,7 @@ mod tests {
 
     #[test]
     fn f22_gear_pos_seats_directly_for_resets() {
-        // The app's resets seat the achieved position (skipping the 4.5 s
+        // The app's resets seat the achieved position (skipping the gear
         // travel), so a teleport to the runway lands on deployed gear.
         let mut m = f22_cruise(false);
         m.set("gear/gear-cmd-norm", 0.0);
@@ -1750,7 +1770,7 @@ mod tests {
 
     #[test]
     fn f22_gear_retracts_in_flight_and_redeploys() {
-        // A gear cycle is ~4.5 s; give each direction 8 s to complete.
+        // A gear cycle is 5 s; give each direction 8 s to complete.
         let mut m = f22_cruise(false);
         assert!(m.get("gear/gear-pos-norm") > 0.99, "starts down");
         m.set("gear/gear-cmd-norm", 0.0);
@@ -1831,6 +1851,8 @@ mod tests {
         assert!((heli.rest_h_ft() - 6.0).abs() < 1e-9);
         assert!(!Fdm::new("c172p").has_rotor());
         assert!((Fdm::new("c172p").rest_h_ft() - 4.7).abs() < 1e-9);
+        // The 737's reset is `altitude 49 IN` — gear-sole height above the runway.
+        assert!((Fdm::new("737").rest_h_ft() - 49.0 / 12.0).abs() < 1e-9);
     }
 
     #[test]
@@ -1909,6 +1931,164 @@ mod tests {
         }
         assert!(m.get("gear/wow") > 0.5, "should still be on the wheels");
         assert_eq!(m.get("fcs/tvc-pos-rad"), 0.0, "TVC must be inhibited on the ground");
+    }
+
+    // ---------------------------- Boeing 737 -------------------------------
+
+    /// Parked on the runway at the 737's reset height (49 in), engine running.
+    fn parked_737() -> Fdm {
+        let mut m = Fdm::new("737");
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", 49.0 / 12.0);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        m
+    }
+
+    /// A 737 at a cruise condition, trimmed and holding. Installs the engines
+    /// first so the trim solver sees their thrust.
+    fn cruise_737(vc: f64, alt: f64) -> Fdm {
+        let mut m = Fdm::new("737");
+        m.set("ic/vc-kts", vc);
+        m.set("ic/h-sl-ft", alt);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        m.trim(vc, alt);
+        m
+    }
+
+    #[test]
+    fn b737_constructs_and_is_named() {
+        let m = Fdm::new("737");
+        assert_eq!(m.aircraft(), "737");
+        assert!(!m.has_tvc(), "the 737 has no thrust vectoring");
+        assert!(!m.has_rotor(), "the 737 has no rotor");
+        assert!(m.has_retractable_gear(), "the 737 retracts its gear");
+    }
+
+    #[test]
+    fn b737_parks_on_gear() {
+        // The gear carries the ~107 000 lb loaded weight: from the reset height
+        // the aircraft settles onto the struts and stays at rest.
+        let mut m = parked_737();
+        for _ in 0..120 * 5 {
+            m.step();
+        }
+        let h = m.get("position/h-sl-ft");
+        assert!(h > 0.0, "the aircraft sank through the ground: h = {h}");
+        assert!((3.0..6.0).contains(&h), "unexpected settled height: {h}");
+        assert!(m.get("gear/wow") > 0.5, "should report weight-on-wheels");
+        assert!(m.get("velocities/h-dot-fps").abs() < 1.0, "should be at rest");
+    }
+
+    #[test]
+    fn b737_full_throttle_rolls_forward() {
+        // Two CFM56s at full throttle should roll the airliner forward down the
+        // runway (heading north) without it sinking or veering.
+        let mut m = parked_737();
+        m.set("fcs/throttle-cmd-norm", 1.0);
+        let mut min_h = f64::INFINITY;
+        for _ in 0..120 * 8 {
+            m.step();
+            min_h = min_h.min(m.get("position/h-sl-ft"));
+        }
+        assert!(min_h > 0.0, "sank through the ground during the roll: {min_h}");
+        assert!(m.get("position/lat-gc-deg") > 0.0, "should have rolled forward");
+        assert!(m.get("velocities/vc-kts") > 10.0, "should have accelerated");
+    }
+
+    #[test]
+    fn b737_brakes_stop_the_roll() {
+        let mut m = parked_737();
+        m.set("fcs/throttle-cmd-norm", 1.0);
+        for _ in 0..120 * 4 {
+            m.step();
+        }
+        let vc_peak = m.get("velocities/vc-kts");
+        assert!(vc_peak > 5.0, "should build speed before braking, got {vc_peak}");
+        m.set("fcs/throttle-cmd-norm", 0.0);
+        m.set("fcs/left-brake-cmd-norm", 1.0);
+        m.set("fcs/right-brake-cmd-norm", 1.0);
+        for _ in 0..120 * 6 {
+            m.step();
+        }
+        let vc = m.get("velocities/vc-kts");
+        assert!(vc < 0.5 * vc_peak, "brakes should slow the aircraft: {vc_peak} -> {vc}");
+    }
+
+    #[test]
+    fn b737_nosewheel_steers_left_with_rudder() {
+        // The rudder drives the steerable nosewheel (35° throw) on the ground, so
+        // a held left-rudder input turns the nose left.
+        let mut m = parked_737();
+        m.set("fcs/throttle-cmd-norm", 1.0);
+        for _ in 0..120 * 3 {
+            m.step();
+        }
+        let psi0 = m.get("attitude/psi-deg");
+        m.set("fcs/rudder-cmd-norm", 1.0);
+        for _ in 0..120 * 3 {
+            m.step();
+        }
+        let dpsi = m.get("attitude/psi-deg") - psi0;
+        assert!(dpsi < -5.0, "left rudder should turn the nose left, dpsi = {dpsi}");
+    }
+
+    #[test]
+    fn b737_trims_to_cruise() {
+        // The airliner's cruise trim should seat with a sensible part throttle
+        // (not full power) and a small positive angle of attack.
+        let m = cruise_737(285.0, 30000.0);
+        let thr = m.get("fcs/throttle-cmd-norm");
+        let alpha = m.get("aero/alpha-deg");
+        println!(
+            "737 cruise trim: theta={} alpha={alpha:.2} throttle={thr:.3} h={} vc={}",
+            m.get("attitude/theta-deg"),
+            m.get("position/h-sl-ft"),
+            m.get("velocities/vc-kts"),
+        );
+        assert!(thr < 1.0, "cruise should not need full throttle: {thr}");
+        assert!(thr > 0.05, "trim throttle collapsed to idle: {thr}");
+        assert!((0.0..10.0).contains(&alpha), "unexpected cruise alpha: {alpha}");
+    }
+
+    #[test]
+    fn b737_cruise_trim_holds() {
+        // A real trim is a fixed point of the integrator: 30 s flown open-loop
+        // should barely move.
+        let mut m = cruise_737(285.0, 30000.0);
+        let (h0, vc0) = (m.get("position/h-sl-ft"), m.get("velocities/vc-kts"));
+        for _ in 0..120 * 30 {
+            m.step();
+        }
+        let h = m.get("position/h-sl-ft");
+        let vc = m.get("velocities/vc-kts");
+        println!("737 cruise 30 s: h {h0:.0} -> {h:.0}, vc {vc0:.1} -> {vc:.1}");
+        assert!((h - h0).abs() < 50.0, "trim drifted in altitude: {h0} -> {h}");
+        assert!((vc - vc0).abs() < 2.0, "trim drifted in airspeed: {vc0} -> {vc}");
+    }
+
+    #[test]
+    fn b737_roll_input_banks_and_turns() {
+        // No steady-turn trim API, so this is a weaker check: a lateral input
+        // banks the airliner and the bank develops a turn (heading changes).
+        let mut m = cruise_737(285.0, 30000.0);
+        for _ in 0..120 {
+            m.set("fcs/aileron-cmd-norm", 0.3);
+            m.step();
+        }
+        m.set("fcs/aileron-cmd-norm", 0.0);
+        let phi0 = m.get("attitude/phi-deg");
+        let psi0 = m.get("attitude/psi-deg");
+        assert!(phi0.abs() > 3.0, "aileron should bank the aircraft: phi = {phi0}");
+        for _ in 0..120 * 20 {
+            m.step();
+        }
+        let dpsi = m.get("attitude/psi-deg") - psi0;
+        println!("737 roll-into-turn: phi {phi0:.1} -> {}, dpsi {dpsi:.1}", m.get("attitude/phi-deg"));
+        assert!(dpsi.abs() > 5.0, "a banked aircraft should turn: dpsi = {dpsi}");
     }
 
     /// An AH-1S hovering at `alt` ft: still and level, engine lit (the governor

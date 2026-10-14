@@ -441,4 +441,5 @@ pub const C172: Aircraft = Aircraft {
     // The 172 has fixed (welded) spring-steel gear.
     gear_retractable: false,
     rotors: &[],
+    rest_h_ft: 4.7,
 };

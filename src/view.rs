@@ -51,6 +51,18 @@ fn model_spec(name: &str) -> ModelSpec {
             drop: 1.87,
             yaw: std::f32::consts::PI,
         },
+        // Boeing 737 (`b737.glb`): a Sketchfab model authored in metres (so
+        // scale 1.0), nose along -X and origin at the wheels. Its wing,
+        // stabilizer and fin are each one smooth shell with no separate
+        // control-surface geometry, so ailerons/elevators/rudder don't animate.
+        // `drop` = the 737's reset height (49 in = 4.083 ft ≈ 1.2446 m) seats
+        // it on the runway; the -90° yaw turns its -X-forward nose onto -Z.
+        "737" | "b737" => ModelSpec {
+            file: "b737.glb",
+            scale: 1.0,
+            drop: 1.2446,
+            yaw: -std::f32::consts::FRAC_PI_2,
+        },
         // Default: the c172, whose control-surface bone rig is driven in
         // `drive_surfaces` (names in `is_control_bone`).
         _ => ModelSpec {
@@ -396,7 +408,7 @@ fn drive_surfaces(
 }
 
 /// Fold the landing gear between the model's authored down and up poses by the
-/// live gear position. The FDM rate-limits the travel over ~4.5 s, so the blend
+/// live gear position. The FDM rate-limits the travel over ~5 s, so the blend
 /// reads as a smooth cycle without any easing here.
 fn drive_gear(state: Res<AircraftState>, mut q: Query<(&Name, &mut Transform)>) {
     if !state.gear_available {

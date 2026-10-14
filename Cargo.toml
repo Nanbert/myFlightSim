@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bevy = { version = "0.20", features = ["wav"] }
+bevy = { version = "0.20", features = ["wav", "jpeg"] }
 fdm = { path = "crates/fdm" }
 flight-model = { path = "crates/flight-model" }
 jsbsim-sys = { path = "jsbsim-sys" }

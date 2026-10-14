@@ -105,6 +105,13 @@ impl DirectFcs {
             scale(i.aileron_cmd + i.roll_trim_cmd, self.aileron_lim_deg) * self.aileron_gain;
         let rudder_rad =
             scale(i.rudder_cmd + i.yaw_trim_cmd, self.rudder_lim_deg) * self.rudder_gain;
+        // The 737's flap aero keys on the normalized position; the c172p's
+        // keys on `flap_deg`. Publish both.
+        let flap_norm = if self.flap_max_deg > 0.0 {
+            i.flap_pos_deg / self.flap_max_deg
+        } else {
+            0.0
+        };
         Surfaces {
             elevator_rad,
             mag_elevator_rad: elevator_rad.abs(),
@@ -112,6 +119,7 @@ impl DirectFcs {
             right_aileron_rad: -aileron_rad,
             rudder_rad,
             flap_deg: i.flap_pos_deg,
+            flap_norm,
             ..Default::default()
         }
     }

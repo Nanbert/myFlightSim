@@ -462,4 +462,5 @@ pub const AH1S: Aircraft = Aircraft {
     gear: GEAR,
     gear_retractable: false,
     rotors: ROTORS,
+    rest_h_ft: 6.0,
 };

@@ -6,6 +6,7 @@
 //! laws, and gear layouts land as further structs here.
 
 pub mod ah1s;
+pub mod b737;
 pub mod c172;
 pub mod f22;
 
@@ -55,6 +56,11 @@ pub struct Aircraft {
     pub gear_retractable: bool,
     /// Rotors (main first, then tail). Empty for fixed-wing aircraft.
     pub rotors: &'static [RotorSpec],
+    /// CG height above the runway to seed the IC at when parked (ft). Seeding at
+    /// the wrong height buries the gear/skids and the ground springs fling the
+    /// aircraft, so this is per-aircraft (e.g. the c172p reset height, or a
+    /// helicopter resting on its skids).
+    pub rest_h_ft: f64,
 }
 
 impl Aircraft {

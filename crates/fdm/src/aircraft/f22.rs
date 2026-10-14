@@ -487,6 +487,7 @@ const F119: TurbineSpec = TurbineSpec {
     milthrust: 26950.0,
     maxthrust: 37000.0,
     augmented: true,
+    bleed: 0.0,
     idle_n2: 53.0,
     max_n2: 100.0,
     count: 2,
@@ -584,4 +585,5 @@ pub const F22: Aircraft = Aircraft {
     gear: GEAR,
     gear_retractable: true,
     rotors: &[],
+    rest_h_ft: 4.7,
 };

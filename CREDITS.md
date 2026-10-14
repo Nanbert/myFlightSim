@@ -27,5 +27,15 @@
 - **Modifications:** None. Used as the visual for the AH-1S rotorcraft FDM; its
   main and tail rotor hubs are spun at runtime from the simulated rotor rpm.
 
+## 3D model — `assets/b737.glb`
+
+- **Title:** Boeing737
+- **Author:** manilov.ap (https://sketchfab.com/manilov.ap)
+- **Source:** https://sketchfab.com/3d-models/boeing737-259de41be0c7410e86b7e79be33d6b3a
+- **License:** [CC BY 4.0](http://creativecommons.org/licenses/by/4.0/)
+- **Modifications:** None. The model file is used as-is; its wing, stabilizer
+  and fin have no separate control-surface geometry, so nothing is animated on
+  the mesh.
+
 The same attribution for each model is carried inside the file itself
 (`asset.extras` in the glTF JSON).

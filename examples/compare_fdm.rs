@@ -79,6 +79,9 @@ fn main() {
     let ac = args.get(1).cloned().unwrap_or_else(|| "c172p".into());
     let (vc, alt) = match ac.as_str() {
         "f22" => (350.0, 15000.0),
+        // 737 cruise: the model's `cruise_init.xml` is 750 ft/s TAS at 30 kft
+        // (M0.75), which is ≈285 kt calibrated.
+        "737" | "b737" => (285.0, 30000.0),
         _ => (120.0, 3000.0),
     };
 

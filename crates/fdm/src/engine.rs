@@ -404,6 +404,10 @@ pub struct TurbineSpec {
     pub maxthrust: f64,
     /// Whether this engine has an afterburner.
     pub augmented: bool,
+    /// Installed-thrust derate for bleed air / accessories (the model's
+    /// `<bleed>`): JSBSim multiplies the dry thrust by `1 - bleed`. 0 for
+    /// engines that declare no bleed, in which case this is a no-op.
+    pub bleed: f64,
     /// Idle core speed (% N2) — the floor of the thrust-vs-throttle curve.
     pub idle_n2: f64,
     /// Max core speed (% N2).
@@ -456,9 +460,12 @@ impl Turbine {
         let n2norm = throttle;
         let mut thrust = idlethrust + milthrust * n2norm * n2norm;
         // Augmentation (augmethod 1): full afterburner above 99% throttle, where
-        // N2 is necessarily above the 97% gate.
+        // N2 is necessarily above the 97% gate. The dry branch carries the bleed
+        // derate (JSBSim applies it only while the burner is off).
         if self.spec.augmented && throttle > 0.99 {
             thrust = self.spec.aug_thrust.lookup(mach, da) * self.spec.maxthrust;
+        } else {
+            thrust *= 1.0 - self.spec.bleed;
         }
         thrust * self.spec.count as f64
     }
@@ -794,6 +801,7 @@ mod tests {
             milthrust: 26950.0,
             maxthrust: 37000.0,
             augmented: true,
+            bleed: 0.0,
             idle_n2: 53.0,
             max_n2: 100.0,
             count: 2,
