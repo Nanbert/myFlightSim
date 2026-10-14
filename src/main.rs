@@ -1,4 +1,5 @@
 mod input;
+mod lens;
 mod sim;
 mod sky;
 mod sound;
@@ -24,6 +25,7 @@ fn main() {
             sky::SkyPlugin,
             sound::SoundPlugin,
             weather::WeatherPlugin,
+            lens::LensPlugin,
         ))
         .run();
 }
