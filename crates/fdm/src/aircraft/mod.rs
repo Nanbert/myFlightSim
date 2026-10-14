@@ -5,6 +5,7 @@
 //! thrust-vectoring F-22 a new data file, not new code — their engines, control
 //! laws, and gear layouts land as further structs here.
 
+pub mod ah1s;
 pub mod c172;
 pub mod f22;
 
@@ -12,6 +13,7 @@ use crate::aero::Aerodynamics;
 use crate::engine::PowerplantSpec;
 use crate::fcs::ControlSystem;
 use crate::gear::Gear;
+use crate::rotor::RotorSpec;
 use crate::state::{Inertia, Vec3};
 
 /// Pound-mass -> slug (JSBSim's `lbtoslug`).
@@ -51,6 +53,8 @@ pub struct Aircraft {
     /// the gear command and are always down; retractable ones (F-22) drive
     /// `gear/gear-pos-norm` from the pilot's `gear/gear-cmd-norm`.
     pub gear_retractable: bool,
+    /// Rotors (main first, then tail). Empty for fixed-wing aircraft.
+    pub rotors: &'static [RotorSpec],
 }
 
 impl Aircraft {

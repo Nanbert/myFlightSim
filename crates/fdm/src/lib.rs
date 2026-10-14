@@ -28,16 +28,18 @@ mod atmos;
 mod engine;
 mod fcs;
 mod gear;
+mod rotor;
 mod state;
 mod table;
 
 use crate::aero::{AeroResult, PropMap};
-use crate::aircraft::{c172::C172, f22::F22, Aircraft, INCH_TO_FT};
+use crate::aircraft::{ah1s::AH1S, c172::C172, f22::F22, Aircraft, INCH_TO_FT};
 use crate::atmos::{Isa, G0};
 use crate::engine::{EngineOutput, Powerplant};
 use crate::fcs::{scale, ControlSystem, Fbw, FcsInputs, Surfaces};
 use crate::gear::{ground_force, Gear, Ground};
-use crate::state::{rk4, State, Vec3};
+use crate::rotor::{Rotor, RotorControlMap};
+use crate::state::{add, rk4, State, Vec3};
 use flight_model::FlightModel;
 
 const R2D: f64 = 180.0 / std::f64::consts::PI;
@@ -90,11 +92,17 @@ pub struct Fdm {
     rp_offset_ft: Vec3,
     /// CG -> each gear contact point, body axes (ft), aligned with `ac.gear`.
     gear_arms_ft: Vec<Vec3>,
+    /// The rotors, main first then tail. Empty for fixed-wing aircraft.
+    rotors: Vec<Rotor>,
+    /// CG -> each rotor hub, body axes (ft), aligned with `ac.rotors`.
+    rotor_arms_ft: Vec<Vec3>,
     // Pilot commands (normalized), written through `set`.
     elevator_cmd: f64,
     aileron_cmd: f64,
     rudder_cmd: f64,
     throttle_cmd: f64,
+    collective_cmd: f64,
+    collective_trim_cmd: f64,
     pitch_trim_cmd: f64,
     left_brake_cmd: f64,
     right_brake_cmd: f64,
@@ -136,13 +144,21 @@ impl Fdm {
     pub fn new(aircraft: &str) -> Self {
         let ac: &'static Aircraft = match aircraft {
             "f22" => &F22,
+            "ah1s" | "ah-1s" => &AH1S,
             "c172p" | "c172" => &C172,
             _ => &C172,
         };
+        let dt = 1.0 / 120.0;
         let cg_in = ac.loaded_cg_in();
         let prop_arm_ft = struct_to_body(ac.power.location_in(), cg_in);
         let rp_offset_ft = struct_to_body(ac.aero.aerorp_in, cg_in);
         let gear_arms_ft = ac.gear.iter().map(|g| struct_to_body(g.pos_in, cg_in)).collect();
+        let rotors: Vec<Rotor> = ac.rotors.iter().map(|s| Rotor::new(s, dt)).collect();
+        let rotor_arms_ft = ac
+            .rotors
+            .iter()
+            .map(|s| struct_to_body(s.location_in, cg_in))
+            .collect();
         Fdm {
             ac,
             state: State::default(),
@@ -157,10 +173,14 @@ impl Fdm {
             prop_arm_ft,
             rp_offset_ft,
             gear_arms_ft,
+            rotors,
+            rotor_arms_ft,
             elevator_cmd: 0.0,
             aileron_cmd: 0.0,
             rudder_cmd: 0.0,
             throttle_cmd: 0.0,
+            collective_cmd: 0.0,
+            collective_trim_cmd: 0.0,
             pitch_trim_cmd: 0.0,
             left_brake_cmd: 0.0,
             right_brake_cmd: 0.0,
@@ -180,7 +200,7 @@ impl Fdm {
             diag: Diag::default(),
             origin_lat: 0.0,
             origin_lon: 0.0,
-            dt: 1.0 / 120.0,
+            dt,
         }
     }
 
@@ -233,6 +253,8 @@ impl Fdm {
             flap_pos_deg: self.flap_pos_deg,
             thrust_lbs,
             engine_count: ac.power.engine_count(),
+            collective_cmd: self.collective_cmd,
+            collective_trim_cmd: self.collective_trim_cmd,
         };
         ac.control.resolve(&mut self.fbw, &inputs, dt)
     }
@@ -314,6 +336,13 @@ impl Fdm {
         let surf = self.resolve_surfaces(mach, rho, pressure, thrust, dt);
         self.step_flap(dt);
 
+        // Rotors: governor-lock the main rotor (the tail rotor follows through
+        // the gear ratio), write this step's controls, and run one
+        // momentum-theory solve. Like thrust, the resulting body force/moment is
+        // frozen across the RK4 stages; only the inflow ratio `nu` integrates,
+        // and it advances once per step here.
+        let (rotor_force, rotor_moment) = self.step_rotors(&surf, alt, rho, dt);
+
         let ac = self.ac;
         let mass = self.mass;
         let inertia = self.inertia;
@@ -335,6 +364,10 @@ impl Fdm {
         // The induced-drag term reads last frame's lift coefficient (JSBSim's
         // one-frame feedback, avoiding a same-frame circular dependency).
         props.set("aero/cl-squared", self.cl_sq);
+        // The rotor advance ratio (JSBSim aliases `propulsion/engine/advance-ratio`
+        // as `aero/mu`). It drives the AH-1S tail pitch stiffness/damping curves;
+        // frozen with the rotor force for this step, like every other rotor output.
+        props.set("aero/mu", self.rotor_get(0, |r| r.advance_ratio()));
 
         // Aero is recomputed at each RK4 stage from the trial state; thrust and
         // its moment are constant over the step. The snapshot keeps the last
@@ -358,14 +391,14 @@ impl Fdm {
             };
             (
                 [
-                    aero.force_body[0] + thrust + ground.force_body[0],
-                    aero.force_body[1] + ground.force_body[1],
-                    aero.force_body[2] + ground.force_body[2],
+                    aero.force_body[0] + thrust + ground.force_body[0] + rotor_force[0],
+                    aero.force_body[1] + ground.force_body[1] + rotor_force[1],
+                    aero.force_body[2] + ground.force_body[2] + rotor_force[2],
                 ],
                 [
-                    aero.moment_body[0] + torque_x + ground.moment_body[0],
-                    aero.moment_body[1] + mprop[1] + ground.moment_body[1],
-                    aero.moment_body[2] + mprop[2] + ground.moment_body[2],
+                    aero.moment_body[0] + torque_x + ground.moment_body[0] + rotor_moment[0],
+                    aero.moment_body[1] + mprop[1] + ground.moment_body[1] + rotor_moment[1],
+                    aero.moment_body[2] + mprop[2] + ground.moment_body[2] + rotor_moment[2],
                 ],
             )
         });
@@ -380,6 +413,55 @@ impl Fdm {
     /// Vertical speed (ft/s), positive up: `-z_dot` in NED.
     fn h_dot_fps(&self) -> f64 {
         -self.state.body_to_ned(self.state.vel)[2]
+    }
+
+    /// Read a rotor output by index, or 0.0 when there's no such rotor
+    /// (fixed-wing aircraft carry none).
+    fn rotor_get(&self, i: usize, f: impl Fn(&Rotor) -> f64) -> f64 {
+        self.rotors.get(i).map_or(0.0, f)
+    }
+
+    /// Spin the rotors one step and recompute their body force and moment.
+    ///
+    /// The governor holds the main rotor at the engine's RPM; the tail rotor
+    /// rides the same shaft through the gear ratios
+    /// (`rpm_tail = rpm_main · gear_main / gear_tail`). Each rotor gets this
+    /// step's control angles from the resolved surfaces, then a single
+    /// momentum-theory solve. The summed force and moment (the hub-arm moment
+    /// already folded in by the rotor) are frozen across the RK4 stages, exactly
+    /// like thrust. A no-op for fixed-wing aircraft (no rotors).
+    fn step_rotors(&mut self, surf: &Surfaces, h_agl: f64, rho: f64, dt: f64) -> (Vec3, Vec3) {
+        if self.rotors.is_empty() {
+            return ([0.0; 3], [0.0; 3]);
+        }
+        let uvw = self.state.vel;
+        let pqr = self.state.omega;
+        let rpm_main = self.engine_rpm.max(0.0);
+        let main_gear = self.rotors[0].spec().gear_ratio;
+        let mut force = [0.0; 3];
+        let mut moment = [0.0; 3];
+        for (i, rotor) in self.rotors.iter_mut().enumerate() {
+            let (rpm, col, lon, lat) = match rotor.spec().control_map {
+                RotorControlMap::Main => (
+                    rpm_main,
+                    surf.collective_rad,
+                    surf.longitudinal_cyc_rad,
+                    surf.lateral_cyc_rad,
+                ),
+                RotorControlMap::Tail => (
+                    rpm_main * (main_gear / rotor.spec().gear_ratio),
+                    surf.antitorque_rad,
+                    0.0,
+                    0.0,
+                ),
+            };
+            rotor.set_rpm(rpm);
+            rotor.set_controls(col, lon, lat);
+            rotor.calculate(uvw, pqr, self.rotor_arms_ft[i], rho, h_agl, dt);
+            force = add(force, rotor.force_body());
+            moment = add(moment, rotor.moment_body());
+        }
+        (force, moment)
     }
 
     /// Evaluate the aero forces/moments and the (steady) powerplant at a trial
@@ -508,8 +590,8 @@ impl Fdm {
     fn fbw_long_residual(&self, x: [f64; 3], vt: f64, alt: f64) -> [f64; 3] {
         let spec = match self.ac.control {
             ControlSystem::Fbw(s) => s,
-            ControlSystem::Direct(_) => {
-                unreachable!("fbw_long_residual called on a direct-FCS aircraft")
+            ControlSystem::Direct(_) | ControlSystem::Heli(_) => {
+                unreachable!("fbw_long_residual called on a non-FBW aircraft")
             }
         };
         let (alpha, elevator_rad, throttle) = (x[0], x[1], x[2]);
@@ -534,6 +616,162 @@ impl Fdm {
         [fx / weight, fz / weight, my / (weight * self.ac.wing_chord_ft)]
     }
 
+    /// Residual for the helicopter trim, weight-normalized and zero at trim: the
+    /// six body force/moment components `[Fx, Fy, Fz, Mx, My, Mz]` at the target
+    /// flight condition. `x` is `[collective, longitudinal, lateral, pedal, phi,
+    /// theta]` — the four pilot commands plus the pitch/roll attitude. `v_ned` is
+    /// the target velocity in NED (zero = hover); the trial attitude carries it
+    /// into the body frame, so the rotor and airframe see the right airspeed and
+    /// angle of attack. Aero vanishes at hover (qbar → 0), so this reduces to the
+    /// old hover residual there.
+    fn trim_heli_residual(&mut self, x: [f64; 6], alt: f64, v_ned: [f64; 3]) -> [f64; 6] {
+        self.collective_cmd = x[0];
+        self.elevator_cmd = x[1];
+        self.aileron_cmd = x[2];
+        self.rudder_cmd = x[3];
+        // Heading doesn't enter the body-frame balance, but write the caller's so
+        // the trim seats on it (and the final inflow-settle passes don't clobber
+        // it with 0).
+        self.state.quat = euler_to_quat(x[4], x[5], self.ic_psi_deg * D2R);
+        self.state.vel = self.state.ned_to_body(v_ned);
+        self.state.omega = [0.0; 3];
+
+        let rho = self.isa.density(alt);
+        let pressure = self.isa.pressure(alt);
+        let sound = self.isa.sound_speed(alt);
+        let mach = self.state.airspeed() / sound.max(1.0);
+        let surf = self.resolve_surfaces(mach, rho, pressure, 0.0, self.dt);
+        let (rf, rm) = self.step_rotors(&surf, alt, rho, self.dt);
+
+        // Airframe aero: the fuselage drag and fin weathercock (this model has no
+        // wing lift — the rotor carries the weight).
+        let mut props = PropMap::new();
+        props.set("aero/cl-squared", self.cl_sq);
+        props.set("aero/mu", self.rotor_get(0, |r| r.advance_ratio()));
+        fill_props(&mut props, self.ac, &self.state, &surf, 0.0, rho, sound);
+        props.set("gear/gear-pos-norm", self.gear_pos);
+        let aero = self.ac.aero.evaluate(&mut props, self.rp_offset_ft);
+
+        let grav = self.state.ned_to_body([0.0, 0.0, G0]);
+        let mass = self.mass;
+        let weight = mass * G0;
+        [
+            (aero.force_body[0] + rf[0] + grav[0] * mass) / weight,
+            (aero.force_body[1] + rf[1] + grav[1] * mass) / weight,
+            (aero.force_body[2] + rf[2] + grav[2] * mass) / weight,
+            (aero.moment_body[0] + rm[0]) / (weight * self.ac.wing_span_ft),
+            (aero.moment_body[1] + rm[1]) / (weight * self.ac.wing_chord_ft),
+            (aero.moment_body[2] + rm[2]) / (weight * self.ac.wing_span_ft),
+        ]
+    }
+
+    /// Trim a helicopter at the commanded airspeed. Newton-solve the four pilot
+    /// commands — collective, longitudinal cyclic, lateral cyclic, pedal —
+    /// together with the pitch and roll attitude, so the six body force/moment
+    /// components vanish, then seat the model on the solved point. `vc_kts = 0`
+    /// is a hover; a positive value is level flight at that airspeed, along the
+    /// current heading (`ic_psi_deg`). The result is in place: the current ground
+    /// track is preserved, and the trimmed velocity keeps the commanded airspeed
+    /// rather than being reset to zero.
+    fn trim_heli(&mut self, vc_kts: f64, alt_ft: f64) {
+        let rho = self.isa.density(alt_ft);
+        // Light the rotor drive (the governor then holds nominal RPM) and seed
+        // the engine outputs, so the rotor spins throughout the solve.
+        let eng = self.power.steady_at(
+            1.0,
+            rho,
+            self.isa.pressure(alt_ft),
+            self.isa.temperature(alt_ft),
+            0.0,
+            self.isa.sound_speed(alt_ft),
+            0.0,
+        );
+        self.engine_rpm = eng.rpm;
+        self.engine_power_hp = eng.power_hp;
+
+        // Target velocity: level flight along the current heading at the
+        // commanded (calibrated) airspeed. Zero keeps it a hover.
+        let tas = self.isa.cas_to_tas(vc_kts * KT_TO_FPS, alt_ft);
+        let psi = self.ic_psi_deg * D2R;
+        let v_ned = [tas * psi.cos(), tas * psi.sin(), 0.0];
+
+        // Keep the current ground track (x, y) so a trim taken airborne doesn't
+        // teleport the aircraft back over the origin.
+        let [px, py, _] = self.state.pos;
+
+        // Seat the state at the target altitude with the heading; the residual
+        // writes the trial attitude and body velocity into it each pass.
+        self.state = State {
+            pos: [px, py, -alt_ft],
+            vel: [0.0; 3],
+            quat: euler_to_quat(0.0, 0.0, psi),
+            omega: [0.0; 3],
+        };
+
+        const H: f64 = 1e-4;
+        let nrm = |r: [f64; 6]| {
+            (r.iter().map(|v| v * v).sum::<f64>()).sqrt()
+        };
+        let mut x = [0.5, 0.0, 0.0, 0.0, 0.0, 0.0];
+        for _ in 0..60 {
+            let r = self.trim_heli_residual(x, alt_ft, v_ned);
+            let rnorm = nrm(r);
+            if rnorm < 1e-8 {
+                break;
+            }
+            let mut j = [[0.0; 6]; 6];
+            for k in 0..6 {
+                let mut xp = x;
+                xp[k] += H;
+                let rp = self.trim_heli_residual(xp, alt_ft, v_ned);
+                for i in 0..6 {
+                    j[i][k] = (rp[i] - r[i]) / H;
+                }
+            }
+            let Some(dx) = solve_n(j, [-r[0], -r[1], -r[2], -r[3], -r[4], -r[5]]) else {
+                break;
+            };
+            let mut step = 1.0;
+            let mut xnew = x;
+            for _ in 0..24 {
+                for k in 0..6 {
+                    xnew[k] = x[k] + step * dx[k];
+                }
+                clamp_heli(&mut xnew);
+                if nrm(self.trim_heli_residual(xnew, alt_ft, v_ned)) < rnorm {
+                    break;
+                }
+                step *= 0.5;
+            }
+            x = xnew;
+        }
+
+        self.collective_cmd = x[0].clamp(0.0, 1.0);
+        self.elevator_cmd = x[1];
+        self.aileron_cmd = x[2];
+        self.rudder_cmd = x[3];
+        self.collective_trim_cmd = 0.0;
+        self.pitch_trim_cmd = 0.0;
+        self.roll_trim_cmd = 0.0;
+        self.yaw_trim_cmd = 0.0;
+        self.throttle_cmd = 1.0;
+        self.flap_pos_deg = 0.0;
+        self.ic_vc_kts = vc_kts;
+        self.ic_alt_ft = alt_ft;
+        self.state = State {
+            pos: [px, py, -alt_ft],
+            vel: [0.0; 3],
+            quat: euler_to_quat(x[4], x[5], psi),
+            omega: [0.0; 3],
+        };
+        self.state.vel = self.state.ned_to_body(v_ned);
+
+        // Settle the rotor inflow at the solved point (a couple of passes), so
+        // the first `step` starts from the converged inflow.
+        self.trim_heli_residual(x, alt_ft, v_ned);
+        self.trim_heli_residual(x, alt_ft, v_ned);
+    }
+
     /// Seat a fly-by-wire aircraft on a wings-level steady trim at `vc_kts` and
     /// `alt_ft`. Because the loop commands *rates*, the equilibrium is an
     /// (alpha, elevator_rad, throttle) that nulls the longitudinal residual with
@@ -543,7 +781,9 @@ impl Fdm {
     fn trim_fbw(&mut self, vc_kts: f64, alt_ft: f64) {
         let spec = match self.ac.control {
             ControlSystem::Fbw(s) => s,
-            ControlSystem::Direct(_) => unreachable!("trim_fbw on a direct-FCS aircraft"),
+            ControlSystem::Direct(_) | ControlSystem::Heli(_) => {
+                unreachable!("trim_fbw on a non-FBW aircraft")
+            }
         };
         let vt = self.isa.cas_to_tas(vc_kts * KT_TO_FPS, alt_ft);
         const H: f64 = 1e-4;
@@ -650,6 +890,22 @@ impl FlightModel for Fdm {
         self.ac.gear_retractable
     }
 
+    /// Rotorcraft (the AH-1S) carry rotors; fixed-wing aircraft don't.
+    fn has_rotor(&self) -> bool {
+        !self.rotors.is_empty()
+    }
+
+    /// Parked CG height. A helicopter rests on its skids (~6 ft for the AH-1S,
+    /// from the `ah1s_parks_on_skids` settle); the fixed-wing models park at the
+    /// c172p reset height.
+    fn rest_h_ft(&self) -> f64 {
+        if self.rotors.is_empty() {
+            4.7
+        } else {
+            6.0
+        }
+    }
+
     /// Solve a wings-level, steady trim at `vc_kts` (calibrated) and `alt_ft`,
     /// then seat the model on it. Longitudinal unknowns — angle of attack,
     /// pitch-trim command, throttle — null the axial/vertical force and pitch
@@ -665,6 +921,10 @@ impl FlightModel for Fdm {
     fn trim(&mut self, vc_kts: f64, alt_ft: f64) {
         if let ControlSystem::Fbw(_) = self.ac.control {
             self.trim_fbw(vc_kts, alt_ft);
+            return;
+        }
+        if matches!(self.ac.control, ControlSystem::Heli(_)) {
+            self.trim_heli(vc_kts, alt_ft);
             return;
         }
         let vt = self.isa.cas_to_tas(vc_kts * KT_TO_FPS, alt_ft);
@@ -857,12 +1117,32 @@ impl FlightModel for Fdm {
             "fcs/aileron-cmd-norm" => self.aileron_cmd,
             "fcs/rudder-cmd-norm" => self.rudder_cmd,
             "fcs/throttle-cmd-norm" => self.throttle_cmd,
+            "fcs/collective-cmd-norm" => self.collective_cmd,
             "fcs/pitch-trim-cmd-norm" => self.pitch_trim_cmd,
             "fcs/roll-trim-cmd-norm" => self.roll_trim_cmd,
             "fcs/yaw-trim-cmd-norm" => self.yaw_trim_cmd,
+            // Rotor state, main rotor at index 0 and tail at 1 (JSBSim's
+            // `propulsion/engine[N]/...` rotor properties). Zero for fixed-wing.
+            "propulsion/engine[0]/rotor-rpm" => self.rotor_get(0, |r| r.rpm()),
+            "propulsion/engine[1]/rotor-rpm" => self.rotor_get(1, |r| r.rpm()),
+            "propulsion/engine[0]/a0-rad" => self.rotor_get(0, |r| r.coning_angle()),
+            "propulsion/engine[0]/a1-rad" => self.rotor_get(0, |r| r.longitudinal_flap()),
+            "propulsion/engine[0]/b1-rad" => self.rotor_get(0, |r| r.lateral_flap()),
+            "propulsion/engine[0]/thrust-coefficient" => {
+                self.rotor_get(0, |r| r.thrust_coefficient())
+            }
+            "propulsion/engine[0]/torque-lbsft" => self.rotor_get(0, |r| r.torque()),
+            "propulsion/engine[0]/vi-fps" => self.rotor_get(0, |r| r.induced_velocity()),
+            "propulsion/engine[0]/induced-inflow-ratio" => {
+                self.rotor_get(0, |r| r.inflow_ratio())
+            }
             "propulsion/engine[0]/engine-rpm" => self.engine_rpm,
             "propulsion/engine[0]/power-hp" => self.engine_power_hp,
-            "propulsion/engine[0]/thrust-lbs" => self.diag.thrust,
+            // Propeller/fan thrust for fixed-wing aircraft; the main rotor's
+            // thrust for a helicopter (JSBSim ties this to the thruster's
+            // `GetThrust`, which for an `FGRotor` is the rotor thrust).
+            "propulsion/engine[0]/thrust-lbs" => self.diag.thrust + self.rotor_get(0, |r| r.thrust()),
+            "propulsion/engine[1]/thrust-lbs" => self.rotor_get(1, |r| r.thrust()),
             // Last-step aero/propulsion split (same spelling JSBSim uses), so
             // the validation harness can diff forces and moments frame by frame.
             "aero/alpha-rad" => self.diag.alpha,
@@ -905,6 +1185,7 @@ impl FlightModel for Fdm {
             "fcs/aileron-cmd-norm" => self.aileron_cmd = value,
             "fcs/rudder-cmd-norm" => self.rudder_cmd = value,
             "fcs/throttle-cmd-norm" => self.throttle_cmd = value,
+            "fcs/collective-cmd-norm" => self.collective_cmd = value,
             "fcs/pitch-trim-cmd-norm" => self.pitch_trim_cmd = value,
             "fcs/roll-trim-cmd-norm" => self.roll_trim_cmd = value,
             "fcs/yaw-trim-cmd-norm" => self.yaw_trim_cmd = value,
@@ -962,6 +1243,26 @@ fn fill_props(
     props.set("velocities/q-aero-rad_sec", s.omega[1]);
     props.set("velocities/r-aero-rad_sec", s.omega[2]);
     props.set("velocities/u-aero-fps", u);
+    props.set("velocities/v-aero-fps", v);
+    props.set("velocities/w-aero-fps", w);
+    // Trig atoms the AH-1S wing/fuselage build-up multiplies (the coefficient
+    // framework has no sin/cos of its own — see `aero::Factor`).
+    let (sa2, ca2) = (alpha.sin(), alpha.cos());
+    let (sb2, cb2) = (beta.sin(), beta.cos());
+    props.set("aero/sin-alpha", sa2);
+    props.set("aero/cos-alpha", ca2);
+    props.set("aero/sin2-alpha", sa2 * sa2);
+    props.set("aero/cos2-alpha", ca2 * ca2);
+    props.set("aero/abs-sin-alpha", sa2.abs());
+    props.set("aero/sin-beta", sb2);
+    props.set("aero/cos-beta", cb2);
+    props.set("aero/sin2-beta", sb2 * sb2);
+    // The main-rotor longitudinal cyclic, the AH-1S stabilator (horizontal-tail
+    // incidence) schedule's independent variable.
+    props.set(
+        "propulsion/engine/longitudinal-ctrl-rad",
+        surf.longitudinal_cyc_rad,
+    );
     props.set("atmosphere/rho-slugs_ft3", rho);
     props.set("propulsion/engine/prop-induced-velocity_fps", induced_fps);
     props.set("fcs/elevator-pos-rad", surf.elevator_rad);
@@ -1005,6 +1306,18 @@ fn clamp_fbw_long(x: &mut [f64; 3], elevator_lim_rad: f64) {
     x[0] = x[0].clamp(-0.35, 0.35);
     x[1] = x[1].clamp(-elevator_lim_rad, elevator_lim_rad);
     x[2] = x[2].clamp(0.02, 0.995);
+}
+
+/// Keep the helicopter hover-trim unknowns `[collective, longitudinal, lateral,
+/// pedal, phi, theta]` physical: the commands within their normalized ranges
+/// and the hover attitude within a few degrees of level.
+fn clamp_heli(x: &mut [f64; 6]) {
+    x[0] = x[0].clamp(0.0, 1.0);
+    x[1] = x[1].clamp(-1.0, 1.0);
+    x[2] = x[2].clamp(-1.0, 1.0);
+    x[3] = x[3].clamp(-1.0, 1.0);
+    x[4] = x[4].clamp(-0.35, 0.35);
+    x[5] = x[5].clamp(-0.35, 0.35);
 }
 
 /// Solve the `N x N` system `A x = b` by Gaussian elimination with partial
@@ -1399,7 +1712,7 @@ mod tests {
         // onto its three gear struts rather than sinking through the ground.
         let mut m = Fdm::new("f22");
         m.set("ic/vc-kts", 0.0);
-        m.set("ic/h-sl-ft", 6.0);
+        m.set("ic/h-sl-ft", 8.0);
         m.set("ic/psi-true-deg", 0.0);
         m.apply_ic();
         m.set("propulsion/set-running", -1.0);
@@ -1510,6 +1823,17 @@ mod tests {
     }
 
     #[test]
+    fn rotor_and_rest_height_are_reported_per_aircraft() {
+        // The AH-1S carries rotors and parks on its skids; the fixed-wing models
+        // do neither.
+        let heli = Fdm::new("ah1s");
+        assert!(heli.has_rotor());
+        assert!((heli.rest_h_ft() - 6.0).abs() < 1e-9);
+        assert!(!Fdm::new("c172p").has_rotor());
+        assert!((Fdm::new("c172p").rest_h_ft() - 4.7).abs() < 1e-9);
+    }
+
+    #[test]
     fn f22_tvc_enable_roundtrips() {
         let mut m = Fdm::new("f22");
         assert!(m.get("fcs/tvc-enable") > 0.5, "TVC should default on");
@@ -1585,5 +1909,292 @@ mod tests {
         }
         assert!(m.get("gear/wow") > 0.5, "should still be on the wheels");
         assert_eq!(m.get("fcs/tvc-pos-rad"), 0.0, "TVC must be inhibited on the ground");
+    }
+
+    /// An AH-1S hovering at `alt` ft: still and level, engine lit (the governor
+    /// then holds the rotor at nominal RPM), trimmed to hover.
+    fn hovering(alt: f64) -> Fdm {
+        let mut m = Fdm::new("ah1s");
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", alt);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        m.trim(0.0, alt);
+        m
+    }
+
+    #[test]
+    fn helicopter_hovers() {
+        // The hover trim must be a true fixed point: the model holds altitude,
+        // stays put horizontally, and holds heading, with the rotor thrust
+        // carrying the 8500 lb weight.
+        let mut m = hovering(2000.0);
+        for _ in 0..120 * 10 {
+            m.step();
+        }
+        assert!(
+            (m.get("position/h-sl-ft") - 2000.0).abs() < 20.0,
+            "altitude drifted: {}",
+            m.get("position/h-sl-ft")
+        );
+        assert!(
+            m.get("velocities/h-dot-fps").abs() < 2.0,
+            "not settled vertically: {}",
+            m.get("velocities/h-dot-fps")
+        );
+        assert!(m.get("velocities/vc-kts") < 2.0, "drifting horizontally");
+        assert!(
+            m.get("velocities/r-rad_sec").abs() < 0.05,
+            "yawing at hover: {}",
+            m.get("velocities/r-rad_sec")
+        );
+        let t = m.get("propulsion/engine[0]/thrust-lbs");
+        assert!(
+            (t - 8500.0).abs() < 250.0,
+            "hover thrust {t} should match the 8500 lb weight"
+        );
+    }
+
+    #[test]
+    fn helicopter_trims_in_forward_flight() {
+        // The trim honors the commanded airspeed: seat level flight across a
+        // speed range and confirm each is a fixed point (speed and altitude
+        // hold). Zero reduces to the hover case.
+        for vc in [0.0, 40.0, 80.0, 120.0] {
+            let mut m = Fdm::new("ah1s");
+            m.set("ic/vc-kts", 0.0);
+            m.set("ic/h-sl-ft", 2000.0);
+            m.set("ic/psi-true-deg", 0.0);
+            m.apply_ic();
+            m.set("propulsion/set-running", -1.0);
+            m.trim(vc, 2000.0);
+
+            let vc0 = m.get("velocities/vc-kts");
+            let alt0 = m.get("position/h-sl-ft");
+            for _ in 0..120 * 10 {
+                m.step();
+            }
+            assert!(
+                (m.get("velocities/vc-kts") - vc0).abs() < 5.0,
+                "speed drifted from {vc} kt: {vc0} -> {}",
+                m.get("velocities/vc-kts")
+            );
+            assert!(
+                (m.get("position/h-sl-ft") - alt0).abs() < 30.0,
+                "altitude drifted at {vc} kt: {alt0} -> {}",
+                m.get("position/h-sl-ft")
+            );
+        }
+    }
+
+    #[test]
+    fn hover_trim_keeps_position_and_heading() {
+        // A trim taken airborne must hold the current ground track and heading,
+        // not teleport the aircraft back over the origin (the FDM's lat/lon
+        // origin). Fly east a couple of seconds, then re-trim.
+        let mut m = hovering(2000.0);
+        m.set("ic/psi-true-deg", 90.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        m.trim(0.0, 2000.0);
+        m.set("fcs/elevator-cmd-norm", 0.5); // nose down -> accelerate forward
+        for _ in 0..120 * 6 {
+            m.step();
+        }
+
+        let lat0 = m.get("position/lat-gc-deg");
+        let lon0 = m.get("position/long-gc-deg");
+        let psi0 = m.get("attitude/psi-deg");
+        assert!(lon0.abs() > 1e-4, "should have flown east: lon = {lon0}");
+
+        // Mimic the app's re-trim: seat the current heading, then trim.
+        m.set("ic/psi-true-deg", psi0);
+        m.trim(m.get("velocities/vc-kts"), m.get("position/h-sl-ft"));
+
+        assert!(
+            (m.get("position/lat-gc-deg") - lat0).abs() < 1e-6,
+            "trim moved latitude: {lat0} -> {}",
+            m.get("position/lat-gc-deg")
+        );
+        assert!(
+            (m.get("position/long-gc-deg") - lon0).abs() < 1e-6,
+            "trim moved longitude: {lon0} -> {}",
+            m.get("position/long-gc-deg")
+        );
+        assert!(
+            (m.get("attitude/psi-deg") - psi0).abs() < 1e-3,
+            "trim changed heading: {psi0} -> {}",
+            m.get("attitude/psi-deg")
+        );
+    }
+
+    #[test]
+    fn collective_commands_a_climb() {
+        // Raising collective above the hover setting adds thrust and climbs.
+        let mut m = hovering(2000.0);
+        m.set("fcs/collective-cmd-norm", 1.0);
+        for _ in 0..120 * 5 {
+            m.step();
+        }
+        assert!(
+            m.get("position/h-sl-ft") > 2020.0,
+            "raising collective should climb: h = {}",
+            m.get("position/h-sl-ft")
+        );
+        assert!(
+            m.get("velocities/h-dot-fps") > 1.0,
+            "should be climbing: hdot = {}",
+            m.get("velocities/h-dot-fps")
+        );
+    }
+
+    #[test]
+    fn tail_rotor_counters_main_torque() {
+        // Trimmed, the pedal's tail-rotor thrust cancels the main rotor's
+        // reaction torque, so the hover holds heading. Drop the pedal to neutral
+        // and the torque yaws the airframe.
+        let mut m = hovering(2000.0);
+        for _ in 0..120 * 5 {
+            m.step();
+        }
+        assert!(
+            m.get("velocities/r-rad_sec").abs() < 0.05,
+            "trimmed hover should hold heading: r = {}",
+            m.get("velocities/r-rad_sec")
+        );
+        m.set("fcs/rudder-cmd-norm", 0.0);
+        for _ in 0..120 * 3 {
+            m.step();
+        }
+        assert!(
+            m.get("velocities/r-rad_sec").abs() > 0.05,
+            "unbalanced main-rotor torque should yaw the airframe: r = {}",
+            m.get("velocities/r-rad_sec")
+        );
+    }
+
+    #[test]
+    fn ah1s_parks_on_skids() {
+        // Idle on the ground: the skids hold the weight, the aircraft settles at
+        // a stable height and stays at rest, without sinking through.
+        let mut m = Fdm::new("ah1s");
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", 6.0);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        for _ in 0..120 * 8 {
+            m.step();
+        }
+        let h = m.get("position/h-sl-ft");
+        assert!(h > 4.0, "sank through the skids: h = {h}");
+        assert!((5.5..7.0).contains(&h), "unexpected settled height: {h}");
+        assert!(m.get("gear/wow") > 0.5, "should rest on the skids");
+        assert!(
+            m.get("velocities/h-dot-fps").abs() < 1.0,
+            "should be at rest"
+        );
+    }
+
+    #[test]
+    fn ah1s_cyclic_commands_pitch_and_roll() {
+        // Longitudinal cyclic tilts the rotor disk forward: from a hover a
+        // nose-down command should pitch the nose down and accelerate forward;
+        // lateral cyclic rolls the airframe.
+        let mut m = hovering(2000.0);
+        m.set("fcs/elevator-cmd-norm", 0.5);
+        for _ in 0..120 * 2 {
+            m.step();
+        }
+        assert!(
+            m.get("attitude/theta-rad") < -0.01,
+            "longitudinal cyclic should pitch the nose down: theta = {}",
+            m.get("attitude/theta-rad")
+        );
+        assert!(m.get("velocities/vc-kts") > 1.0, "should accelerate forward");
+
+        let mut m = hovering(2000.0);
+        m.set("fcs/aileron-cmd-norm", 0.5);
+        for _ in 0..120 * 2 {
+            m.step();
+        }
+        assert!(
+            m.get("attitude/phi-rad").abs() > 0.01,
+            "lateral cyclic should roll the airframe: phi = {}",
+            m.get("attitude/phi-rad")
+        );
+    }
+
+    #[test]
+    fn ah1s_pitch_disturbance_is_bounded() {
+        // The horizontal tail carries the airframe's pitch stability, through
+        // three moments: the tail-lift term (`Ma_ht`, from `CLa_ht`) and the
+        // stiffness/damping pair (`CMw_ht`/`CMq_ht`). Without them a cyclic
+        // disturbance diverges (nose keeps dropping, model pitches over); with
+        // them the response is a bounded, lightly-damped phugoid. Trim at cruise,
+        // kick the cyclic, release, and confirm the pitch never runs away.
+        let mut m = Fdm::new("ah1s");
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", 2000.0);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        m.trim(80.0, 2000.0);
+
+        // 0.5 s nose-down pulse, then release back to the trim seat (zero cyclic).
+        for _ in 0..120 / 2 {
+            m.set("fcs/elevator-cmd-norm", 0.15);
+            m.step();
+        }
+
+        let mut max_theta: f64 = 0.0;
+        for _ in 0..120 * 30 {
+            m.step();
+            max_theta = max_theta.max(m.get("attitude/theta-rad").abs());
+        }
+        assert!(
+            max_theta < 0.5,
+            "pitch ran away after a disturbance: max |theta| = {max_theta:.3} rad"
+        );
+        assert!(
+            m.get("velocities/vc-kts") > 20.0,
+            "speed collapsed: {} kt",
+            m.get("velocities/vc-kts")
+        );
+    }
+
+    #[test]
+    fn ah1s_wing_lift_builds_up_with_speed() {
+        // The wing and fuselage lift/drag/side build-up is speed-dependent: in
+        // hover the dynamic pressure is zero and the rotor carries the whole
+        // weight (no airframe aero force), while at cruise the airframe makes a
+        // real upward lift and backward drag of its own.
+        let mut m = Fdm::new("ah1s");
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", 2000.0);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        m.trim(0.0, 2000.0);
+        m.step();
+        assert!(
+            m.get("forces/fbz-aero-lbs").abs() < 1.0,
+            "hover should have no airframe aero force: {}",
+            m.get("forces/fbz-aero-lbs")
+        );
+
+        m.trim(100.0, 2000.0);
+        m.step();
+        assert!(
+            m.get("forces/fbz-aero-lbs") < -100.0,
+            "the wing should carry lift at cruise: {} lbs",
+            m.get("forces/fbz-aero-lbs")
+        );
+        assert!(
+            m.get("forces/fbx-aero-lbs") < -200.0,
+            "the airframe should make drag at cruise: {} lbs",
+            m.get("forces/fbx-aero-lbs")
+        );
     }
 }

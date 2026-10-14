@@ -499,31 +499,95 @@ impl Turbine {
     }
 }
 
-/// The powerplant a model file describes — a piston+prop or a turbofan. This is
-/// the seam swapped per aircraft; everything downstream goes through
-/// [`Powerplant`]. `Copy` so an aircraft `const` can hand its spec to a running
-/// engine without cloning.
+/// Rotor-drive configuration: an engine geared to a rotor at a governed speed.
+/// The governor holds the rotor at `nominal_rpm`, so the engine's only job is to
+/// supply enough torque; collectors, clutch, brake and free-wheeling unit (the
+/// `FGTransmission` model) are dropped — see the fidelity note in the project
+/// memory. Only the RPM is propagated to the rotor (in `lib.rs`); the gear
+/// ratios live on the rotors themselves (see `rotor::RotorSpec`).
+#[derive(Clone, Copy)]
+pub struct RotorDriveSpec {
+    pub nominal_rpm: f64,
+    /// Shaft power available at full throttle (hp), for reporting only.
+    pub max_power_hp: f64,
+}
+
+/// Running rotor drive. Quasi-steady: while lit the rotor sits at nominal RPM.
+pub struct RotorDrive {
+    spec: RotorDriveSpec,
+    running: bool,
+}
+
+impl RotorDrive {
+    pub fn new(spec: RotorDriveSpec) -> Self {
+        RotorDrive {
+            spec,
+            running: false,
+        }
+    }
+
+    pub fn start(&mut self) {
+        self.running = true;
+    }
+
+    fn output_at(&self, throttle: f64) -> EngineOutput {
+        EngineOutput {
+            thrust: 0.0,
+            torque_x: 0.0,
+            induced_velocity: 0.0,
+            power_hp: if self.running {
+                self.spec.max_power_hp * throttle.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            rpm: if self.running { self.spec.nominal_rpm } else { 0.0 },
+        }
+    }
+
+    pub fn step(&mut self, _dt: f64, throttle: f64) -> EngineOutput {
+        self.output_at(throttle)
+    }
+
+    pub fn steady_at(&mut self, throttle: f64) -> EngineOutput {
+        self.running = true;
+        self.output_at(throttle)
+    }
+
+    pub fn steady_output(&self, throttle: f64) -> EngineOutput {
+        self.output_at(throttle)
+    }
+}
+
+/// The powerplant a model file describes — a piston+prop, a turbofan, or a
+/// governed rotor drive. This is the seam swapped per aircraft; everything
+/// downstream goes through [`Powerplant`]. `Copy` so an aircraft `const` can
+/// hand its spec to a running engine without cloning.
 #[derive(Clone, Copy)]
 pub enum PowerplantSpec {
     Piston { engine: PistonSpec, prop: PropSpec },
     Turbine(TurbineSpec),
+    Rotor(RotorDriveSpec),
 }
 
 impl PowerplantSpec {
     /// Thruster (prop or jet nozzle) location in the structural frame, inches
-    /// from the datum — the arm the thrust acts on.
+    /// from the datum — the arm the thrust acts on. A rotor's thrust is applied
+    /// at its hub (handled in `lib.rs`), so this is the datum.
     pub fn location_in(&self) -> Vec3 {
         match self {
             PowerplantSpec::Piston { prop, .. } => prop.location,
             PowerplantSpec::Turbine(t) => t.location,
+            PowerplantSpec::Rotor(_) => [0.0, 0.0, 0.0],
         }
     }
 
-    /// Number of engines on the airframe (the piston model is single-engine).
+    /// Number of engines on the airframe (the piston and rotor models are
+    /// single-engine).
     pub fn engine_count(&self) -> usize {
         match self {
             PowerplantSpec::Piston { .. } => 1,
             PowerplantSpec::Turbine(t) => t.count,
+            PowerplantSpec::Rotor(_) => 1,
         }
     }
 }
@@ -535,6 +599,7 @@ impl PowerplantSpec {
 pub enum Powerplant {
     Piston(PistonEngine),
     Turbine(Turbine),
+    Rotor(RotorDrive),
 }
 
 impl Powerplant {
@@ -544,6 +609,7 @@ impl Powerplant {
                 Powerplant::Piston(PistonEngine::new(engine, prop))
             }
             PowerplantSpec::Turbine(t) => Powerplant::Turbine(Turbine::new(t)),
+            PowerplantSpec::Rotor(r) => Powerplant::Rotor(RotorDrive::new(r)),
         }
     }
 
@@ -561,6 +627,7 @@ impl Powerplant {
                 e.start(rho, pressure_psf, temperature_r, vel_x, sound_speed)
             }
             Powerplant::Turbine(t) => t.start(),
+            Powerplant::Rotor(r) => r.start(),
         }
     }
 
@@ -580,6 +647,7 @@ impl Powerplant {
                 e.steady_at(throttle, rho, pressure_psf, temperature_r, vel_x, sound_speed)
             }
             Powerplant::Turbine(t) => t.steady_at(throttle, rho, mach),
+            Powerplant::Rotor(r) => r.steady_at(throttle),
         }
     }
 
@@ -599,6 +667,7 @@ impl Powerplant {
                 e.steady_output(throttle, rho, pressure_psf, temperature_r, vel_x, sound_speed)
             }
             Powerplant::Turbine(t) => t.steady_output(throttle, rho, mach),
+            Powerplant::Rotor(r) => r.steady_output(throttle),
         }
     }
 
@@ -625,6 +694,7 @@ impl Powerplant {
                 sound_speed,
             ),
             Powerplant::Turbine(t) => t.step(dt, throttle, rho, mach),
+            Powerplant::Rotor(r) => r.step(dt, throttle),
         }
     }
 }

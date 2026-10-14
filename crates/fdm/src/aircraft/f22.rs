@@ -583,4 +583,5 @@ pub const F22: Aircraft = Aircraft {
     power: PowerplantSpec::Turbine(F119),
     gear: GEAR,
     gear_retractable: true,
+    rotors: &[],
 };

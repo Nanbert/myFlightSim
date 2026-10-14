@@ -32,6 +32,9 @@
 //!   `fcs/throttle-cmd-norm`, `fcs/pitch-trim-cmd-norm`,
 //!   `fcs/{roll,yaw}-trim-cmd-norm` — surface & trim feedback
 //! - `propulsion/engine[0]/engine-rpm` — engine rpm
+//! - `propulsion/engine[0]/rotor-rpm`, `propulsion/engine[1]/rotor-rpm` — main
+//!   and tail rotor rpm (rotorcraft only; the app spins the rotor meshes from these)
+//! - `fcs/collective-cmd-norm` — collective lever (rotorcraft only)
 
 /// A flight dynamics model driven through a named-property bus.
 pub trait FlightModel: Send + Sync {
@@ -68,5 +71,19 @@ pub trait FlightModel: Send + Sync {
     /// the HUD and whether to animate it.
     fn has_retractable_gear(&self) -> bool {
         false
+    }
+
+    /// Whether the model is a rotorcraft (has a rotor). Default `false`; the
+    /// pure-Rust `fdm` overrides it for the AH-1S. The app uses this to show the
+    /// rotor HUD line and to keep the fixed-wing autopilot off.
+    fn has_rotor(&self) -> bool {
+        false
+    }
+
+    /// CG height above the runway to seed the IC at when parked (ft). Default is
+    /// the c172p value (reset00.xml); the Rust `fdm` overrides it per aircraft so
+    /// e.g. a helicopter parks on its skids instead of burying them.
+    fn rest_h_ft(&self) -> f64 {
+        4.7
     }
 }

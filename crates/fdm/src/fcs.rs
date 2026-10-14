@@ -40,6 +40,14 @@ pub struct Surfaces {
     pub tvc_rad: f64,
     /// Thrust normalized by military thrust (F-22 aero).
     pub thrust_norm: f64,
+    /// Main-rotor collective pitch (rad). Helicopters only.
+    pub collective_rad: f64,
+    /// Main-rotor longitudinal cyclic (rad).
+    pub longitudinal_cyc_rad: f64,
+    /// Main-rotor lateral cyclic (rad).
+    pub lateral_cyc_rad: f64,
+    /// Tail-rotor collective / antitorque pedal (rad).
+    pub antitorque_rad: f64,
 }
 
 /// The control system an aircraft's data file selects.
@@ -48,6 +56,8 @@ pub enum ControlSystem {
     Direct(DirectFcs),
     /// Three-axis rate-command fly-by-wire with the given gains (F-22).
     Fbw(&'static FbwSpec),
+    /// Helicopter rotor controls with collective mixing (AH-1S).
+    Heli(HeliFcs),
 }
 
 impl ControlSystem {
@@ -57,6 +67,7 @@ impl ControlSystem {
         match self {
             ControlSystem::Direct(fcs) => fcs.resolve(inputs),
             ControlSystem::Fbw(spec) => fbw.resolve(spec, inputs, dt),
+            ControlSystem::Heli(fcs) => fcs.resolve(inputs),
         }
     }
 
@@ -65,6 +76,7 @@ impl ControlSystem {
         match self {
             ControlSystem::Direct(fcs) => fcs.flap_max_deg,
             ControlSystem::Fbw(_) => 0.0,
+            ControlSystem::Heli(_) => 0.0,
         }
     }
 }
@@ -103,6 +115,138 @@ impl DirectFcs {
             ..Default::default()
         }
     }
+}
+
+/// A 5th-order S-curve (JSBSim's `fcs/misc/collective-cmd-norm-polymod`): the
+/// collective input is remapped to give more resolution in the mid range. Knotted
+/// every 0.05 of command; interpolated linearly between knots.
+pub const COLLECTIVE_CURVE: &[(f64, f64)] = &[
+    (0.00, 0.000000),
+    (0.05, 0.127377),
+    (0.10, 0.218080),
+    (0.15, 0.282983),
+    (0.20, 0.330560),
+    (0.25, 0.367188),
+    (0.30, 0.397440),
+    (0.35, 0.424393),
+    (0.40, 0.449920),
+    (0.45, 0.474997),
+    (0.50, 0.500000),
+    (0.55, 0.525002),
+    (0.60, 0.550080),
+    (0.65, 0.575608),
+    (0.70, 0.602560),
+    (0.75, 0.632813),
+    (0.80, 0.669440),
+    (0.85, 0.717018),
+    (0.90, 0.781920),
+    (0.95, 0.872623),
+    (1.00, 1.000000),
+];
+
+/// Helicopter rotor controls — a port of the AH-1S `rotor_control.xml` system.
+///
+/// Four pilot inputs (collective, longitudinal/lateral cyclic, antitorque pedal)
+/// map onto four rotor control angles, each a `input * gain + bias`. The
+/// load-bearing part is **collective mixing**: part of the collective command is
+/// summed into the lateral and pedal channels so a collective change does not
+/// need the pilot to re-trim the other axes (and to give the proper counter
+/// moments as torque rises). Without it the machine is nearly unflyable.
+#[derive(Clone, Copy)]
+pub struct HeliFcs {
+    pub collective_gain: f64,
+    pub collective_bias: f64,
+    /// Input-profile blend, 0 = raw command, 1 = full S-curve. (`fcs/adj/collective-profile`)
+    pub collective_profile: f64,
+    /// Center sensitivity exponent for cyclic/pedal (`sgn(x)*|x|^n`).
+    pub center_sensitivity: f64,
+
+    pub longitudinal_gain: f64,
+    pub longitudinal_bias: f64,
+
+    pub lateral_gain: f64,
+    pub lateral_bias: f64,
+    pub lateral_col_mix_gain: f64,
+    pub lateral_col_mix_bias: f64,
+
+    pub pedal_gain: f64,
+    pub pedal_bias: f64,
+    pub pedal_col_mix_gain: f64,
+    pub pedal_col_mix_bias: f64,
+
+    /// Collective profile knots.
+    pub collective_curve: &'static [(f64, f64)],
+}
+
+impl HeliFcs {
+    fn resolve(&self, i: &FcsInputs) -> Surfaces {
+        let sens = self.center_sensitivity;
+
+        // --- collective: S-curve-profile, trimmed, gain + bias ---
+        let coll_cmd = i.collective_cmd.clamp(-1.0, 1.0);
+        let shaped = coll_cmd * (1.0 - self.collective_profile)
+            + self.collective_profile * interp(self.collective_curve, coll_cmd);
+        let coll_sum = (shaped + i.collective_trim_cmd).clamp(-1.0, 1.0);
+        let coll_rad = self.collective_gain * coll_sum + self.collective_bias;
+        // `fcs/collective-ctrl-rad` (pre-lag, unclipped) feeds the mixing; the
+        // lagged output is clipped into [0, 0.7] for the rotor itself.
+        let coll_mix_src = coll_rad;
+        let collective_rad = coll_rad.clamp(0.0, 0.7);
+
+        // --- longitudinal cyclic ---
+        let long_sum = (exmod(i.elevator_cmd, sens) + i.pitch_trim_cmd).clamp(-1.0, 1.0);
+        let longitudinal_cyc_rad =
+            (self.longitudinal_gain * long_sum + self.longitudinal_bias).clamp(-0.7, 0.7);
+
+        // --- lateral cyclic (with collective compensation) ---
+        let lat_sum = (exmod(i.aileron_cmd, sens) + i.roll_trim_cmd).clamp(-1.0, 1.0);
+        let lat_clipped = (self.lateral_gain * lat_sum + self.lateral_bias).clamp(-0.7, 0.7);
+        let lateral_cyc_rad =
+            lat_clipped + (coll_mix_src * self.lateral_col_mix_gain + self.lateral_col_mix_bias);
+
+        // --- pedal / antitorque (with collective compensation) ---
+        let ped_sum = (exmod(i.rudder_cmd, sens) + i.yaw_trim_cmd).clamp(-1.0, 1.0);
+        let ped_pre = self.pedal_gain * ped_sum + self.pedal_bias;
+        let antitorque_rad =
+            ped_pre + (coll_mix_src * self.pedal_col_mix_gain + self.pedal_col_mix_bias);
+
+        Surfaces {
+            collective_rad,
+            longitudinal_cyc_rad,
+            lateral_cyc_rad,
+            antitorque_rad,
+            ..Default::default()
+        }
+    }
+}
+
+/// `sgn(x)*|x|^sens` — the center-sensitivity shaping (JSBSim `*_cmd_norm_exmod`).
+fn exmod(x: f64, sens: f64) -> f64 {
+    if x >= 0.0 {
+        x.powf(sens)
+    } else {
+        -(-x).powf(sens)
+    }
+}
+
+/// Linear interpolation over a `(x, y)` knot table, clamped at the ends.
+fn interp(table: &[(f64, f64)], x: f64) -> f64 {
+    if x <= table[0].0 {
+        return table[0].1;
+    }
+    let last = table[table.len() - 1];
+    if x >= last.0 {
+        return last.1;
+    }
+    for w in table.windows(2) {
+        let (x0, y0) = w[0];
+        let (x1, y1) = w[1];
+        if x <= x1 {
+            let t = (x - x0) / (x1 - x0);
+            return y0 + t * (y1 - y0);
+        }
+    }
+    last.1
 }
 
 /// The fixed gains of an FBW control law. All static data — the running
@@ -252,6 +396,7 @@ impl Fbw {
             speedbrake_norm: 0.0,
             tvc_rad,
             thrust_norm,
+            ..Default::default()
         }
     }
 }
@@ -283,6 +428,9 @@ pub struct FcsInputs {
     pub flap_pos_deg: f64,
     pub thrust_lbs: f64,
     pub engine_count: usize,
+    /// Collective lever, −1 … 1 (helicopters; unused by fixed-wing).
+    pub collective_cmd: f64,
+    pub collective_trim_cmd: f64,
 }
 
 /// A zero-centered `aerosurface_scale`: a positive command maps onto `lim.1`

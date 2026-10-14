@@ -40,6 +40,17 @@ fn model_spec(name: &str) -> ModelSpec {
             drop: 0.90,
             yaw: std::f32::consts::PI,
         },
+        // Mi-24 Hind (AH-1S physics stand-in). Authored +Z-forward, so the same
+        // 180° yaw as the F-22 seats it on Bevy's -Z. `scale`/`drop` are fitted
+        // from the model's geometry (the whole tree is scaled 0.66 by its `Body`
+        // node; the skids sit ~0.037 model-units above the origin): drop =
+        // rest_h(6 ft) + 0.037·scale ≈ 1.87. Rotor spin lives in `drive_surfaces`.
+        "ah1s" => ModelSpec {
+            file: "mi-24_hind.glb",
+            scale: 1.0,
+            drop: 1.87,
+            yaw: std::f32::consts::PI,
+        },
         // Default: the c172, whose control-surface bone rig is driven in
         // `drive_surfaces` (names in `is_control_bone`).
         _ => ModelSpec {
@@ -69,6 +80,16 @@ const PROP: [f32; 3] = [0.0, 0.0, -1.0];
 const MAX_DEFLECT: f32 = 0.35;
 /// Visual prop-spin rate per RPM. Tuned so cruise reads as a fast blur.
 const PROP_SPIN: f32 = 0.01;
+
+// --- AH-1S / Mi-24 rotor spin ---
+// Each rotor spins about its hub axis in the pivot node's LOCAL frame (found
+// from the mesh geometry: the main disc lies in XZ so its normal is local Y; the
+// tail disc lies in YZ so its normal is local X).
+const ROTOR_MAIN_AXIS: [f32; 3] = [0.0, 1.0, 0.0];
+const ROTOR_TAIL_AXIS: [f32; 3] = [1.0, 0.0, 0.0];
+/// Visual rotor-spin rate per RPM, same convention as `PROP_SPIN`. The rotor
+/// turns at ~324 rpm and the tail at ~1660, so the tail visibly outruns it.
+const ROTOR_SPIN: f32 = 0.04;
 
 // --- F-22 (`f22.glb`, model A) control pivots ---
 // The model authors +X left / +Y up / +Z nose, and its control surfaces hang
@@ -150,6 +171,10 @@ struct ControlRig {
     /// Accumulated visual prop rotation (radians), integrated from rpm so the
     /// spin rate tracks the *instantaneous* rpm.
     prop_phase: f32,
+    /// Same, for the helicopter's main and tail rotors (which spin at very
+    /// different rates, so each gets its own accumulator).
+    main_rotor_phase: f32,
+    tail_rotor_phase: f32,
 }
 
 pub struct ViewPlugin;
@@ -283,6 +308,8 @@ fn is_control_bone(name: &str) -> bool {
         | "Cube.043_66" | "Cube.044_79"
         | "Empty.009_39" | "Empty.010_41" | "Empty.011_43" | "Empty.012_45"
         | "Empty.007_35" | "Empty.008_37"
+        // Mi-24 rotor hubs (spun in `drive_surfaces`).
+        | "Top_Rotor" | "Tail_Rotor"
     )
 }
 
@@ -318,6 +345,15 @@ fn drive_surfaces(
     rig.prop_phase = (rig.prop_phase + state.rpm as f32 * PROP_SPIN * time.delta_secs())
         .rem_euclid(std::f32::consts::TAU);
     let prop_phase = rig.prop_phase;
+    // Rotors spin likewise, each from its own rotor-rpm signal.
+    rig.main_rotor_phase =
+        (rig.main_rotor_phase + state.main_rotor_rpm as f32 * ROTOR_SPIN * time.delta_secs())
+            .rem_euclid(std::f32::consts::TAU);
+    rig.tail_rotor_phase =
+        (rig.tail_rotor_phase + state.tail_rotor_rpm as f32 * ROTOR_SPIN * time.delta_secs())
+            .rem_euclid(std::f32::consts::TAU);
+    let main_rotor_phase = rig.main_rotor_phase;
+    let tail_rotor_phase = rig.tail_rotor_phase;
     for (name, e, mut tf) in &mut q {
         let Some(base) = rig.rest.get(&e) else { continue };
         // Signs are set so each surface moves the way JSBSim's command means:
@@ -348,6 +384,11 @@ fn drive_surfaces(
             "Empty.012_45" => (F22_AIL_RO.0, F22_AIL_RO.1 * state.aileron as f32 * MAX_DEFLECT),
             "Empty.007_35" => (F22_RUD_R.0, F22_RUD_R.1 * state.rudder as f32 * MAX_DEFLECT),
             "Empty.008_37" => (F22_RUD_L.0, F22_RUD_L.1 * state.rudder as f32 * MAX_DEFLECT),
+
+            // Mi-24 rotors: a constant spin about each hub's local axis.
+            "Top_Rotor" => (ROTOR_MAIN_AXIS, main_rotor_phase),
+            "Tail_Rotor" => (ROTOR_TAIL_AXIS, tail_rotor_phase),
+
             _ => continue,
         };
         tf.rotation = *base * Quat::from_axis_angle(Vec3::from_array(axis).normalize(), angle);
@@ -504,6 +545,14 @@ fn update_hud(
         state.roll_deg,
     );
 
+    // Rotor instrument line, shown only for rotorcraft (the AH-1S).
+    if state.rotor_available {
+        out.push_str(&format!(
+            "\nROTOR {:.0} rpm   TAIL {:.0} rpm   COLL {:.2}   TRQ {:+.0} ft-lb",
+            state.main_rotor_rpm, state.tail_rotor_rpm, state.collective, state.torque_lbsft,
+        ));
+    }
+
     // Optional control-input overlay. A real cockpit hides this because the
     // pilot feels the forces; a keyboard has no force feedback, so we show it.
     if ui.show_inputs {
@@ -518,12 +567,19 @@ fn update_hud(
             signed_bar(state.elevator_trim), state.elevator_trim,
             bar(state.flap_deg / 30.0), state.flap_deg / 30.0,
         ));
+        if state.rotor_available {
+            out.push_str(&format!(
+                "\nCOLL {} {:.2}",
+                bar(state.collective), state.collective,
+            ));
+        }
     }
 
     out.push_str(
         "\n\n\
-         W/S pitch   A/D roll   Q/E yaw   Shift/Ctrl throttle   X/Z trim\n\
-         F/V flaps   B brakes   G autopilot   J TVC   U gear   R reset   H inputs   T weather",
+         W/S pitch   A/D roll   Q/E yaw   Shift/Ctrl throttle/collective   X/Z trim\n\
+         F/V flaps   B brakes   G autopilot   J TVC   U gear   R reset   H inputs   T weather\n\
+         Space trim (rotorcraft)",
     );
 
     text.0 = out;

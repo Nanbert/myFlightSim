@@ -14,10 +14,6 @@ use flight_model::FlightModel;
 /// FDM step. Matches the rate JSBSim was validated against.
 pub const DT: f64 = 1.0 / 120.0;
 
-/// Height of the CG above the runway when parked (from c172p/reset00.xml).
-/// Seeding the IC at 0 buries the gear and the ground springs fling the aircraft.
-const REST_H_FT: f64 = 4.7;
-
 /// Default cruise point for the airborne trimmed start.
 const CRUISE_ALT_FT: f64 = 3000.0;
 const CRUISE_VC_KT: f64 = 110.0;
@@ -76,7 +72,9 @@ impl Sim {
     /// Parked on the runway at the threshold, at rest, pointing north.
     pub fn reset_ground(&mut self) {
         self.model.set("ic/vc-kts", 0.0);
-        self.model.set("ic/h-sl-ft", REST_H_FT);
+        // Per-aircraft parked height: seeding the IC at 0 (or the wrong height)
+        // buries the gear/skids and the ground springs fling the aircraft.
+        self.model.set("ic/h-sl-ft", self.model.rest_h_ft());
         self.model.set("ic/psi-true-deg", 0.0);
         self.model.apply_ic();
         // Gear down on the ground — snapped, not commanded: teleporting onto the
@@ -171,6 +169,16 @@ pub struct AircraftState {
     pub gear_pos: f64,
     /// Whether the loaded model's gear retracts at all (F-22 only).
     pub gear_available: bool,
+    /// Main-rotor rpm (`propulsion/engine[0]/rotor-rpm`); drives the rotor spin.
+    pub main_rotor_rpm: f64,
+    /// Tail-rotor rpm (`propulsion/engine[1]/rotor-rpm`).
+    pub tail_rotor_rpm: f64,
+    /// Collective lever position (`fcs/collective-cmd-norm`), 0..1.
+    pub collective: f64,
+    /// Main-rotor reaction torque (`propulsion/engine[0]/torque-lbsft`).
+    pub torque_lbsft: f64,
+    /// Whether the loaded model is a rotorcraft (AH-1S only).
+    pub rotor_available: bool,
 }
 
 /// The two most recent *fixed-step* poses. The FDM advances at 120 Hz while the
@@ -201,12 +209,16 @@ pub struct SimPlugin;
 
 impl Plugin for SimPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Sim::new("c172p"))
+        // Start the fixed-wing autopilot only for a fixed-wing aircraft; a
+        // helicopter begins under manual control.
+        let sim = Sim::new("c172p");
+        let auto = !sim.model.has_rotor();
+        app.insert_resource(sim)
             .init_resource::<AircraftState>()
             .init_resource::<RenderPose>()
             .insert_resource(Autopilot {
-                enabled: true,
-                phase: "roll",
+                enabled: auto,
+                phase: if auto { "roll" } else { "manual" },
             })
             .add_systems(FixedUpdate, (advance_fdm, capture_render_pose).chain())
             .add_systems(Update, publish_state);
@@ -216,13 +228,15 @@ impl Plugin for SimPlugin {
 fn advance_fdm(mut sim: ResMut<Sim>, bindings: Res<crate::input::Bindings>, mut ap: ResMut<Autopilot>) {
     // Pilot bindings drive every property the loaded model exposes. This runs
     // unconditionally so flaps and brakes stay live even under the autopilot.
+    // `effective()` folds in the trim offset (a rotorcraft's solved cyclic).
     for b in &bindings.list {
-        sim.model.set(b.property, b.value);
+        sim.model.set(b.property, b.effective());
     }
 
     // The autopilot, when engaged, takes over the channels it owns (elevator,
-    // aileron, rudder, throttle, trim) by writing them after the bindings.
-    if ap.enabled {
+    // aileron, rudder, throttle, trim) by writing them after the bindings. It's
+    // the fixed-wing mission law, so it never runs a rotorcraft.
+    if ap.enabled && !sim.model.has_rotor() {
         let (cmds, phase) = jsbsim_sys::autopilot::step(&*sim.model);
         ap.phase = phase;
         jsbsim_sys::autopilot::apply(&mut *sim.model, &cmds);
@@ -276,6 +290,11 @@ fn publish_state(sim: Res<Sim>, ap: Res<Autopilot>, mut state: ResMut<AircraftSt
         tvc_available: m.has_tvc(),
         gear_pos: m.get("gear/gear-pos-norm"),
         gear_available: m.has_retractable_gear(),
+        main_rotor_rpm: m.get("propulsion/engine[0]/rotor-rpm"),
+        tail_rotor_rpm: m.get("propulsion/engine[1]/rotor-rpm"),
+        collective: m.get("fcs/collective-cmd-norm"),
+        torque_lbsft: m.get("propulsion/engine[0]/torque-lbsft"),
+        rotor_available: m.has_rotor(),
     };
 }
 

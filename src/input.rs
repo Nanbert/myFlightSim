@@ -43,9 +43,20 @@ pub struct Binding {
     max: f64,
     /// Current normalized value in `[min, max]`.
     pub value: f64,
+    /// Trim offset added on top of `value`. Zero for every axis the FDM trims
+    /// itself; used only for a rotorcraft's cyclic, which has no FDM trim
+    /// channel — see [`Binding::effective`] and `adopt_trim`.
+    pub trim: f64,
 }
 
 impl Binding {
+    /// What actually drives the FDM: the stick value plus the trim offset,
+    /// clamped to the axis range. For a trimmed rotorcraft a centered stick
+    /// (value 0) then holds the solved cyclic.
+    pub fn effective(&self) -> f64 {
+        (self.value + self.trim).clamp(self.min, self.max)
+    }
+
     /// +1 / -1 / 0 from which of the bound keys are down.
     fn direction(&self, keys: &ButtonInput<KeyCode>) -> f64 {
         let pos = keys.pressed(self.pos) as i32;
@@ -83,6 +94,7 @@ impl Default for Bindings {
             min: -1.0,
             max: 1.0,
             value: 0.0,
+            trim: 0.0,
         };
         let hold = |property, pos, neg, rate, min, max, value| Binding {
             property,
@@ -93,6 +105,7 @@ impl Default for Bindings {
             min,
             max,
             value,
+            trim: 0.0,
         };
         Bindings {
             list: vec![
@@ -100,12 +113,18 @@ impl Default for Bindings {
                 spring("fcs/aileron-cmd-norm", KeyD, Some(KeyA), SURFACE_RATE),
                 spring("fcs/rudder-cmd-norm", KeyQ, Some(KeyE), SURFACE_RATE),
                 hold("fcs/throttle-cmd-norm", ShiftLeft, Some(ControlLeft), THROTTLE_RATE, 0.0, 1.0, 0.6),
+                // Collective, on the same Shift/Ctrl keys: a helicopter's power
+                // lever *is* the collective (its throttle axis is meaningless —
+                // the governor holds rpm). Both properties are written; each
+                // aircraft reads the one it cares about. Initial 0 matches the
+                // FDM's ground-idle default, so it sits until you raise it.
+                hold("fcs/collective-cmd-norm", ShiftLeft, Some(ControlLeft), THROTTLE_RATE, 0.0, 1.0, 0.0),
                 hold("fcs/pitch-trim-cmd-norm", KeyZ, Some(KeyX), TRIM_RATE, -1.0, 1.0, 0.0),
                 // Flaps: 0..1, the model rate-limits travel (~4 s full down).
                 hold("fcs/flap-cmd-norm", KeyF, Some(KeyV), FLAP_RATE, 0.0, 1.0, 0.0),
                 // Toe brakes: both wheels, spring-loaded back to off. Range is 0..1.
-                Binding { property: "fcs/left-brake-cmd-norm", pos: KeyB, neg: None, rate: BRAKE_RATE, axis: Axis::Spring, min: 0.0, max: 1.0, value: 0.0 },
-                Binding { property: "fcs/right-brake-cmd-norm", pos: KeyB, neg: None, rate: BRAKE_RATE, axis: Axis::Spring, min: 0.0, max: 1.0, value: 0.0 },
+                Binding { property: "fcs/left-brake-cmd-norm", pos: KeyB, neg: None, rate: BRAKE_RATE, axis: Axis::Spring, min: 0.0, max: 1.0, value: 0.0, trim: 0.0 },
+                Binding { property: "fcs/right-brake-cmd-norm", pos: KeyB, neg: None, rate: BRAKE_RATE, axis: Axis::Spring, min: 0.0, max: 1.0, value: 0.0, trim: 0.0 },
             ],
         }
     }
@@ -139,7 +158,8 @@ fn read_input(
     if keys.just_pressed(KeyCode::KeyR) {
         sim.reset_ground();
         *bindings = Bindings::default();
-        ap.enabled = true;
+        // A helicopter has no fixed-wing autopilot to hand control back to.
+        ap.enabled = !sim.model.has_rotor();
     }
     // J toggles thrust vectoring. A no-op on models without it (the c172
     // ignores the property); the F-22's FBW reads it.
@@ -167,16 +187,41 @@ fn read_input(
         ap.enabled = false;
         adopt_trim(&mut bindings, &sim);
     }
+    // Space trims a rotorcraft to hands-free level flight at the current
+    // airspeed (a hover when stationary) and adopts the solved commands, so
+    // releasing the sticks holds it. (A helicopter is hard to hold by hand; this
+    // is the trim for it.) Fixed-wing uses T/Y above instead.
+    if keys.just_pressed(KeyCode::Space) && sim.model.has_rotor() {
+        sim.trim_now();
+        adopt_trim(&mut bindings, &sim);
+    }
 }
 
-/// Adopt the model's current throttle and pitch-trim into the matching Hold
-/// bindings. The app writes every binding to the model each step, so a binding
-/// left at its default would clobber the trim solver's result; seeding the
-/// binding with the readback keeps the two consistent.
+/// Adopt the model's trimmed commands into the matching bindings. The app
+/// writes every binding to the model each step, so a binding left at its default
+/// would clobber the trim solver's result; seeding the binding with the readback
+/// keeps the two consistent.
+///
+/// Persistent axes (throttle, collective, pitch trim) adopt the solved value
+/// directly. A rotorcraft's cyclic has no FDM trim channel and the app's sticks
+/// spring back to neutral, so its solved cyclic is seated as a spring offset
+/// ([`Binding::trim`]) — a released stick then holds the hover. Fixed-wing keeps
+/// its cyclic neutral; the FDM's own pitch-trim channel carries the elevator.
 fn adopt_trim(bindings: &mut Bindings, sim: &crate::sim::Sim) {
+    let rotor = sim.model.has_rotor();
     for b in &mut bindings.list {
-        if matches!(b.property, "fcs/throttle-cmd-norm" | "fcs/pitch-trim-cmd-norm") {
-            b.value = sim.model.get(b.property);
+        match b.property {
+            "fcs/throttle-cmd-norm"
+            | "fcs/collective-cmd-norm"
+            | "fcs/pitch-trim-cmd-norm" => b.value = sim.model.get(b.property),
+            "fcs/elevator-cmd-norm"
+            | "fcs/aileron-cmd-norm"
+            | "fcs/rudder-cmd-norm"
+                if rotor =>
+            {
+                b.trim = sim.model.get(b.property)
+            }
+            _ => {}
         }
     }
 }
@@ -193,7 +238,146 @@ fn ramp(value: &mut f64, target: f64, step: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::ramp;
+    use super::{Axis, Binding, Bindings, adopt_trim, ramp};
+    use bevy::prelude::KeyCode;
+
+    fn cyclic() -> Binding {
+        Binding {
+            property: "fcs/elevator-cmd-norm",
+            pos: KeyCode::KeyS,
+            neg: Some(KeyCode::KeyW),
+            rate: 3.0,
+            axis: Axis::Spring,
+            min: -1.0,
+            max: 1.0,
+            value: 0.0,
+            trim: 0.0,
+        }
+    }
+
+    #[test]
+    fn hover_trim_adopted_into_bindings_holds_the_hover() {
+        // End-to-end for the Space handler: trim the rotorcraft, adopt the
+        // solved commands into the bindings, then drive the model the way
+        // `advance_fdm` does (write `effective()` every step). The hover must
+        // hold with the sticks centered.
+        std::env::set_var("FDM_BACKEND", "rust");
+        let mut sim = crate::sim::Sim::new("ah1s");
+        // Airborne at the altitude the FDM's own hover test validates (2000 ft);
+        // `trim_heli` seats a zero-airspeed hover there.
+        sim.reset_air(2000.0, 0.0);
+
+        let mut bindings = Bindings::default();
+        sim.trim_now();
+        adopt_trim(&mut bindings, &sim);
+
+        let alt0 = sim.model.get("position/h-sl-ft");
+        for _ in 0..120 * 10 {
+            for b in &bindings.list {
+                sim.model.set(b.property, b.effective());
+            }
+            sim.model.step();
+        }
+        let alt1 = sim.model.get("position/h-sl-ft");
+        assert!((alt1 - alt0).abs() < 25.0, "hover sagged: {alt0} -> {alt1}");
+        assert!(
+            sim.model.get("velocities/vc-kts") < 2.0,
+            "drifted horizontally: {}",
+            sim.model.get("velocities/vc-kts")
+        );
+    }
+
+    #[test]
+    fn hover_trim_preserves_the_current_airspeed() {
+        // The complaint this fixes: the trim used to zero the velocity, so it
+        // felt like a reset. It must now keep the current airspeed.
+        std::env::set_var("FDM_BACKEND", "rust");
+        let mut sim = crate::sim::Sim::new("ah1s");
+        sim.reset_air(2000.0, 0.0);
+
+        // Fly forward (nose-down cyclic accelerates it), then trim.
+        sim.model.set("fcs/elevator-cmd-norm", 0.5);
+        for _ in 0..120 * 5 {
+            sim.model.step();
+        }
+        let vc_before = sim.model.get("velocities/vc-kts");
+        assert!(vc_before > 5.0, "should be moving: {vc_before} kt");
+
+        let mut bindings = Bindings::default();
+        sim.trim_now(); // what the Space handler does
+        adopt_trim(&mut bindings, &sim);
+        let vc_after = sim.model.get("velocities/vc-kts");
+        assert!(
+            (vc_after - vc_before).abs() < 3.0,
+            "trim reset the airspeed: {vc_before} -> {vc_after} kt"
+        );
+
+        // And it holds hands-free for ten seconds.
+        for _ in 0..120 * 10 {
+            for b in &bindings.list {
+                sim.model.set(b.property, b.effective());
+            }
+            sim.model.step();
+        }
+        assert!(
+            (sim.model.get("velocities/vc-kts") - vc_after).abs() < 6.0,
+            "forward trim drifted: {vc_after} -> {} kt",
+            sim.model.get("velocities/vc-kts")
+        );
+    }
+
+    #[test]
+    fn holding_forward_cyclic_accelerates_forward() {
+        // How you fly forward after trimming: hold the cyclic forward (key S,
+        // which pitches the nose down), and the helicopter accelerates and moves
+        // forward. (It is also pitch-unstable — see the FDM's airframe aero —
+        // which is why it's hard to keep in trim by hand.)
+        use bevy::prelude::ButtonInput;
+        std::env::set_var("FDM_BACKEND", "rust");
+        let mut sim = crate::sim::Sim::new("ah1s");
+        sim.reset_air(2000.0, 0.0);
+        let mut bindings = Bindings::default();
+        sim.trim_now();
+        adopt_trim(&mut bindings, &sim);
+
+        let dt = 1.0 / 120.0;
+        let mut held = ButtonInput::<KeyCode>::default();
+        held.press(KeyCode::KeyS);
+
+        for _ in 0..120 * 3 {
+            for b in &mut bindings.list {
+                b.update(&held, dt);
+            }
+            for b in &bindings.list {
+                sim.model.set(b.property, b.effective());
+            }
+            sim.model.step();
+        }
+        assert!(
+            sim.model.get("velocities/vc-kts") > 10.0,
+            "holding forward cyclic should accelerate: {} kt",
+            sim.model.get("velocities/vc-kts")
+        );
+        assert!(
+            sim.model.get("position/lat-gc-deg") > 1e-4,
+            "should have moved north: {} deg",
+            sim.model.get("position/lat-gc-deg")
+        );
+    }
+
+    #[test]
+    fn effective_folds_in_trim_and_clamps() {
+        let mut b = cyclic();
+        // A centered stick holds the trim offset (the hover-trim case).
+        b.trim = 0.2;
+        assert_eq!(b.effective(), 0.2);
+        // Stick input adds on top of the offset.
+        b.value = -0.05;
+        assert!((b.effective() - 0.15).abs() < 1e-12);
+        // The sum is clamped to the axis range.
+        b.value = 1.0;
+        assert_eq!(b.effective(), 1.0);
+    }
 
     #[test]
     fn ramp_moves_toward_target_by_one_step() {
