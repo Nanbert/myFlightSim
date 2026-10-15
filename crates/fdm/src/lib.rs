@@ -119,7 +119,13 @@ pub struct Fdm {
     // Programmed initial conditions (read by `apply_ic`).
     ic_vc_kts: f64,
     ic_alt_ft: f64,
+    ic_phi_deg: f64,
+    ic_theta_deg: f64,
     ic_psi_deg: f64,
+    ic_beta_deg: f64,
+    ic_p_rps: f64,
+    ic_q_rps: f64,
+    ic_r_rps: f64,
     // Last engine outputs the app can read back.
     engine_rpm: f64,
     engine_power_hp: f64,
@@ -194,7 +200,13 @@ impl Fdm {
             flap_pos_deg: 0.0,
             ic_vc_kts: 0.0,
             ic_alt_ft: 0.0,
+            ic_phi_deg: 0.0,
+            ic_theta_deg: 0.0,
             ic_psi_deg: 0.0,
+            ic_beta_deg: 0.0,
+            ic_p_rps: 0.0,
+            ic_q_rps: 0.0,
+            ic_r_rps: 0.0,
             engine_rpm: 0.0,
             engine_power_hp: 0.0,
             wow: false,
@@ -1068,17 +1080,26 @@ impl FlightModel for Fdm {
     }
 
     fn apply_ic(&mut self) {
-        // Airborne ICs only: level body axes, heading given. `ic/vc-kts` is a
+        // Airborne ICs: attitude (`ic/{phi,theta,psi}-deg`), body rates
+        // (`ic/{p,q,r}-rad_sec`) and sideslip (`ic/beta-deg`), all optional and
+        // defaulting to a level, unaccelerated, slip-free trim. `ic/vc-kts` is a
         // *calibrated* airspeed, so convert it to the true airspeed the model
-        // integrates (JSBSim's `SetVcalibratedKtsIC`).
+        // integrates (JSBSim's `SetVcalibratedKtsIC`). Sideslip carries the
+        // velocity off the body x-axis by `beta` (v = V·sinβ), so the aero model
+        // sees the programmed β.
         let tas = self
             .isa
             .cas_to_tas(self.ic_vc_kts * KT_TO_FPS, self.ic_alt_ft);
+        let (sb, cb) = (self.ic_beta_deg * D2R).sin_cos();
         self.state = State {
             pos: [0.0, 0.0, -self.ic_alt_ft],
-            vel: [tas, 0.0, 0.0],
-            quat: euler_to_quat(0.0, 0.0, self.ic_psi_deg * D2R),
-            omega: [0.0; 3],
+            vel: [tas * cb, tas * sb, 0.0],
+            quat: euler_to_quat(
+                self.ic_phi_deg * D2R,
+                self.ic_theta_deg * D2R,
+                self.ic_psi_deg * D2R,
+            ),
+            omega: [self.ic_p_rps, self.ic_q_rps, self.ic_r_rps],
         };
         self.flap_pos_deg = self.flap_cmd * self.ac.control.flap_max_deg();
     }
@@ -1172,6 +1193,10 @@ impl FlightModel for Fdm {
             "forces/fbx-aero-lbs" => self.diag.force_aero[0],
             "forces/fby-aero-lbs" => self.diag.force_aero[1],
             "forces/fbz-aero-lbs" => self.diag.force_aero[2],
+            // Lateral load factor at the pilot, weight-normalised (0 in
+            // coordinated flight). Drives the turn coordinator's slip ball;
+            // the prop's side force is negligible for these aircraft.
+            "accelerations/n-pilot-y-norm" => self.diag.force_aero[1] / (self.mass * G0),
             "moments/l-aero-lbsft" => self.diag.moment_aero[0],
             "moments/m-aero-lbsft" => self.diag.moment_aero[1],
             "moments/n-aero-lbsft" => self.diag.moment_aero[2],
@@ -1186,7 +1211,13 @@ impl FlightModel for Fdm {
         match name {
             "ic/vc-kts" => self.ic_vc_kts = value,
             "ic/h-sl-ft" => self.ic_alt_ft = value,
+            "ic/phi-deg" => self.ic_phi_deg = value,
+            "ic/theta-deg" => self.ic_theta_deg = value,
             "ic/psi-true-deg" => self.ic_psi_deg = value,
+            "ic/beta-deg" => self.ic_beta_deg = value,
+            "ic/p-rad_sec" => self.ic_p_rps = value,
+            "ic/q-rad_sec" => self.ic_q_rps = value,
+            "ic/r-rad_sec" => self.ic_r_rps = value,
             // Any non-zero `set-running` lights the engine and spools it to a
             // steady state at the current flight condition (JSBSim's convention).
             "propulsion/set-running" => {
@@ -1515,6 +1546,27 @@ mod tests {
         assert!((m.get("velocities/vc-kts") - 100.0).abs() < 1e-6);
         assert!((m.get("attitude/theta-deg")).abs() < 1e-9);
         assert!((m.get("attitude/psi-deg") - 90.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn apply_ic_honours_attitude_rate_and_sideslip() {
+        let mut m = Fdm::new("c172p");
+        m.set("ic/vc-kts", 100.0);
+        m.set("ic/h-sl-ft", 3000.0);
+        m.set("ic/psi-true-deg", 60.0);
+        m.set("ic/phi-deg", 25.0);
+        m.set("ic/theta-deg", 8.0);
+        m.set("ic/beta-deg", 8.0);
+        m.set("ic/r-rad_sec", 3.0_f64.to_radians());
+        m.apply_ic();
+        assert!((m.get("attitude/phi-deg") - 25.0).abs() < 1e-9);
+        assert!((m.get("attitude/theta-deg") - 8.0).abs() < 1e-9);
+        assert!((m.get("attitude/psi-deg") - 60.0).abs() < 1e-9);
+        assert!((m.get("velocities/r-rad_sec") - 3.0_f64.to_radians()).abs() < 1e-12);
+        // Sideslip rides in the body velocity, so the aero model sees β: at 100 kt
+        // with β = 8° the lateral component is roughly 24 fps.
+        let w = m.state.vel[1];
+        assert!(w > 15.0, "expected lateral velocity from beta, got {w}");
     }
 
     #[test]

@@ -15,6 +15,8 @@
 //!
 //! Written by the app:
 //! - `ic/vc-kts`, `ic/h-sl-ft`, `ic/psi-true-deg` — initial conditions (before `apply_ic`)
+//! - `ic/{phi,theta}-deg`, `ic/{p,q,r}-rad_sec`, `ic/beta-deg` — optional attitude,
+//!   body-rate and sideslip ICs (default 0 = level, unaccelerated, slip-free)
 //! - `propulsion/set-running` — light the engine after IC
 //! - `fcs/{elevator,aileron,rudder}-cmd-norm`, `fcs/throttle-cmd-norm`,
 //!   `fcs/pitch-trim-cmd-norm`, `fcs/flap-cmd-norm`,
@@ -27,6 +29,8 @@
 //! - `position/{lat-gc-deg,long-gc-deg,h-sl-ft}` — world position
 //! - `attitude/{phi,theta,psi}-rad` and `-deg` — body attitude
 //! - `velocities/{vc-kts,h-dot-fps,p-rad_sec,q-rad_sec,r-rad_sec}` — airspeed & rates
+//! - `accelerations/n-pilot-y-norm` — lateral load factor (0 coordinated);
+//!   drives the turn coordinator's slip ball
 //! - `gear/wow` — weight-on-wheels
 //! - `fcs/flap-pos-deg`, `fcs/{elevator,aileron,rudder}-cmd-norm`,
 //!   `fcs/throttle-cmd-norm`, `fcs/pitch-trim-cmd-norm`,

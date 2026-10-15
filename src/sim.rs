@@ -156,9 +156,16 @@ pub struct AircraftState {
     pub pos: Vec3,
     pub alt_ft: f64,
     pub cas_kts: f64,
+    /// Vertical speed (`velocities/h-dot-fps` × 60), ft/min.
+    pub vs_fpm: f64,
     pub heading_deg: f64,
     pub pitch_deg: f64,
     pub roll_deg: f64,
+    /// Rate of heading change (`psi-dot`), deg/s — drives the turn coordinator.
+    pub turn_rate_dps: f64,
+    /// Lateral load factor at the pilot (`accelerations/n-pilot-y-norm`), 0 when
+    /// coordinated — drives the turn coordinator's slip ball.
+    pub slip: f64,
     pub throttle: f64,
     pub elevator: f64,
     pub aileron: f64,
@@ -284,13 +291,27 @@ fn capture_render_pose(sim: Res<Sim>, mut rp: ResMut<RenderPose>) {
 fn publish_state(sim: Res<Sim>, ap: Res<Autopilot>, mut state: ResMut<AircraftState>) {
     let (pos, _, _) = sim.pose();
     let m = &sim.model;
+    // Rate of heading change, from the body rates and attitude:
+    // psi-dot = (q sinφ + r cosφ) / cosθ (rad/s → deg/s). This is the turn
+    // coordinator's rate-of-turn input, and it's exact kinematic heading rate.
+    let (phi, theta) = (
+        m.get("attitude/phi-rad"),
+        m.get("attitude/theta-rad"),
+    );
+    let turn_rate_dps = ((m.get("velocities/q-rad_sec") * phi.sin()
+        + m.get("velocities/r-rad_sec") * phi.cos())
+        / theta.cos().max(1e-3))
+    .to_degrees();
     *state = AircraftState {
         pos,
         alt_ft: m.get("position/h-sl-ft"),
         cas_kts: m.get("velocities/vc-kts"),
+        vs_fpm: m.get("velocities/h-dot-fps") * 60.0,
         heading_deg: m.get("attitude/psi-deg"),
         pitch_deg: m.get("attitude/theta-deg"),
         roll_deg: m.get("attitude/phi-deg"),
+        turn_rate_dps,
+        slip: m.get("accelerations/n-pilot-y-norm"),
         // Report what is actually driving the surfaces, auto or manual.
         throttle: m.get("fcs/throttle-cmd-norm"),
         elevator: m.get("fcs/elevator-cmd-norm"),

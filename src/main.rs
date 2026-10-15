@@ -1,6 +1,7 @@
 mod aircraft_profile;
 mod app_state;
 mod config;
+mod gauge;
 mod input;
 mod lens;
 mod menu;
@@ -10,12 +11,18 @@ mod view;
 mod weather;
 
 use bevy::prelude::*;
+use bevy::window::WindowMode;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "myFlightSim — JSBSim + Bevy".into(),
+                // The instrument panel is laid out for a wide screen: three
+                // gauges against each edge with the attitude indicator centred.
+                // A half-width window would overlap the two trios, so start
+                // fullscreen (as the sim is meant to be flown).
+                mode: WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
                 ..default()
             }),
             ..default()
@@ -28,6 +35,7 @@ fn main() {
             config::ConfigPlugin,
             input::InputPlugin,
             view::ViewPlugin,
+            gauge::GaugePlugin,
             sky::SkyPlugin,
             weather::WeatherPlugin,
             lens::LensPlugin,
