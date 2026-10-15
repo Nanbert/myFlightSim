@@ -11,6 +11,8 @@
 use bevy::prelude::*;
 use flight_model::FlightModel;
 
+use crate::app_state::AppState;
+
 /// FDM step. Matches the rate JSBSim was validated against.
 pub const DT: f64 = 1.0 / 120.0;
 
@@ -46,22 +48,27 @@ pub struct Sim {
     origin_lon: f64,
 }
 
+/// The aircraft the app starts with: `AIRCRAFT=f22` overrides the c172 default.
+/// This is only the *initial* selection — the menu can pick any aircraft after
+/// launch — so the env read lives here rather than inside [`Sim::new`].
+pub fn startup_aircraft() -> String {
+    std::env::var("AIRCRAFT").unwrap_or_else(|_| "c172p".to_owned())
+}
+
 impl Sim {
     pub fn new(name: &str) -> Self {
-        // Aircraft selection: `AIRCRAFT=f22` overrides the caller's default.
-        let name = std::env::var("AIRCRAFT").unwrap_or_else(|_| name.to_owned());
         // Backend selection. `FDM_BACKEND=rust` picks the pure-Rust engine
         // (P0: skeleton, sits still); anything else uses JSBSim.
         let (model, backend): (Box<dyn FlightModel>, &str) =
             match std::env::var("FDM_BACKEND").as_deref() {
-                Ok("rust") => (Box::new(fdm::Fdm::new(&name)), "Rust"),
-                _ => (Box::new(jsbsim_sys::Fdm::load(&name, DT)), "JSBSim"),
+                Ok("rust") => (Box::new(fdm::Fdm::new(name)), "Rust"),
+                _ => (Box::new(jsbsim_sys::Fdm::load(name, DT)), "JSBSim"),
             };
         let label = format!("{backend} {name}");
         let mut sim = Sim {
             model,
             label,
-            name,
+            name: name.to_owned(),
             origin_lat: 0.0,
             origin_lon: 0.0,
         };
@@ -160,6 +167,8 @@ pub struct AircraftState {
     pub flap_deg: f64,
     pub rpm: f64,
     pub autopilot: bool,
+    /// Whether the loaded aircraft has an autopilot at all (737 only).
+    pub autopilot_available: bool,
     pub phase: &'static str,
     /// Thrust vectoring switched on (`fcs/tvc-enable`).
     pub tvc_on: bool,
@@ -209,10 +218,11 @@ pub struct SimPlugin;
 
 impl Plugin for SimPlugin {
     fn build(&self, app: &mut App) {
-        // Start the fixed-wing autopilot only for a fixed-wing aircraft; a
-        // helicopter begins under manual control.
-        let sim = Sim::new("c172p");
-        let auto = !sim.model.has_rotor();
+        // Start under the autopilot only for aircraft that have one (the 737);
+        // everything else begins under manual control.
+        let name = startup_aircraft();
+        let auto = crate::aircraft_profile::profile(&name).has_autopilot;
+        let sim = Sim::new(&name);
         app.insert_resource(sim)
             .init_resource::<AircraftState>()
             .init_resource::<RenderPose>()
@@ -220,8 +230,13 @@ impl Plugin for SimPlugin {
                 enabled: auto,
                 phase: if auto { "roll" } else { "manual" },
             })
-            .add_systems(FixedUpdate, (advance_fdm, capture_render_pose).chain())
-            .add_systems(Update, publish_state);
+            .add_systems(
+                FixedUpdate,
+                (advance_fdm, capture_render_pose)
+                    .chain()
+                    .run_if(in_state(AppState::Flying)),
+            )
+            .add_systems(Update, publish_state.run_if(in_state(AppState::Flying)));
     }
 }
 
@@ -285,6 +300,7 @@ fn publish_state(sim: Res<Sim>, ap: Res<Autopilot>, mut state: ResMut<AircraftSt
         flap_deg: m.get("fcs/flap-pos-deg"),
         rpm: m.get("propulsion/engine[0]/engine-rpm"),
         autopilot: ap.enabled,
+        autopilot_available: crate::aircraft_profile::profile(&sim.name).has_autopilot,
         phase: ap.phase,
         tvc_on: m.get("fcs/tvc-enable") > 0.5,
         tvc_available: m.has_tvc(),

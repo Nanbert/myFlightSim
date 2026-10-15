@@ -12,9 +12,13 @@
 
 use bevy::prelude::*;
 
-/// Rain intensities cycled by `T`. Index 0 is clear; the values double as the
-/// overcast levels `sky.rs` pre-bakes its texture at.
+/// Rain intensities selectable from the menu's global settings page. Index 0 is
+/// clear; the values double as the overcast levels `sky.rs` pre-bakes its
+/// texture at.
 pub const RAIN_LEVELS: [f32; 4] = [0.0, 0.3, 0.6, 0.9];
+
+/// Human-readable names for [`RAIN_LEVELS`], shown in the settings page.
+pub const RAIN_LABELS: [&str; 4] = ["CLEAR", "LIGHT RAIN", "RAIN", "STORM"];
 
 /// Current weather. `rain` is 0 (clear) … 1 (downpour).
 #[derive(Resource)]
@@ -31,12 +35,23 @@ impl Default for Weather {
 impl Weather {
     /// Short HUD label for the current intensity.
     pub fn label(&self) -> &'static str {
-        match self.rain {
-            r if r < 0.05 => "CLEAR",
-            r if r < 0.45 => "LIGHT RAIN",
-            r if r < 0.75 => "RAIN",
-            _ => "STORM",
-        }
+        RAIN_LABELS[self.level()]
+    }
+
+    /// Index into [`RAIN_LEVELS`] nearest the current intensity.
+    pub fn level(&self) -> usize {
+        RAIN_LEVELS
+            .iter()
+            .position(|&l| (l - self.rain).abs() < 1e-3)
+            .unwrap_or(0)
+    }
+
+    /// Set the intensity to level `i` (clamped, wrapping) and return the new
+    /// index. Used by the menu's settings page.
+    pub fn set_level(&mut self, i: isize) {
+        let n = RAIN_LEVELS.len() as isize;
+        let level = (i % n + n) % n;
+        self.rain = RAIN_LEVELS[level as usize];
     }
 }
 
@@ -92,7 +107,7 @@ impl Plugin for WeatherPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Weather>()
             .add_systems(Startup, (setup_rain, setup_splashes))
-            .add_systems(Update, (cycle_weather, update_rain, update_splashes));
+            .add_systems(Update, (update_rain, update_splashes));
     }
 }
 
@@ -168,18 +183,6 @@ fn setup_splashes(
             Visibility::Hidden,
         ));
     }
-}
-
-/// `T` steps through the intensity levels (wrapping back to clear).
-fn cycle_weather(keys: Res<ButtonInput<KeyCode>>, mut weather: ResMut<Weather>) {
-    if !keys.just_pressed(KeyCode::KeyT) {
-        return;
-    }
-    let idx = RAIN_LEVELS
-        .iter()
-        .position(|&l| (l - weather.rain).abs() < 1e-3)
-        .unwrap_or(0);
-    weather.rain = RAIN_LEVELS[(idx + 1) % RAIN_LEVELS.len()];
 }
 
 fn update_rain(
@@ -322,14 +325,18 @@ mod tests {
     }
 
     #[test]
-    fn cycle_walks_the_levels_and_wraps() {
-        // The index walk the key handler performs.
-        let step = |r: f32| {
-            let i = RAIN_LEVELS.iter().position(|&l| (l - r).abs() < 1e-3).unwrap();
-            RAIN_LEVELS[(i + 1) % RAIN_LEVELS.len()]
-        };
-        assert_eq!(step(0.0), 0.3);
-        assert_eq!(step(0.9), 0.0, "wraps back to clear");
+    fn set_level_walks_the_levels_and_wraps() {
+        let mut w = Weather::default();
+        w.set_level(1);
+        assert_eq!(w.rain, RAIN_LEVELS[1]);
+        assert_eq!(w.level(), 1);
+        w.set_level(3);
+        assert_eq!(w.rain, RAIN_LEVELS[3]);
+        // Wraps around both ends.
+        w.set_level(4);
+        assert_eq!(w.level(), 0);
+        w.set_level(-1);
+        assert_eq!(w.level(), 3);
     }
 
     #[test]

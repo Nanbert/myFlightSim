@@ -6,6 +6,8 @@ use bevy::prelude::*;
 use bevy::text::FontSize;
 use std::collections::HashMap;
 
+use crate::app_state::AppState;
+use crate::input::Bindings;
 use crate::sim::{AircraftState, RenderPose, Sim};
 use crate::weather::Weather;
 
@@ -178,7 +180,7 @@ struct Ui {
 /// Bind-pose rotations of the control bones, captured once the glTF scene has
 /// loaded. Each frame we re-apply a hinge delta on top of these.
 #[derive(Resource, Default)]
-struct ControlRig {
+pub(crate) struct ControlRig {
     rest: HashMap<Entity, Quat>,
     /// Accumulated visual prop rotation (radians), integrated from rpm so the
     /// spin rate tracks the *instantaneous* rpm.
@@ -199,30 +201,31 @@ impl Plugin for ViewPlugin {
             .add_systems(
                 Update,
                 (
-                    sync_aircraft,
-                    follow_camera,
-                    update_hud,
+                    sync_aircraft.run_if(in_state(AppState::Flying)),
+                    follow_camera.run_if(in_state(AppState::Flying)),
+                    update_hud.run_if(in_state(AppState::Flying)),
+                    toggle_ui.run_if(in_state(AppState::Flying)),
+                    capture_rig.run_if(in_state(AppState::Flying)),
+                    drive_surfaces.run_if(in_state(AppState::Flying)),
+                    drive_gear.run_if(in_state(AppState::Flying)),
                     draw_grid,
-                    toggle_ui,
                     dim_lights,
-                    capture_rig,
-                    drive_surfaces,
-                    drive_gear,
                     hide_scene_junk,
+                    sync_hud_visibility,
                 ),
             );
     }
 }
 
-fn setup_scene(mut commands: Commands, assets: Res<AssetServer>, sim: Res<Sim>) {
-    let spec = model_spec(&sim.name);
-    let root = commands
-        .spawn((AircraftRoot, Transform::default(), Visibility::default()))
-        .id();
-
-    // Aircraft mesh, parented to the sim-driven root. Each model authors its
-    // own forward axis (+Y is up for all of them), so the yaw in `spec` seats
-    // it onto Bevy's -Z forward.
+/// Spawn the model's glTF scene as a child of `parent`, scaled/yawed/dropped per
+/// `model_spec`. Shared by the flown aircraft and the menu's showcase row.
+pub(crate) fn spawn_model_child(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    parent: Entity,
+    id: &str,
+) {
+    let spec = model_spec(id);
     commands.spawn((
         WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(spec.file))),
         Transform {
@@ -230,9 +233,39 @@ fn setup_scene(mut commands: Commands, assets: Res<AssetServer>, sim: Res<Sim>) 
             rotation: Quat::from_rotation_y(spec.yaw),
             scale: Vec3::splat(spec.scale),
         },
-        ChildOf(root),
+        ChildOf(parent),
     ));
+}
 
+/// Spawn the flown aircraft: one `AircraftRoot` (driven by `RenderPose`) with
+/// the sim's current model under it. Runs on entering `Flying`; torn down on
+/// exit so it never coexists with the menu's showcase row.
+pub(crate) fn spawn_flight_aircraft(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    sim: Res<Sim>,
+) {
+    let root = commands
+        .spawn((
+            AircraftRoot,
+            Transform::default(),
+            Visibility::default(),
+            DespawnOnExit(AppState::Flying),
+        ))
+        .id();
+    spawn_model_child(&mut commands, &assets, root, &sim.name);
+}
+
+/// Drop the captured bind poses so the next aircraft's control bones are captured
+/// fresh (the glTF scene loads async, so `capture_rig` can't run on spawn).
+pub(crate) fn reset_control_rig(mut rig: ResMut<ControlRig>) {
+    *rig = ControlRig::default();
+}
+
+/// The camera and lights are the one fixed part of the scene, shared by the menu
+/// and the flight. The aircraft itself is spawned per state (see
+/// `spawn_flight_aircraft` and `menu::spawn_hangar`).
+fn setup_scene(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
         // Far plane must clear the sky dome (radius 8000, see `sky.rs`) and the
@@ -278,6 +311,21 @@ fn setup_hud(mut commands: Commands) {
         },
         Hud,
     ));
+}
+
+/// Show the HUD only while flying; hide it in the menu (otherwise the last
+/// frame's text sits over the menu).
+fn sync_hud_visibility(state: Res<State<AppState>>, mut q: Query<&mut Node, With<Hud>>) {
+    let want = if *state.get() == AppState::Flying {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for mut node in &mut q {
+        if node.display != want {
+            node.display = want;
+        }
+    }
 }
 
 /// Place the aircraft between the two latest FDM steps so its motion is smooth
@@ -500,20 +548,57 @@ fn bar(v: f64) -> String {
     (0..N).map(|i| if i < n { '#' } else { '-' }).collect()
 }
 
+/// Per-aircraft key hints, generated from the active control set so they can't
+/// drift from the profile. Duplicates collapse (both brakes share one entry),
+/// and the list wraps a few entries per row.
+fn control_hints(bindings: &Bindings) -> String {
+    use crate::aircraft_profile::key_name;
+    let mut entries: Vec<String> = Vec::new();
+    for b in &bindings.list {
+        let keys = match b.neg {
+            Some(neg) => format!("{}/{}", key_name(b.pos), key_name(neg)),
+            None => key_name(b.pos),
+        };
+        let entry = format!("{keys} {}", b.action.label());
+        if !entries.contains(&entry) {
+            entries.push(entry);
+        }
+    }
+    for t in &bindings.toggles {
+        entries.push(format!("{} {}", key_name(t.key), t.action.label()));
+    }
+    entries.push("H inputs".to_string());
+    entries.push("R reset".to_string());
+
+    const PER_LINE: usize = 4;
+    entries
+        .chunks(PER_LINE)
+        .map(|row| row.join("   "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn update_hud(
     state: Res<AircraftState>,
     ui: Res<Ui>,
     weather: Res<Weather>,
     sim: Res<Sim>,
+    bindings: Res<Bindings>,
     mut q: Query<&mut Text, With<Hud>>,
 ) {
     let Ok(mut text) = q.single_mut() else {
         return;
     };
-    let mode = if state.autopilot {
-        format!("AUTO: {}", state.phase)
+    // Mode is only meaningful for aircraft that have an autopilot (the 737);
+    // everything else flies manual and shows nothing.
+    let mode = if state.autopilot_available {
+        if state.autopilot {
+            format!("   [AUTO: {}]", state.phase)
+        } else {
+            "   [MANUAL]".to_string()
+        }
     } else {
-        "MANUAL".to_string()
+        String::new()
     };
 
     // Thrust-vectoring status, shown only for aircraft that have it (F-22).
@@ -542,7 +627,7 @@ fn update_hud(
 
     // Instrument readings — what a real panel shows (RPM, not "throttle %").
     let mut out = format!(
-        "myFlightSim — {}   [{mode}]{tvc}{gear}   WX: {}\n\
+        "myFlightSim — {}  {mode}{tvc}{gear}   WX: {}\n\
          ALT {:>4.0} ft   IAS {:>3.0} kt   RPM {:>4.0}   FLAP {:>4.1}°   TRIM {:+.2}\n\
          HDG {:>3.0}°   PITCH {:>5.1}°   ROLL {:>5.1}°",
         sim.label,
@@ -587,12 +672,8 @@ fn update_hud(
         }
     }
 
-    out.push_str(
-        "\n\n\
-         W/S pitch   A/D roll   Q/E yaw   Shift/Ctrl throttle/collective   X/Z trim\n\
-         F/V flaps   B brakes   G autopilot   J TVC   U gear   R reset   H inputs   T weather\n\
-         Space trim (rotorcraft)",
-    );
+    out.push_str("\n\n");
+    out.push_str(&control_hints(&bindings));
 
     text.0 = out;
 }

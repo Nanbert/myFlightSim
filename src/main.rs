@@ -1,8 +1,11 @@
+mod aircraft_profile;
+mod app_state;
+mod config;
 mod input;
 mod lens;
+mod menu;
 mod sim;
 mod sky;
-mod sound;
 mod view;
 mod weather;
 
@@ -20,12 +23,15 @@ fn main() {
         .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
         .add_plugins((
             sim::SimPlugin,
+            // Before `InputPlugin`: it needs `GameConfig` to build the startup
+            // aircraft's bindings from the saved keymap.
+            config::ConfigPlugin,
             input::InputPlugin,
             view::ViewPlugin,
             sky::SkyPlugin,
-            sound::SoundPlugin,
             weather::WeatherPlugin,
             lens::LensPlugin,
+            menu::MenuPlugin,
         ))
         .run();
 }

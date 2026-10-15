@@ -4,8 +4,14 @@
 //!
 //! Run: `cargo run --example sim_view_shot`
 
+#[path = "../src/aircraft_profile.rs"]
+mod aircraft_profile;
+#[path = "../src/config.rs"]
+mod config;
 #[path = "../src/input.rs"]
 mod input;
+#[path = "../src/app_state.rs"]
+mod app_state;
 #[path = "../src/sim.rs"]
 mod sim;
 #[path = "../src/view.rs"]
@@ -36,6 +42,13 @@ fn main() {
             view::ViewPlugin,
             weather::WeatherPlugin,
         ))
+        // No menu here: start directly in `Flying` and spawn the aircraft
+        // ourselves (MenuPlugin would otherwise do it on entering the state).
+        .insert_state(app_state::AppState::Flying)
+        .add_systems(
+            OnEnter(app_state::AppState::Flying),
+            (view::spawn_flight_aircraft, view::reset_control_rig).chain(),
+        )
         // Manual control, so nothing fights the pinned inputs below.
         .insert_resource(sim::Autopilot {
             enabled: false,

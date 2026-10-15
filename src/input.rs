@@ -1,8 +1,8 @@
-//! Keyboard -> JSBSim normalized control commands, via a data-driven *binding
-//! table*. Each row maps a key pair to one JSBSim property; adding a control is
-//! adding a row, not writing code. That is how we track whatever the loaded
-//! model exposes (flaps and brakes today, mixture/magnetos if the model ever
-//! defines them).
+//! Keyboard -> JSBSim normalized control commands, built from the active
+//! aircraft's [`crate::aircraft_profile`]. Each aircraft has its own control
+//! set: axis bindings (held keys, ramped) and toggles (edge actions). There is
+//! no shared state between aircraft — adding a control is adding a row to a
+//! profile, not writing a system here.
 //!
 //! Sign convention comes from the c172p aero coefficients: `+elevator-cmd-norm`
 //! pitches the nose DOWN (`aero/coefficient/Cmde` = -1.1220), `+aileron-cmd-norm`
@@ -14,29 +14,18 @@
 
 use bevy::prelude::*;
 
-const SURFACE_RATE: f64 = 3.0; // full deflection per second
-const THROTTLE_RATE: f64 = 0.6;
-const TRIM_RATE: f64 = 0.3; // full trim range per ~3.3 s
-const FLAP_RATE: f64 = 0.5; // full flap command per 2 s (the model rate-limits travel)
-const BRAKE_RATE: f64 = 4.0; // brakes bite quickly
-
-/// How a binding responds to its keys.
-#[derive(Clone, Copy)]
-enum Axis {
-    /// Ramp toward the key direction; returns to neutral on release.
-    /// Elevator, aileron, rudder, toe brakes.
-    Spring,
-    /// Accumulate while a key is held; hold position on release.
-    /// Throttle, pitch trim, flaps.
-    Hold,
-}
+use crate::aircraft_profile::{self, Action, Axis, ToggleAction, ToggleSpec};
+use crate::app_state::AppState;
+use crate::config::{GameConfig, Keymap};
 
 /// One key pair driving one normalized JSBSim property.
 pub struct Binding {
+    /// Semantic id (for the HUD / future rebind UI).
+    pub action: Action,
     /// Property written to the FDM each step, e.g. `fcs/elevator-cmd-norm`.
     pub property: &'static str,
-    pos: KeyCode,
-    neg: Option<KeyCode>,
+    pub pos: KeyCode,
+    pub neg: Option<KeyCode>,
     rate: f64,
     axis: Axis,
     min: f64,
@@ -75,58 +64,47 @@ impl Binding {
     }
 }
 
-/// The pilot's control set. Iterated each frame to drive the FDM.
+/// The pilot's control set for one aircraft. Iterated each frame to drive the
+/// FDM.
 #[derive(Resource)]
 pub struct Bindings {
     pub list: Vec<Binding>,
+    pub toggles: Vec<ToggleSpec>,
 }
 
-impl Default for Bindings {
-    fn default() -> Self {
-        use KeyCode::*;
-        // Spring axes span [-1, 1] and center at 0; Hold axes keep their value.
-        let spring = |property, pos, neg, rate| Binding {
-            property,
-            pos,
-            neg,
-            rate,
-            axis: Axis::Spring,
-            min: -1.0,
-            max: 1.0,
-            value: 0.0,
-            trim: 0.0,
-        };
-        let hold = |property, pos, neg, rate, min, max, value| Binding {
-            property,
-            pos,
-            neg,
-            rate,
-            axis: Axis::Hold,
-            min,
-            max,
-            value,
-            trim: 0.0,
-        };
-        Bindings {
-            list: vec![
-                spring("fcs/elevator-cmd-norm", KeyS, Some(KeyW), SURFACE_RATE),
-                spring("fcs/aileron-cmd-norm", KeyD, Some(KeyA), SURFACE_RATE),
-                spring("fcs/rudder-cmd-norm", KeyQ, Some(KeyE), SURFACE_RATE),
-                hold("fcs/throttle-cmd-norm", ShiftLeft, Some(ControlLeft), THROTTLE_RATE, 0.0, 1.0, 0.6),
-                // Collective, on the same Shift/Ctrl keys: a helicopter's power
-                // lever *is* the collective (its throttle axis is meaningless —
-                // the governor holds rpm). Both properties are written; each
-                // aircraft reads the one it cares about. Initial 0 matches the
-                // FDM's ground-idle default, so it sits until you raise it.
-                hold("fcs/collective-cmd-norm", ShiftLeft, Some(ControlLeft), THROTTLE_RATE, 0.0, 1.0, 0.0),
-                hold("fcs/pitch-trim-cmd-norm", KeyZ, Some(KeyX), TRIM_RATE, -1.0, 1.0, 0.0),
-                // Flaps: 0..1, the model rate-limits travel (~4 s full down).
-                hold("fcs/flap-cmd-norm", KeyF, Some(KeyV), FLAP_RATE, 0.0, 1.0, 0.0),
-                // Toe brakes: both wheels, spring-loaded back to off. Range is 0..1.
-                Binding { property: "fcs/left-brake-cmd-norm", pos: KeyB, neg: None, rate: BRAKE_RATE, axis: Axis::Spring, min: 0.0, max: 1.0, value: 0.0, trim: 0.0 },
-                Binding { property: "fcs/right-brake-cmd-norm", pos: KeyB, neg: None, rate: BRAKE_RATE, axis: Axis::Spring, min: 0.0, max: 1.0, value: 0.0, trim: 0.0 },
-            ],
-        }
+impl Bindings {
+    /// Build the runtime control set for `id` from its profile, applying the
+    /// pilot's saved key overrides (empty `keymap` = pure defaults).
+    pub fn for_aircraft(id: &str, keymap: &Keymap) -> Self {
+        let p = aircraft_profile::profile(id);
+        let list = p
+            .bindings
+            .iter()
+            .map(|s| {
+                let (pos, neg) = keymap.axis(s.action).unwrap_or((s.pos, s.neg));
+                Binding {
+                    action: s.action,
+                    property: s.property,
+                    pos,
+                    neg,
+                    rate: s.rate,
+                    axis: s.axis,
+                    min: s.min,
+                    max: s.max,
+                    value: s.initial,
+                    trim: 0.0,
+                }
+            })
+            .collect();
+        let toggles = p
+            .toggles
+            .iter()
+            .map(|t| ToggleSpec {
+                action: t.action,
+                key: keymap.toggle(t.action).unwrap_or(t.key),
+            })
+            .collect();
+        Bindings { list, toggles }
     }
 }
 
@@ -134,8 +112,12 @@ pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Bindings>()
-            .add_systems(Update, read_input);
+        // `Sim` is inserted by `SimPlugin`, which is registered first, so the
+        // startup aircraft is already known here.
+        let name = app.world().resource::<crate::sim::Sim>().name.clone();
+        let keymap = app.world().resource::<GameConfig>().keymap(&name);
+        app.insert_resource(Bindings::for_aircraft(&name, &keymap))
+            .add_systems(Update, read_input.run_if(in_state(AppState::Flying)));
     }
 }
 
@@ -145,56 +127,58 @@ fn read_input(
     mut bindings: ResMut<Bindings>,
     mut sim: ResMut<crate::sim::Sim>,
     mut ap: ResMut<crate::sim::Autopilot>,
+    config: Res<GameConfig>,
 ) {
     let dt = time.delta_secs_f64();
     for b in &mut bindings.list {
         b.update(&keys, dt);
     }
 
-    // G hands control to/from the autopilot; R parks back on the runway in auto.
-    if keys.just_pressed(KeyCode::KeyG) {
-        ap.enabled = !ap.enabled;
+    // Edge toggles declared by the active profile. Collect first so the borrow
+    // of `bindings.toggles` ends before `adopt_trim` takes `&mut bindings`.
+    let fired: Vec<ToggleAction> = bindings
+        .toggles
+        .iter()
+        .filter(|t| keys.just_pressed(t.key))
+        .map(|t| t.action)
+        .collect();
+    for action in fired {
+        match action {
+            ToggleAction::Autopilot => ap.enabled = !ap.enabled,
+            // A no-op on models without these (the FDM ignores the property).
+            ToggleAction::Tvc => toggle_prop(&mut sim, "fcs/tvc-enable"),
+            ToggleAction::Gear => toggle_prop(&mut sim, "gear/gear-cmd-norm"),
+            // Re-trim for the current condition; hand control to the pilot and
+            // adopt the trimmed commands so the per-step writes don't undo it.
+            ToggleAction::Trim => {
+                sim.trim_now();
+                ap.enabled = false;
+                adopt_trim(&mut bindings, &sim);
+            }
+            ToggleAction::Cruise => {
+                sim.reset_cruise();
+                ap.enabled = false;
+                adopt_trim(&mut bindings, &sim);
+            }
+            ToggleAction::RotorTrim => {
+                sim.trim_now();
+                adopt_trim(&mut bindings, &sim);
+            }
+        }
     }
+
+    // Global (not per-aircraft): R parks on the runway with fresh controls.
     if keys.just_pressed(KeyCode::KeyR) {
         sim.reset_ground();
-        *bindings = Bindings::default();
-        // A helicopter has no fixed-wing autopilot to hand control back to.
-        ap.enabled = !sim.model.has_rotor();
+        *bindings = Bindings::for_aircraft(&sim.name, &config.keymap(&sim.name));
+        ap.enabled = aircraft_profile::profile(&sim.name).has_autopilot;
     }
-    // J toggles thrust vectoring. A no-op on models without it (the c172
-    // ignores the property); the F-22's FBW reads it.
-    if keys.just_pressed(KeyCode::KeyJ) {
-        let on = sim.model.get("fcs/tvc-enable") > 0.5;
-        sim.model.set("fcs/tvc-enable", if on { 0.0 } else { 1.0 });
-    }
-    // U raises/lowers the gear (`gear/gear-cmd-norm`: 1 = down, 0 = up). A
-    // no-op on fixed-gear aircraft; the F-22 ignores a "gear up" command while
-    // on the wheels (weight-on-wheels interlock).
-    if keys.just_pressed(KeyCode::KeyU) {
-        let down = sim.model.get("gear/gear-cmd-norm") > 0.5;
-        sim.model.set("gear/gear-cmd-norm", if down { 0.0 } else { 1.0 });
-    }
-    // T re-trims for the current condition; Y restarts airborne in a trimmed
-    // cruise. Both hand control to the pilot and adopt the trimmed throttle/trim
-    // into the Hold bindings, so the per-step command writes don't undo the trim.
-    if keys.just_pressed(KeyCode::KeyT) {
-        sim.trim_now();
-        ap.enabled = false;
-        adopt_trim(&mut bindings, &sim);
-    }
-    if keys.just_pressed(KeyCode::KeyY) {
-        sim.reset_cruise();
-        ap.enabled = false;
-        adopt_trim(&mut bindings, &sim);
-    }
-    // Space trims a rotorcraft to hands-free level flight at the current
-    // airspeed (a hover when stationary) and adopts the solved commands, so
-    // releasing the sticks holds it. (A helicopter is hard to hold by hand; this
-    // is the trim for it.) Fixed-wing uses T/Y above instead.
-    if keys.just_pressed(KeyCode::Space) && sim.model.has_rotor() {
-        sim.trim_now();
-        adopt_trim(&mut bindings, &sim);
-    }
+}
+
+/// Flip a 0/1 property (`1 - current`), used by the gear and TVC toggles.
+fn toggle_prop(sim: &mut crate::sim::Sim, property: &str) {
+    let on = sim.model.get(property) > 0.5;
+    sim.model.set(property, if on { 0.0 } else { 1.0 });
 }
 
 /// Adopt the model's trimmed commands into the matching bindings. The app
@@ -238,11 +222,14 @@ fn ramp(value: &mut f64, target: f64, step: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Axis, Binding, Bindings, adopt_trim, ramp};
+    use super::{Binding, Bindings, adopt_trim, ramp};
+    use crate::aircraft_profile::{Action, Axis};
+    use crate::config::Keymap;
     use bevy::prelude::KeyCode;
 
     fn cyclic() -> Binding {
         Binding {
+            action: Action::Elevator,
             property: "fcs/elevator-cmd-norm",
             pos: KeyCode::KeyS,
             neg: Some(KeyCode::KeyW),
@@ -257,17 +244,17 @@ mod tests {
 
     #[test]
     fn hover_trim_adopted_into_bindings_holds_the_hover() {
-        // End-to-end for the Space handler: trim the rotorcraft, adopt the
-        // solved commands into the bindings, then drive the model the way
-        // `advance_fdm` does (write `effective()` every step). The hover must
-        // hold with the sticks centered.
+        // End-to-end for the rotorcraft trim: trim it, adopt the solved commands
+        // into the bindings, then drive the model the way `advance_fdm` does
+        // (write `effective()` every step). The hover must hold with sticks
+        // centered.
         std::env::set_var("FDM_BACKEND", "rust");
         let mut sim = crate::sim::Sim::new("ah1s");
         // Airborne at the altitude the FDM's own hover test validates (2000 ft);
         // `trim_heli` seats a zero-airspeed hover there.
         sim.reset_air(2000.0, 0.0);
 
-        let mut bindings = Bindings::default();
+        let mut bindings = Bindings::for_aircraft("ah1s", &Keymap::default());
         sim.trim_now();
         adopt_trim(&mut bindings, &sim);
 
@@ -303,8 +290,8 @@ mod tests {
         let vc_before = sim.model.get("velocities/vc-kts");
         assert!(vc_before > 5.0, "should be moving: {vc_before} kt");
 
-        let mut bindings = Bindings::default();
-        sim.trim_now(); // what the Space handler does
+        let mut bindings = Bindings::for_aircraft("ah1s", &Keymap::default());
+        sim.trim_now(); // what the RotorTrim toggle does
         adopt_trim(&mut bindings, &sim);
         let vc_after = sim.model.get("velocities/vc-kts");
         assert!(
@@ -336,7 +323,7 @@ mod tests {
         std::env::set_var("FDM_BACKEND", "rust");
         let mut sim = crate::sim::Sim::new("ah1s");
         sim.reset_air(2000.0, 0.0);
-        let mut bindings = Bindings::default();
+        let mut bindings = Bindings::for_aircraft("ah1s", &Keymap::default());
         sim.trim_now();
         adopt_trim(&mut bindings, &sim);
 
@@ -397,12 +384,9 @@ mod tests {
 
     #[test]
     fn ramp_snaps_and_never_overshoots_within_a_step() {
-        // Distance to target (0.1) is within one step (0.3): land exactly on it.
         let mut v = 0.9;
         ramp(&mut v, 1.0, 0.3);
         assert_eq!(v, 1.0);
-
-        // Landing on target is idempotent.
         ramp(&mut v, 1.0, 0.3);
         assert_eq!(v, 1.0);
     }
