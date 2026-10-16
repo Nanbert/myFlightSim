@@ -1,6 +1,7 @@
 mod aircraft_profile;
 mod app_state;
 mod config;
+mod fx;
 mod gauge;
 mod input;
 mod lens;
@@ -35,6 +36,7 @@ fn main() {
             config::ConfigPlugin,
             input::InputPlugin,
             view::ViewPlugin,
+            fx::FxPlugin,
             gauge::GaugePlugin,
             sky::SkyPlugin,
             weather::WeatherPlugin,

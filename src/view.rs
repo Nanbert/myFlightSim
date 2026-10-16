@@ -1,8 +1,10 @@
 //! Scene setup and per-frame visualisation: aircraft mesh, ground grid,
 //! chase camera and an on-screen HUD.
 
+use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
+use bevy::post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
 use bevy::prelude::*;
 use bevy::text::FontSize;
 use bevy::window::{CursorGrabMode, CursorOptions};
@@ -40,6 +42,15 @@ struct ModelSpec {
 /// `follow_camera` makes, so callers can line up with the camera actually used.
 pub(crate) fn has_cockpit(name: &str) -> bool {
     model_spec(name).eye.is_some()
+}
+
+/// Map a point from `name`'s model frame (+X left / +Y up / +Z nose) into the
+/// `AircraftRoot` body frame, applying the same scale/yaw/drop `spawn_model_child`
+/// uses on the mesh. Lets effect code (see `fx.rs`) place emitters on the
+/// airframe using model-space coordinates measured from the glTF.
+pub(crate) fn model_to_body(name: &str, p: Vec3) -> Vec3 {
+    let spec = model_spec(name);
+    Quat::from_rotation_y(spec.yaw) * (p * spec.scale) + Vec3::new(0.0, -spec.drop, 0.0)
 }
 
 fn model_spec(name: &str) -> ModelSpec {
@@ -357,6 +368,22 @@ fn setup_scene(mut commands: Commands) {
         // Keep the sky's authored colours (the default filmic tonemapper washes
         // the gradient toward grey).
         Tonemapping::None,
+        // HDR keeps the exhaust's emissive values above 1 all the way to the
+        // bloom pass (without it the flame clips to flat white before it can
+        // spread). The prefilter threshold sits above 1 so only the flame's
+        // >1 hot core glows — the sky and the sunlit airframe stay untouched.
+        Hdr,
+        Bloom {
+            intensity: 0.6,
+            low_frequency_boost: 0.5,
+            high_pass_frequency: 1.0,
+            prefilter: BloomPrefilter {
+                threshold: 1.5,
+                threshold_softness: 0.5,
+            },
+            composite_mode: BloomCompositeMode::Additive,
+            ..Bloom::NATURAL
+        },
         Transform::from_xyz(-18.0, 8.0, 22.0).looking_at(Vec3::ZERO, Vec3::Y),
         AmbientLight {
             color: Color::WHITE,
