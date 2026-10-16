@@ -2,8 +2,10 @@
 //! chase camera and an on-screen HUD.
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::text::FontSize;
+use bevy::window::{CursorGrabMode, CursorOptions};
 use std::collections::HashMap;
 
 use crate::app_state::AppState;
@@ -28,6 +30,33 @@ struct ModelSpec {
     /// +X-forward (+90°); the rigged F-22 is +Z-forward (+180°). Yaw alone
     /// suffices — both models share the same handedness (+Y up), so no mirror.
     yaw: f32,
+    /// Pilot-eye position in the model's own frame (metres, +Y up, nose +Z),
+    /// used by the cockpit view. `None` for models with no modelled interior;
+    /// cockpit mode then just keeps the chase camera.
+    eye: Option<[f32; 3]>,
+}
+
+/// Does the optional full-interior C172 model exist on disk? Resolves the asset
+/// directory the same way Bevy's `AssetPlugin` does (`BEVY_ASSET_ROOT` →
+/// `CARGO_MANIFEST_DIR` → the executable's directory), so the check lands on the
+/// same file the loader will use.
+fn has_full_c172() -> bool {
+    let base = std::env::var("BEVY_ASSET_ROOT")
+        .or_else(|_| std::env::var("CARGO_MANIFEST_DIR"))
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(std::path::Path::to_owned))
+        });
+    base.is_some_and(|b| b.join("assets/c172_full.glb").exists())
+}
+
+/// Does `name`'s model carry a pilot-eye cockpit view? Mirrors the check
+/// `follow_camera` makes, so callers can line up with the camera actually used.
+pub(crate) fn has_cockpit(name: &str) -> bool {
+    model_spec(name).eye.is_some()
 }
 
 fn model_spec(name: &str) -> ModelSpec {
@@ -41,6 +70,7 @@ fn model_spec(name: &str) -> ModelSpec {
             scale: 6.8,
             drop: 0.90,
             yaw: std::f32::consts::PI,
+            eye: None,
         },
         // Mi-24 Hind (AH-1S physics stand-in). Authored +Z-forward, so the same
         // 180° yaw as the F-22 seats it on Bevy's -Z. `scale`/`drop` are fitted
@@ -52,6 +82,7 @@ fn model_spec(name: &str) -> ModelSpec {
             scale: 1.0,
             drop: 1.87,
             yaw: std::f32::consts::PI,
+            eye: None,
         },
         // Boeing 737 (`b737.glb`): a Sketchfab model authored in metres (so
         // scale 1.0), nose along -X and origin at the wheels. Its wing,
@@ -64,14 +95,33 @@ fn model_spec(name: &str) -> ModelSpec {
             scale: 1.0,
             drop: 1.2446,
             yaw: -std::f32::consts::FRAC_PI_2,
+            eye: None,
         },
-        // Default: the c172, whose control-surface bone rig is driven in
-        // `drive_surfaces` (names in `is_control_bone`).
+        // Default: the Cessna 172. Prefer the "full" model (interior **and**
+        // exterior, `c172_full.glb`) — the one that supports the cockpit view —
+        // but the repo doesn't ship it (45 MB, kept as a local symlink), so fall
+        // back to the older rigged mesh when it's absent.
+        //
+        // Full model: authored nose +Z / up +Y (metres) → the F-22's 180° yaw.
+        // `scale` shrinks its 12.6 m span to the real 11.0 m; `drop` seats the
+        // wheels (lowest vertex −0.060 model units) on the runway at the FDM's
+        // rest CG height (1.4326 m = the c172p `root_y`): rest_h + lowest·scale.
+        // `eye` is the pilot's eye, dialled in with `examples/cockpit_shot.rs`.
+        _ if has_full_c172() => ModelSpec {
+            file: "c172_full.glb",
+            scale: 11.0 / 12.598,
+            drop: 1.4326 - 0.060 * (11.0 / 12.598),
+            yaw: std::f32::consts::PI,
+            eye: Some([0.209, 1.835, -0.350]),
+        },
+        // Fallback: the older rigged `cessna_172.glb`. Bone rig, driven by name
+        // in `is_control_bone`; no modelled interior, so no cockpit view.
         _ => ModelSpec {
             file: "cessna_172.glb",
             scale: 1.0,
             drop: 1.4326,
             yaw: std::f32::consts::FRAC_PI_2,
+            eye: None,
         },
     }
 }
@@ -94,6 +144,59 @@ const PROP: [f32; 3] = [0.0, 0.0, -1.0];
 const MAX_DEFLECT: f32 = 0.35;
 /// Visual prop-spin rate per RPM. Tuned so cruise reads as a fast blur.
 const PROP_SPIN: f32 = 0.01;
+
+// --- Cessna 172 (full model, `c172_full.glb`) control surfaces ---
+//
+// That model has no skeleton: each control surface is a separate glTF node, but
+// its geometry is baked in the shared `Cessna_Exterior` frame, so every node's
+// origin sits at the model centre — a plain node rotation would spin the surface
+// about the middle of the aircraft. Instead each surface is hinged *about its own
+// leading edge* with `Transform::rotate_around`, using the line below.
+//
+// The line lives in the node's parent frame, which for these nodes equals the
+// raw glTF/authoring frame: `+X = span (left wing)`, `+Y = DOWN`, `+Z = aft`
+// (the parent `Cessna-172` node maps it onto Bevy's +Y-up / +Z-nose frame).
+// Measured from the bind-pose vertices (leading-edge centroid + PCA axis).
+//
+// `sign` folds the polarity so a positive command means "trailing edge DOWN" for
+// the flat surfaces, and "trailing edge toward +X (model left)" for the rudder —
+// JSBSim's convention. The aileron signs encode the differential: a positive
+// `aileron` (roll right) drives the left aileron down and the right aileron up.
+struct C172Surface {
+    node: &'static str,
+    /// A point on the hinge line (parent frame).
+    hinge: [f32; 3],
+    /// Unit hinge-line direction (parent frame).
+    axis: [f32; 3],
+    sign: f32,
+    src: SurfaceSrc,
+}
+
+#[derive(Clone, Copy)]
+enum SurfaceSrc {
+    Elevator,
+    Aileron,
+    Rudder,
+    /// Already an angle in degrees (0..~30).
+    Flap,
+    /// The integrated prop phase (radians), not a control command.
+    Prop,
+}
+
+const C172_SURFACES: &[C172Surface] = &[
+    // Rudder: hinge is swept back ~6° off vertical (per the measured axis).
+    C172Surface { node: "Cessna_Exterior_Body_MAT_0.008", hinge: [0.0, -16.254, 470.741], axis: [0.0, 0.9941, -0.1077], sign: 1.0, src: SurfaceSrc::Rudder },
+    // Elevators: hinge line along the span at the stabiliser trailing edge.
+    C172Surface { node: "Cessna_Exterior_Body_MAT_0.013", hinge: [0.0, -26.203, 452.426], axis: [1.0, 0.0, 0.0], sign: -1.0, src: SurfaceSrc::Elevator }, // left
+    C172Surface { node: "Cessna_Exterior_Body_MAT_0.012", hinge: [0.0, -26.206, 452.184], axis: [1.0, 0.0, 0.0], sign: -1.0, src: SurfaceSrc::Elevator }, // right
+    // Ailerons (outboard) and flaps (inboard) on the wing trailing edge.
+    C172Surface { node: "Cessna_Exterior_Body_MAT_0.014", hinge: [0.0, -84.829, 41.878], axis: [1.0, 0.0, 0.0], sign: -1.0, src: SurfaceSrc::Aileron }, // left
+    C172Surface { node: "Cessna_Exterior_Body_MAT_0.015", hinge: [0.0, -84.463, 41.878], axis: [1.0, 0.0, 0.0], sign: 1.0, src: SurfaceSrc::Aileron },   // right
+    C172Surface { node: "Cessna_Exterior_Body_MAT_0.016", hinge: [0.0, -68.070, 56.418], axis: [1.0, 0.0, 0.0], sign: -1.0, src: SurfaceSrc::Flap },      // left
+    C172Surface { node: "Cessna_Exterior_Body_MAT_0.017", hinge: [0.0, -68.314, 58.158], axis: [1.0, 0.0, 0.0], sign: -1.0, src: SurfaceSrc::Flap },      // right
+    // Propeller: spins about the disc normal (raw +Z) through the hub centre.
+    C172Surface { node: "Cessna_Exterior_Body_MAT_0.001", hinge: [0.0, 0.0, 0.0], axis: [0.0, 0.0, 1.0], sign: 1.0, src: SurfaceSrc::Prop },
+];
 
 // --- AH-1S / Mi-24 rotor spin ---
 // Each rotor spins about its hub axis in the pivot node's LOCAL frame (found
@@ -166,22 +269,31 @@ const F22_GEAR: &[GearPart] = &[
 ];
 
 #[derive(Component)]
-struct AircraftRoot;
+pub(crate) struct AircraftRoot;
 
 #[derive(Component)]
 struct Hud;
 
-/// HUD toggles. `H` reveals the control-input overlay.
+/// HUD/toggle state. `H` reveals the control-input overlay; `C` switches the
+/// camera between the chase view and (for models that have an interior) the
+/// pilot-eye cockpit view.
 #[derive(Resource, Default)]
-struct Ui {
-    show_inputs: bool,
+pub(crate) struct Ui {
+    pub(crate) show_inputs: bool,
+    pub(crate) cockpit: bool,
+    /// Cockpit head-look, relative to the airframe: yaw about the body's up
+    /// axis and pitch about its lateral axis. Zero looks straight ahead. Only
+    /// the camera's *orientation* follows it — the pilot's eye stays put.
+    pub(crate) look_yaw: f32,
+    pub(crate) look_pitch: f32,
 }
 
-/// Bind-pose rotations of the control bones, captured once the glTF scene has
-/// loaded. Each frame we re-apply a hinge delta on top of these.
+/// Bind-pose transforms of the control surfaces, captured once the glTF scene
+/// has loaded. Each frame we re-apply a hinge delta on top of these (a bone
+/// rotation for the rigged models, a rotate-about-a-line for the baked ones).
 #[derive(Resource, Default)]
 pub(crate) struct ControlRig {
-    rest: HashMap<Entity, Quat>,
+    rest: HashMap<Entity, Transform>,
     /// Accumulated visual prop rotation (radians), integrated from rpm so the
     /// spin rate tracks the *instantaneous* rpm.
     prop_phase: f32,
@@ -202,6 +314,9 @@ impl Plugin for ViewPlugin {
                 Update,
                 (
                     sync_aircraft.run_if(in_state(AppState::Flying)),
+                    cockpit_look
+                        .run_if(in_state(AppState::Flying))
+                        .before(follow_camera),
                     follow_camera.run_if(in_state(AppState::Flying)),
                     update_hud.run_if(in_state(AppState::Flying)),
                     toggle_ui.run_if(in_state(AppState::Flying)),
@@ -212,6 +327,9 @@ impl Plugin for ViewPlugin {
                     dim_lights,
                     hide_scene_junk,
                     sync_hud_visibility,
+                    // Ungated: it must also run in the menu to release the
+                    // cursor when a flight ends.
+                    cockpit_cursor,
                 ),
             );
     }
@@ -244,7 +362,11 @@ pub(crate) fn spawn_flight_aircraft(
     mut commands: Commands,
     assets: Res<AssetServer>,
     sim: Res<Sim>,
+    mut ui: ResMut<Ui>,
 ) {
+    // A fresh flight opens with the cockpit head-look centred.
+    ui.look_yaw = 0.0;
+    ui.look_pitch = 0.0;
     let root = commands
         .spawn((
             AircraftRoot,
@@ -330,7 +452,7 @@ fn sync_hud_visibility(state: Res<State<AppState>>, mut q: Query<&mut Node, With
 
 /// Place the aircraft between the two latest FDM steps so its motion is smooth
 /// regardless of how the render rate divides into the 120 Hz sim.
-fn sync_aircraft(
+pub(crate) fn sync_aircraft(
     fixed: Res<Time<Fixed>>,
     rp: Res<RenderPose>,
     mut q: Query<&mut Transform, With<AircraftRoot>>,
@@ -346,7 +468,7 @@ fn sync_aircraft(
     t.rotation = rp.prev_rot.slerp(rp.curr_rot, a);
 }
 
-/// Grab each control bone's bind-pose rotation the first frame it exists
+/// Grab each control surface's bind-pose transform the first frame it exists
 /// (the glTF scene loads asynchronously, so this can't be done in `Startup`).
 fn capture_rig(names: Query<(Entity, &Name, &Transform)>, mut rig: ResMut<ControlRig>) {
     if !rig.rest.is_empty() {
@@ -354,7 +476,7 @@ fn capture_rig(names: Query<(Entity, &Name, &Transform)>, mut rig: ResMut<Contro
     }
     for (e, n, t) in &names {
         if is_control_bone(n.as_str()) {
-            rig.rest.insert(e, t.rotation);
+            rig.rest.insert(e, *t);
         }
     }
 }
@@ -362,7 +484,7 @@ fn capture_rig(names: Query<(Entity, &Name, &Transform)>, mut rig: ResMut<Contro
 fn is_control_bone(name: &str) -> bool {
     matches!(
         name,
-        // c172 bone rig (skinned).
+        // c172 bone rig (skinned, the older `cessna_172.glb`).
         "aileron-left_3" | "aileron-right_2" | "elevator_0" | "rudder_4" | "flaps_1" | "prop_5"
         // F-22 model-A pivots (plain node transforms).
         | "Cube.043_66" | "Cube.044_79"
@@ -370,7 +492,7 @@ fn is_control_bone(name: &str) -> bool {
         | "Empty.007_35" | "Empty.008_37"
         // Mi-24 rotor hubs (spun in `drive_surfaces`).
         | "Top_Rotor" | "Tail_Rotor"
-    )
+    ) || C172_SURFACES.iter().any(|s| s.node == name)
 }
 
 /// The rigged F-22 glTF ships a few props that aren't the aircraft: a 1.8 m
@@ -416,6 +538,27 @@ fn drive_surfaces(
     let tail_rotor_phase = rig.tail_rotor_phase;
     for (name, e, mut tf) in &mut q {
         let Some(base) = rig.rest.get(&e) else { continue };
+
+        // Baked (unrigged) models: hinge about a measured line, not the node's
+        // origin, so the translation moves too.
+        if let Some(s) = C172_SURFACES.iter().find(|s| s.node == name.as_str()) {
+            let angle = match s.src {
+                SurfaceSrc::Elevator => s.sign * state.elevator as f32 * MAX_DEFLECT,
+                SurfaceSrc::Aileron => s.sign * state.aileron as f32 * MAX_DEFLECT,
+                SurfaceSrc::Rudder => s.sign * state.rudder as f32 * MAX_DEFLECT,
+                SurfaceSrc::Flap => s.sign * (state.flap_deg as f32).to_radians(),
+                SurfaceSrc::Prop => s.sign * prop_phase,
+            };
+            let axis = Vec3::from_array(s.axis).normalize();
+            let hinge = Vec3::from_array(s.hinge);
+            let mut t = *base;
+            t.rotate_around(hinge, Quat::from_axis_angle(axis, angle));
+            *tf = t;
+            continue;
+        }
+
+        // Rigged models: each bone's origin is its hinge, so a plain rotation on
+        // top of the bind pose is enough.
         // Signs are set so each surface moves the way JSBSim's command means:
         // a positive angle swings that bone's trailing edge DOWN for the
         // ailerons/elevator/flaps and toward +Z (right) for the rudder
@@ -451,7 +594,7 @@ fn drive_surfaces(
 
             _ => continue,
         };
-        tf.rotation = *base * Quat::from_axis_angle(Vec3::from_array(axis).normalize(), angle);
+        tf.rotation = base.rotation * Quat::from_axis_angle(Vec3::from_array(axis).normalize(), angle);
     }
 }
 
@@ -476,10 +619,85 @@ fn drive_gear(state: Res<AircraftState>, mut q: Query<(&Name, &mut Transform)>) 
 /// Chase-camera catch-up rate, per second. Higher = tighter / shakier.
 const CAM_FOLLOW_RATE: f32 = 4.0;
 
-fn follow_camera(
+/// Cockpit head-look sensitivity, in degrees of head rotation per pixel of
+/// mouse motion.
+const LOOK_DEG_PER_PX: f32 = 0.12;
+
+/// How far the pilot can look up/down before the neck stops (radians). Yaw is
+/// unlimited, so you can turn right around and watch your own tail.
+const LOOK_PITCH_LIMIT: f32 = 80.0_f32.to_radians();
+
+/// Cockpit head-look as a rotation in the airframe body frame: yaw about the
+/// body's up axis, then pitch about its lateral axis. Zero = straight ahead.
+/// Composed *after* the airframe attitude (see `follow_camera`), so a head-turn
+/// reads relative to the cockpit and rolls with the plane.
+fn look_rotation(ui: &Ui) -> Quat {
+    Quat::from_rotation_y(ui.look_yaw) * Quat::from_rotation_x(ui.look_pitch)
+}
+
+/// Fold one frame of mouse motion into the cockpit head-look. Screen-right
+/// turns the view right (a negative yaw about body-up, since the camera looks
+/// down its own -Z); screen-up pitches the view up (mouse y grows downward).
+/// Pitch is clamped to the neck's range; yaw is unlimited.
+fn apply_look_delta(ui: &mut Ui, delta: Vec2) {
+    let k = LOOK_DEG_PER_PX.to_radians();
+    ui.look_yaw -= delta.x * k;
+    ui.look_pitch = (ui.look_pitch - delta.y * k).clamp(-LOOK_PITCH_LIMIT, LOOK_PITCH_LIMIT);
+}
+
+/// Cockpit free-look: mouse motion turns the pilot's head relative to the
+/// airframe. Position is untouched (that stays on `follow_camera`'s eye), so
+/// this only changes where you're looking. Inert unless in the cockpit view.
+fn cockpit_look(motion: Res<AccumulatedMouseMotion>, mut ui: ResMut<Ui>) {
+    if !ui.cockpit {
+        return;
+    }
+    let d = motion.delta;
+    if d != Vec2::ZERO {
+        apply_look_delta(&mut ui, d);
+    }
+}
+
+/// Keep the mouse cursor out of the way in the cockpit view: hidden and locked
+/// to the window so free-look gets unbounded motion. Released everywhere else
+/// (menu, chase view, or an unfocused window, where a lock would strand it).
+fn cockpit_cursor(
+    state: Res<State<AppState>>,
+    ui: Res<Ui>,
+    mut windows: Query<(&mut CursorOptions, &Window)>,
+) {
+    let cockpit = *state.get() == AppState::Flying && ui.cockpit;
+    for (mut cursor, window) in &mut windows {
+        let grab = if cockpit && window.focused {
+            CursorGrabMode::Locked
+        } else {
+            CursorGrabMode::None
+        };
+        let visible = !cockpit;
+        if cursor.grab_mode != grab || cursor.visible != visible {
+            cursor.grab_mode = grab;
+            cursor.visible = visible;
+        }
+    }
+}
+
+/// Pilot-eye pose for the cockpit view: convert the model-frame eye through the
+/// same scale/yaw/drop transform `spawn_model_child` applies, giving the offset
+/// in the `AircraftRoot` body frame (so the camera inherits the airframe's full
+/// attitude and rolls with the plane).
+fn cockpit_eye(spec: &ModelSpec) -> Option<Vec3> {
+    spec.eye.map(|e| {
+        Quat::from_rotation_y(spec.yaw) * (Vec3::from_array(e) * spec.scale)
+            + Vec3::new(0.0, -spec.drop, 0.0)
+    })
+}
+
+pub(crate) fn follow_camera(
     time: Res<Time>,
     fixed: Res<Time<Fixed>>,
     rp: Res<RenderPose>,
+    sim: Res<Sim>,
+    ui: Res<Ui>,
     mut q: Query<&mut Transform, With<Camera3d>>,
 ) {
     let Ok(mut t) = q.single_mut() else {
@@ -488,10 +706,25 @@ fn follow_camera(
     if !rp.init {
         return;
     }
-    // Track the interpolated pose (not the raw step), or the camera inherits the
-    // same hold/jump jitter it's meant to sit behind.
     let a = fixed.overstep_fraction();
     let pos = rp.prev_pos.lerp(rp.curr_pos, a);
+
+    // Cockpit view: pin the camera at the modelled pilot eye and copy the
+    // airframe's interpolated attitude, so the panel and horizon move with the
+    // plane. Falls through to the chase view when the model has no interior.
+    if ui.cockpit {
+        if let Some(eye) = cockpit_eye(&model_spec(&sim.name)) {
+            let rot = rp.prev_rot.slerp(rp.curr_rot, a);
+            t.translation = pos + rot * eye;
+            // Head-look turns the view *relative to the airframe*; the eye
+            // offset above is unrotated by it, so the camera position is fixed.
+            t.rotation = rot * look_rotation(&ui);
+            return;
+        }
+    }
+
+    // Track the interpolated pose (not the raw step), or the camera inherits the
+    // same hold/jump jitter it's meant to sit behind.
     let heading = rp.prev_heading + (rp.curr_heading - rp.prev_heading) * a;
 
     // Yaw-only offset keeps the horizon level instead of rolling with the plane.
@@ -508,6 +741,17 @@ fn follow_camera(
 fn toggle_ui(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<Ui>) {
     if keys.just_pressed(KeyCode::KeyH) {
         ui.show_inputs = !ui.show_inputs;
+    }
+    if keys.just_pressed(KeyCode::KeyC) {
+        ui.cockpit = !ui.cockpit;
+        // Every entry into the cockpit starts looking straight ahead.
+        ui.look_yaw = 0.0;
+        ui.look_pitch = 0.0;
+    }
+    // Recentre the cockpit head-look (a no-op in the chase view).
+    if keys.just_pressed(KeyCode::KeyN) {
+        ui.look_yaw = 0.0;
+        ui.look_pitch = 0.0;
     }
 }
 
@@ -551,7 +795,7 @@ fn bar(v: f64) -> String {
 /// Per-aircraft key hints, generated from the active control set so they can't
 /// drift from the profile. Duplicates collapse (both brakes share one entry),
 /// and the list wraps a few entries per row.
-fn control_hints(bindings: &Bindings) -> String {
+fn control_hints(bindings: &Bindings, cockpit: bool) -> String {
     use crate::aircraft_profile::key_name;
     let mut entries: Vec<String> = Vec::new();
     for b in &bindings.list {
@@ -569,6 +813,12 @@ fn control_hints(bindings: &Bindings) -> String {
     }
     entries.push("H inputs".to_string());
     entries.push("R reset".to_string());
+    entries.push("C view".to_string());
+    if cockpit {
+        // Free-look only does anything from the pilot's seat.
+        entries.push("N recentre".to_string());
+        entries.push("mouse look".to_string());
+    }
 
     const PER_LINE: usize = 4;
     entries
@@ -673,7 +923,7 @@ fn update_hud(
     }
 
     out.push_str("\n\n");
-    out.push_str(&control_hints(&bindings));
+    out.push_str(&control_hints(&bindings, ui.cockpit));
 
     text.0 = out;
 }
@@ -704,7 +954,54 @@ fn draw_grid(state: Res<AircraftState>, mut gizmos: Gizmos) {
 
 #[cfg(test)]
 mod tests {
-    use super::{bar, signed_bar};
+    use super::{
+        LOOK_PITCH_LIMIT, Ui, apply_look_delta, bar, look_rotation, signed_bar,
+    };
+    use bevy::prelude::{Vec2, Vec3};
+
+    /// The cockpit camera's forward direction (`-Z` local) in the airframe body
+    /// frame, after the head-look. Body axes: forward -Z, up +Y, right +X.
+    fn forward(ui: &Ui) -> Vec3 {
+        look_rotation(ui) * Vec3::NEG_Z
+    }
+
+    #[test]
+    fn zero_look_keeps_the_camera_forward() {
+        let ui = Ui::default();
+        assert!(forward(&ui).abs_diff_eq(Vec3::NEG_Z, 1e-6));
+    }
+
+    #[test]
+    fn mouse_right_looks_right_and_mouse_up_looks_up() {
+        // Mouse right (delta.x > 0) must swing the view toward body-right (+X).
+        let mut ui = Ui {
+            cockpit: true,
+            ..Default::default()
+        };
+        apply_look_delta(&mut ui, Vec2::new(10.0, 0.0));
+        assert!(forward(&ui).x > 0.0, "mouse-right should look toward +X");
+
+        // Mouse up (delta.y < 0, since y grows downward) must pitch up (+Y).
+        let mut ui = Ui::default();
+        apply_look_delta(&mut ui, Vec2::new(0.0, -10.0));
+        assert!(forward(&ui).y > 0.0, "mouse-up should pitch toward +Y");
+    }
+
+    #[test]
+    fn pitch_clamps_at_the_neck_limit_but_yaw_is_free() {
+        let mut ui = Ui::default();
+        for _ in 0..10_000 {
+            apply_look_delta(&mut ui, Vec2::new(0.0, -50.0));
+        }
+        assert!(ui.look_pitch <= LOOK_PITCH_LIMIT + 1e-6);
+        assert!(ui.look_pitch > 0.0);
+
+        // Yaw keeps accumulating (you can turn right around).
+        for _ in 0..10_000 {
+            apply_look_delta(&mut ui, Vec2::new(50.0, 0.0));
+        }
+        assert!(ui.look_yaw < -1.0);
+    }
 
     #[test]
     fn signed_bar_is_centred_and_empty_at_zero() {

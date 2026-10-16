@@ -123,7 +123,7 @@ pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     let ball = images.add(make_image(raster_face(ball_sample)));
 
     let c = NODE * 0.5;
-    let root = spawn_root(&mut commands, Side::Right, 1, 0);
+    let root = spawn_root(&mut commands, PanelKey::Turn, Side::Right, 1, 0);
     commands.entity(root).with_children(|p| {
         spawn_image(p, face, ());
 

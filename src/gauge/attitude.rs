@@ -34,7 +34,7 @@ impl UiMaterial for AttitudeMaterial {
 
 pub(super) fn setup(mut commands: Commands, mut materials: ResMut<Assets<AttitudeMaterial>>) {
     let mat = materials.add(AttitudeMaterial::default());
-    let root = spawn_root_centered(&mut commands, MARGIN);
+    let root = spawn_root_centered(&mut commands, PanelKey::Attitude, MARGIN);
     commands.entity(root).with_children(|p| {
         p.spawn((
             MaterialNode(mat),

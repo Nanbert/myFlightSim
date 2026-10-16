@@ -164,7 +164,7 @@ pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     )));
     let c = NODE * 0.5;
 
-    let root = spawn_root(&mut commands, Side::Left, 0, 0);
+    let root = spawn_root(&mut commands, PanelKey::Airspeed, Side::Left, 0, 0);
     commands.entity(root).with_children(|p| {
         spawn_image(p, face, ());
 

@@ -58,7 +58,8 @@ cargo run
 ```
 
 首次运行会先编译 JSBSim（耗时较长），之后增量构建很快。左上角 HUD 显示空速、
-高度、姿态、油门、转速等；按 `H` 可切换控制输入叠加层。
+高度、姿态、油门、转速等；按 `H` 可切换控制输入叠加层，按 `C` 在机外跟随与
+座舱内视角之间切换（机模带内饰时才有座舱视角，见下）。
 
 ## 键位
 
@@ -79,6 +80,7 @@ cargo run
 | `J` | 推力矢量开关（仅 F-22） | `fcs/tvc-enable` |
 | `R` | 重置到跑道 | — |
 | `H` | 显示 / 隐藏输入叠加层 | — |
+| `C` | 切换跟随相机 / 座舱内视角 | — |
 
 每架飞机的操作键**各自独立**（完全解耦），但共有控制项的默认键写得一致，所以
 肌肉记忆可以跨机型延续。缺省的机种（如 C172）用通用的一套；F-22 多出起落架与
@@ -141,11 +143,12 @@ gear = KeyU
 │   ├── main.rs        # Bevy App 组装
 │   ├── app_state.rs   # Menu / Flying 状态
 │   ├── sim.rs         # 飞行模型 <-> Bevy 世界桥接、定步长与插值
-│   ├── view.rs        # 场景/相机/HUD、操纵面骨骼驱动
+│   ├── view.rs        # 场景/相机/HUD、操纵面驱动（骨骼旋转 / 绕铰链线旋转）
 │   ├── input.rs       # 键位 -> FCS 命令（按机型档案 + 用户覆盖构建）
 │   ├── aircraft_profile.rs # 每机型的控制键位档案（数据表）
 │   ├── config.rs      # 用户设置持久化（键位覆盖 + 天气；ConfigStore 抽象）
 │   ├── menu.rs        # 开始菜单：选机 + 全局设置页 + 按键编辑器
+│   ├── gauge/         # 座舱仪表（UI 组件）：7 个实时表，底角布局 / 座舱面板贴附
 │   ├── sky.rs         # 程序化天空：跟随相机的渐变天穹 + fBm 云（无贴图素材）
 │   ├── weather.rs     # 天气：跟随相机的雨幕粒子 + 阴天（驱动 sky/view 变暗）
 │   └── lens.rs        # 镜头雨滴后处理
@@ -158,8 +161,9 @@ gear = KeyU
 │   ├── shim/shim.cpp  # C ABI 垫片
 │   ├── build.rs       # 编译 libJSBSim、链接垫片
 │   └── examples/      # takeoff.rs：无头自动驾驶演示
-├── examples/          # confirm_controls.rs、sim_view_shot.rs
-├── assets/            # cessna_172.glb
+├── examples/          # confirm_controls.rs、sim_view_shot.rs、cockpit_shot.rs、
+│                      # panel_calib.rs、panel_view_shot.rs
+├── assets/            # cessna_172.glb、f22.glb…；c172_full.glb 是本机软链，不入库
 └── CREDITS.md         # 3D 模型署名
 ```
 
@@ -172,7 +176,17 @@ gear = KeyU
   正常的航线，从而把手感问题归因到“操纵”而非“模拟”。
 - `cargo run --example confirm_controls` —— 直接驱动 `cessna_172.glb` 的操纵面
   骨骼（不经过 JSBSim），写出一张静置图和一张偏转图，用来核对模型绑定是否正确。
-- `cargo run --example sim_view_shot` —— 离屏渲染一帧，用于查看场景与操纵面姿态。
+- `cargo run --example sim_view_shot` —— 离屏渲染场景，逐个偏转副翼 / 升降舵 /
+  方向舵各出一张图，核对新机模的操纵面接线；`COCKPIT=1 cargo run --example
+  sim_view_shot` 则强制座舱视角，只出一张图，核对内饰框景。
+- `cargo run --example cockpit_shot` —— 单独加载大机模 + 自由相机，用来手工调
+  座舱眼睛位置（见下）。
+- `cargo run --example panel_calib` —— 座舱面板标定：把 `src/gauge/mod.rs` 里
+  的 7 个表位重新投回屏幕，在画面上撒红球标记，用来核对/测量面板表盘的中心与
+  半径（读数取自 `/tmp/dials.txt`，缺省用内置值）。
+- `cargo run --example panel_view_shot` —— 带实时仪表的座舱渲染截图，用来验证
+  7 个表是否正好贴在模型画好的表盘上（`COCKPIT=0` 则回到屏幕底角布局对照，
+  `LOOK=<角度>` 让座舱视角转过去，检查转头时表是否仍跟着贴在表盘上）。
 
 `jsbsim-sys` 里还有一个单元测试 `c172p_climbs_after_throttle_up`：加载 c172p、
 加油门、跑 2 秒，断言飞机确实爬升并保持空速。运行：
@@ -181,7 +195,38 @@ gear = KeyU
 cargo test
 ```
 
+## 机模与座舱视角
+
+C172 默认用带内饰的大机模 `assets/c172_full.glb`（机外蒙皮 + 座舱内饰 + 仪表面
+板，故支持 `C` 座舱视角）。它**不入库**，需自备一个软链：
+
+```sh
+ln -s ~/box/cessna172.glb assets/c172_full.glb
+```
+
+文件不存在时自动回退到入库的 `cessna_172.glb`（仅机外、无内饰，因此没有座舱视
+角）。大机模没有骨骼也没有动画：舵面是各自独立的节点、几何烘焙在同一坐标系里，
+所有节点原点都落在机体重心，所以 `view.rs` 的 `C172_SURFACES` 表用“绕各自前缘
+线旋转”（`Transform::rotate_around`）把它们铰接起来——轴与铰链点由绑定姿态顶点
+量出来。座舱相机的眼睛位置同样写在 `model_spec` 里（模型坐标系，鼻朝 +Z）。
+
+大机模的面板是**静态贴图**，表针不会动。为了不让屏幕底角的 7 个实时表和贴图画好
+的表盘打架，座舱视角下这 7 个表会**贴到面板上**：`gauge/mod.rs` 里为每个表存了一份
+机体坐标系下的表盘位置（中心 + 两个半径向量，由 `panel_calib` 量出），
+`seat_panel` 每帧把它投影到当前相机上，再把整个控件（表盘、数字、指针）移动、
+缩放、旋转到位。因为位置来自相机而不是固定屏幕像素，**自由视角、横滚、改窗口大小
+都不会错位**；表盘转到相机背后时该表自动隐藏。留作静态的其余表盘（刹车压力、
+GYRO/LOC、备用高度表、VOR、备用升降率等）不动——模型上没有转速表，7 个表是“尽量
+对上”，不是一一对应。
+
+座舱视角下支持**鼠标自由环视**：移动鼠标即转动视线（机体系下先偏航后俯仰，俯仰限
+±80°），`N` 键把视线回正，`C` 退出座舱视角或按 `Esc` 回菜单时也会自动回正。相机
+**位置始终钉在飞行员眼睛上**，转头只改变朝向——面板与地平线只是相对头部平移/旋转，
+仪表仍由 `seat_panel` 逐帧重投影贴回原表位。进入座舱视角时鼠标会被隐藏并锁定在窗口
+内（得到无边界位移），离开座舱视角、回到菜单或窗口失焦时立即释放。
+
 ## 署名
 
-3D 模型 `assets/cessna_172.glb` 来自 Sketchfab（作者 Viva_1），采用
-**CC BY 4.0** 许可。完整的 TASL 署名见 [CREDITS.md](CREDITS.md)。
+3D 模型 `assets/cessna_172.glb`（作者 Viva_1）与可选的 `c172_full.glb`（作者
+KOG_THORNS）均来自 Sketchfab，采用 **CC BY 4.0** 许可。完整的 TASL 署名见
+[CREDITS.md](CREDITS.md)。

@@ -9,6 +9,17 @@
 - **Modifications:** None. The model file is used as-is; its control-surface
   bones are driven at runtime by the simulation (no re-export or geometry edit).
 
+## 3D model — `assets/c172_full.glb` (optional, not committed)
+
+- **Title:** Cessna172 (interior + exterior)
+- **Author:** KOG_THORNS (https://sketchfab.com/ioai25312)
+- **Source:** https://sketchfab.com/3d-models/cessna172-d1b15841c29c43d0862667300bad55a4
+- **License:** [CC BY 4.0](http://creativecommons.org/licenses/by/4.0/)
+- **Modifications:** None. The model file is used as-is (a large local symlink,
+  not committed). It ships no skeleton/animation, so at runtime each separate
+  control-surface node is rotated about its own measured leading-edge line
+  (`Transform::rotate_around`) — no re-export or geometry edit.
+
 ## 3D model — `assets/f22.glb`
 
 - **Title:** F22 Raptor FREE
