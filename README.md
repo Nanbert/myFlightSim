@@ -163,7 +163,7 @@ gear = KeyU
 │   └── examples/      # takeoff.rs：无头自动驾驶演示
 ├── examples/          # confirm_controls.rs、sim_view_shot.rs、cockpit_shot.rs、
 │                      # panel_calib.rs、panel_view_shot.rs
-├── assets/            # cessna_172.glb、f22.glb…；c172_full.glb 是本机软链，不入库
+├── assets/            # cessna_172.glb、f22.glb…；c172_full.glb 是本机自备文件，不入库
 └── CREDITS.md         # 3D 模型署名
 ```
 
@@ -198,10 +198,11 @@ cargo test
 ## 机模与座舱视角
 
 C172 默认用带内饰的大机模 `assets/c172_full.glb`（机外蒙皮 + 座舱内饰 + 仪表面
-板，故支持 `C` 座舱视角）。它**不入库**，需自备一个软链：
+板，故支持 `C` 座舱视角）。它**不入库**（44 MB 的原始文件），需自备并把文件放到
+该路径：
 
 ```sh
-ln -s ~/box/cessna172.glb assets/c172_full.glb
+cp ~/box/cessna172.glb assets/c172_full.glb
 ```
 
 文件不存在时自动回退到入库的 `cessna_172.glb`（仅机外、无内饰，因此没有座舱视
