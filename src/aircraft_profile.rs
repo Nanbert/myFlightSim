@@ -19,6 +19,10 @@ pub enum Axis {
     Spring,
     /// Accumulate while a key is held; hold position on release.
     Hold,
+    /// Accumulate while a key is held, then spring back to the starting value on
+    /// release. The F-22's arcade throttle: hold to spool up, let go and it falls
+    /// back to cruise, so the afterburner grows and fades on its own.
+    Detent,
 }
 
 /// Semantic id for an axis control. Used by the HUD hint line and (later) the
@@ -166,6 +170,9 @@ pub struct ToggleSpec {
 /// An aircraft's complete control set.
 pub struct Profile {
     pub has_autopilot: bool,
+    /// Whether the aircraft offers the Realistic/Arcade flight-model switch on
+    /// its settings page. Only the F-22 carries an arcade dynamics path.
+    pub has_arcade: bool,
     pub bindings: Vec<BindingSpec>,
     pub toggles: Vec<ToggleSpec>,
 }
@@ -181,8 +188,8 @@ fn aileron() -> BindingSpec {
 fn rudder() -> BindingSpec {
     BindingSpec { action: Action::Rudder, property: "fcs/rudder-cmd-norm", axis: Axis::Spring, pos: KeyCode::KeyQ, neg: Some(KeyCode::KeyE), rate: 3.0, min: -1.0, max: 1.0, initial: 0.0 }
 }
-fn throttle() -> BindingSpec {
-    BindingSpec { action: Action::Throttle, property: "fcs/throttle-cmd-norm", axis: Axis::Hold, pos: KeyCode::ShiftLeft, neg: Some(KeyCode::ControlLeft), rate: 0.6, min: 0.0, max: 1.0, initial: 0.6 }
+fn throttle(pos: KeyCode) -> BindingSpec {
+    BindingSpec { action: Action::Throttle, property: "fcs/throttle-cmd-norm", axis: Axis::Hold, pos, neg: Some(KeyCode::ControlLeft), rate: 0.6, min: 0.0, max: 1.0, initial: 0.6 }
 }
 fn collective() -> BindingSpec {
     BindingSpec { action: Action::Collective, property: "fcs/collective-cmd-norm", axis: Axis::Hold, pos: KeyCode::ShiftLeft, neg: Some(KeyCode::ControlLeft), rate: 0.6, min: 0.0, max: 1.0, initial: 0.0 }
@@ -197,12 +204,12 @@ fn brake(action: Action, property: &'static str) -> BindingSpec {
     BindingSpec { action, property, axis: Axis::Spring, pos: KeyCode::KeyB, neg: None, rate: 4.0, min: 0.0, max: 1.0, initial: 0.0 }
 }
 
-fn core_bindings() -> Vec<BindingSpec> {
+fn core_bindings(throttle_pos: KeyCode) -> Vec<BindingSpec> {
     vec![
         elevator(),
         aileron(),
         rudder(),
-        throttle(),
+        throttle(throttle_pos),
         pitch_trim(),
         flap(),
         brake(Action::BrakeLeft, "fcs/left-brake-cmd-norm"),
@@ -236,7 +243,9 @@ pub fn profile(id: &str) -> Profile {
     match normalized(id) {
         "f22" => Profile {
             has_autopilot: false,
-            bindings: core_bindings(),
+            has_arcade: true,
+            // The arcade boost lives on the space bar.
+            bindings: core_bindings(KeyCode::Space),
             toggles: {
                 let mut t = core_toggles();
                 t.push(ToggleSpec { action: ToggleAction::Gear, key: KeyCode::KeyU });
@@ -246,6 +255,7 @@ pub fn profile(id: &str) -> Profile {
         },
         "ah1s" => Profile {
             has_autopilot: false,
+            has_arcade: false,
             // A helicopter: collective instead of throttle, no flaps, no wheels.
             bindings: vec![elevator(), aileron(), rudder(), collective(), pitch_trim()],
             toggles: vec![
@@ -255,7 +265,8 @@ pub fn profile(id: &str) -> Profile {
         },
         "737" => Profile {
             has_autopilot: true,
-            bindings: core_bindings(),
+            has_arcade: false,
+            bindings: core_bindings(KeyCode::ShiftLeft),
             toggles: {
                 let mut t = core_toggles();
                 t.push(ToggleSpec { action: ToggleAction::Autopilot, key: KeyCode::KeyG });
@@ -265,7 +276,8 @@ pub fn profile(id: &str) -> Profile {
         },
         _ => Profile {
             has_autopilot: false,
-            bindings: core_bindings(),
+            has_arcade: false,
+            bindings: core_bindings(KeyCode::ShiftLeft),
             toggles: core_toggles(),
         },
     }
@@ -391,6 +403,14 @@ mod tests {
     }
 
     #[test]
+    fn only_the_f22_offers_arcade_mode() {
+        assert!(profile("f22").has_arcade);
+        assert!(!profile("c172p").has_arcade);
+        assert!(!profile("737").has_arcade);
+        assert!(!profile("ah1s").has_arcade);
+    }
+
+    #[test]
     fn aircraft_have_decoupled_control_sets() {
         // The helicopter has a collective and no flaps/brakes; the Cessna the
         // reverse. This is the point of per-aircraft decoupling.
@@ -425,6 +445,23 @@ mod tests {
             assert_eq!(elev.pos, KeyCode::KeyS);
             assert_eq!(elev.neg, Some(KeyCode::KeyW));
         }
+    }
+
+    #[test]
+    fn the_f22_throttle_moves_to_the_space_bar() {
+        // The arcade F-22 spools with Space; every other aircraft keeps the
+        // shared Shift/Ctrl throttle so muscle memory carries over.
+        let pos = |id: &str| {
+            profile(id)
+                .bindings
+                .into_iter()
+                .find(|b| b.action == Action::Throttle)
+                .unwrap()
+                .pos
+        };
+        assert_eq!(pos("f22"), KeyCode::Space);
+        assert_eq!(pos("c172p"), KeyCode::ShiftLeft);
+        assert_eq!(pos("737"), KeyCode::ShiftLeft);
     }
 
     #[test]

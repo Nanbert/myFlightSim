@@ -18,6 +18,16 @@ use crate::aircraft_profile::{self, Action, Axis, ToggleAction, ToggleSpec};
 use crate::app_state::AppState;
 use crate::config::{GameConfig, Keymap};
 
+/// How fast the arcade throttle spools up while its key is held, in normalized
+/// units per second. Faster than the realistic lever (0.6/s) so a tap of the
+/// boost key is felt at once.
+const ARCADE_SPOOL_RATE: f64 = 2.5;
+
+/// How fast an [`Axis::Detent`] control springs back to its rest (starting)
+/// value once the keys are released. Slower than the spool-up so the
+/// afterburner fades rather than snapping off.
+const DETENT_RETURN_RATE: f64 = 1.2;
+
 /// One key pair driving one normalized JSBSim property.
 pub struct Binding {
     /// Semantic id (for the HUD / future rebind UI).
@@ -30,6 +40,9 @@ pub struct Binding {
     axis: Axis,
     min: f64,
     max: f64,
+    /// The value [`Axis::Detent`] springs back to once released (its starting
+    /// setting, e.g. cruise throttle). Unused by the other axis types.
+    initial: f64,
     /// Current normalized value in `[min, max]`.
     pub value: f64,
     /// Trim offset added on top of `value`. Zero for every axis the FDM trims
@@ -59,6 +72,15 @@ impl Binding {
             Axis::Spring => ramp(&mut self.value, dir, self.rate * dt),
             Axis::Hold => {
                 self.value = (self.value + dir * self.rate * dt).clamp(self.min, self.max)
+            }
+            // Keys spool like `Hold`, but releasing springs back to the starting
+            // value (cruise) instead of holding.
+            Axis::Detent => {
+                if dir == 0.0 {
+                    ramp(&mut self.value, self.initial, DETENT_RETURN_RATE * dt);
+                } else {
+                    self.value = (self.value + dir * self.rate * dt).clamp(self.min, self.max);
+                }
             }
         }
     }
@@ -91,6 +113,7 @@ impl Bindings {
                     axis: s.axis,
                     min: s.min,
                     max: s.max,
+                    initial: s.initial,
                     value: s.initial,
                     trim: 0.0,
                 }
@@ -106,6 +129,22 @@ impl Bindings {
             .collect();
         Bindings { list, toggles }
     }
+
+    /// Give the throttle the arcade boost feel for aircraft whose profile offers
+    /// arcade mode (the F-22): hold the key to spool up, release and it springs
+    /// back to cruise, so the afterburner grows and fades on its own. A no-op on
+    /// every other aircraft.
+    pub fn enable_arcade(&mut self, id: &str) {
+        if !aircraft_profile::profile(id).has_arcade {
+            return;
+        }
+        for b in &mut self.list {
+            if b.action == Action::Throttle {
+                b.axis = Axis::Detent;
+                b.rate = ARCADE_SPOOL_RATE;
+            }
+        }
+    }
 }
 
 pub struct InputPlugin;
@@ -116,7 +155,12 @@ impl Plugin for InputPlugin {
         // startup aircraft is already known here.
         let name = app.world().resource::<crate::sim::Sim>().name.clone();
         let keymap = app.world().resource::<GameConfig>().keymap(&name);
-        app.insert_resource(Bindings::for_aircraft(&name, &keymap))
+        let arcade = app.world().resource::<GameConfig>().arcade(&name);
+        let mut bindings = Bindings::for_aircraft(&name, &keymap);
+        if arcade {
+            bindings.enable_arcade(&name);
+        }
+        app.insert_resource(bindings)
             .add_systems(Update, read_input.run_if(in_state(AppState::Flying)));
     }
 }
@@ -170,7 +214,11 @@ fn read_input(
     // Global (not per-aircraft): R parks on the runway with fresh controls.
     if keys.just_pressed(KeyCode::KeyR) {
         sim.reset_ground();
-        *bindings = Bindings::for_aircraft(&sim.name, &config.keymap(&sim.name));
+        let mut rebuilt = Bindings::for_aircraft(&sim.name, &config.keymap(&sim.name));
+        if config.arcade(&sim.name) {
+            rebuilt.enable_arcade(&sim.name);
+        }
+        *bindings = rebuilt;
         ap.enabled = aircraft_profile::profile(&sim.name).has_autopilot;
     }
 }
@@ -237,6 +285,7 @@ mod tests {
             axis: Axis::Spring,
             min: -1.0,
             max: 1.0,
+            initial: 0.0,
             value: 0.0,
             trim: 0.0,
         }
@@ -396,5 +445,67 @@ mod tests {
         let mut v = 0.5;
         ramp(&mut v, 0.5, 0.3);
         assert_eq!(v, 0.5);
+    }
+
+    /// The throttle binding's current value, for the arcade tests below.
+    fn throttle_value(bindings: &Bindings) -> f64 {
+        bindings
+            .list
+            .iter()
+            .find(|b| b.action == Action::Throttle)
+            .unwrap()
+            .value
+    }
+
+    #[test]
+    fn arcade_throttle_spools_up_and_springs_back_to_cruise() {
+        use bevy::prelude::ButtonInput;
+        let mut bindings = Bindings::for_aircraft("f22", &Keymap::default());
+        bindings.enable_arcade("f22");
+        let throttle = bindings
+            .list
+            .iter()
+            .find(|b| b.action == Action::Throttle)
+            .unwrap();
+        assert_eq!(throttle.axis, Axis::Detent);
+        assert_eq!(throttle.pos, KeyCode::Space);
+
+        let dt = 1.0 / 120.0;
+        let mut held = ButtonInput::<KeyCode>::default();
+
+        // Hold the boost for a second: it spools to the top.
+        held.press(KeyCode::Space);
+        for _ in 0..120 {
+            for b in &mut bindings.list {
+                b.update(&held, dt);
+            }
+        }
+        assert!(throttle_value(&bindings) > 0.99, "boost never reached full");
+
+        // Release: it springs back to the cruise rest (its starting value).
+        held.release(KeyCode::Space);
+        for _ in 0..240 {
+            for b in &mut bindings.list {
+                b.update(&held, dt);
+            }
+        }
+        assert!(
+            (throttle_value(&bindings) - 0.6).abs() < 1e-6,
+            "did not spring back to cruise: {}",
+            throttle_value(&bindings)
+        );
+    }
+
+    #[test]
+    fn arcade_throttle_is_left_alone_on_aircraft_without_it() {
+        let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+        bindings.enable_arcade("c172p");
+        let throttle = bindings
+            .list
+            .iter()
+            .find(|b| b.action == Action::Throttle)
+            .unwrap();
+        assert_eq!(throttle.axis, Axis::Hold);
+        assert_eq!(throttle.pos, KeyCode::ShiftLeft);
     }
 }

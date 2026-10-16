@@ -130,6 +130,19 @@ fn editor_slots(id: &str, keymap: &Keymap) -> Vec<(Slot, String, KeyCode)> {
     rows
 }
 
+/// Whether the aircraft's settings page carries the Realistic/Arcade flight-model
+/// switch as a synthetic row above the key slots.
+fn has_flight_model_row(id: &str) -> bool {
+    aircraft_profile::profile(id).has_arcade
+}
+
+/// Rows on the settings page: the flight-model switch (when present) plus the key
+/// slots. `editor.sel` indexes this whole list, so the key rows are offset by the
+/// header and `bind_key` never sees the synthetic row.
+fn settings_row_count(id: &str, config: &GameConfig) -> usize {
+    editor_slots(id, &config.keymap(id)).len() + has_flight_model_row(id) as usize
+}
+
 /// Menu-navigation keys can never be bound, or the page would be unusable.
 fn reserved_key(k: KeyCode) -> bool {
     matches!(
@@ -453,16 +466,24 @@ fn update_menu_ui(
     }
 }
 
-/// The aircraft's control editor: one row per rebindable key, the selected one
-/// marked, and a live prompt while a capture is pending.
+/// The aircraft's settings page: the Realistic/Arcade flight-model switch (F-22
+/// only), then one row per rebindable key, the selected one marked, and a live
+/// prompt while a capture is pending.
 fn editor_text(id: &str, config: &GameConfig, editor: &EditorState) -> String {
     let slots = editor_slots(id, &config.keymap(id));
-    let sel = editor.sel.min(slots.len().saturating_sub(1));
+    let header = has_flight_model_row(id) as usize;
+    let sel = editor.sel.min((header + slots.len()).saturating_sub(1));
 
-    let mut out = format!("{} - CONTROLS\n\n", aircraft_label(id));
+    let mut out = format!("{} - SETTINGS\n\n", aircraft_label(id));
+    if header == 1 {
+        let cursor = if sel == 0 { ">" } else { " " };
+        let model = if config.arcade(id) { "Arcade" } else { "Realistic" };
+        out.push_str(&format!("{cursor} {:<10} < {model} >\n", "flight model"));
+    }
     for (i, (_, label, key)) in slots.iter().enumerate() {
-        let cursor = if i == sel { ">" } else { " " };
-        let shown = if editor.capturing && i == sel {
+        let row = header + i;
+        let cursor = if row == sel { ">" } else { " " };
+        let shown = if editor.capturing && row == sel {
             "...".to_owned()
         } else {
             aircraft_profile::key_name(*key)
@@ -473,6 +494,8 @@ fn editor_text(id: &str, config: &GameConfig, editor: &EditorState) -> String {
     out.push('\n');
     if editor.capturing {
         out.push_str("Press a key to bind   [Esc] cancel\n");
+    } else if header == 1 && sel == 0 {
+        out.push_str("[Up/Down] select   [Left/Right] change   [Esc] close\n");
     } else {
         out.push_str("[Up/Down] select   [Enter] rebind   [Esc] close\n");
     }
@@ -574,7 +597,8 @@ fn menu_input(
             }
             Page::Settings => {
                 let id = sel.aircraft_id();
-                let n = editor_slots(id, &config.keymap(id)).len().max(1);
+                let header = has_flight_model_row(id) as usize;
+                let n = settings_row_count(id, &config).max(1);
                 editor.sel = editor.sel.min(n - 1);
 
                 if editor.capturing {
@@ -588,8 +612,23 @@ fn menu_input(
                     }
                 } else if keys.just_pressed(KeyCode::ArrowUp) {
                     editor.sel = (editor.sel + n - 1) % n;
+                    editor.msg.clear();
                 } else if keys.just_pressed(KeyCode::ArrowDown) {
                     editor.sel = (editor.sel + 1) % n;
+                    editor.msg.clear();
+                } else if editor.sel == 0 && header == 1 {
+                    // The flight-model row: Left/Right flip it, Enter does not
+                    // rebind. Persisted so the choice survives a restart.
+                    let dir = keys.just_pressed(KeyCode::ArrowRight) as isize
+                        - keys.just_pressed(KeyCode::ArrowLeft) as isize;
+                    if dir != 0 {
+                        let on = !config.arcade(id);
+                        config.set_arcade(id, on);
+                        config::save(&config, &sink);
+                    }
+                    if esc {
+                        sel.page = None;
+                    }
                 } else if enter {
                     editor.capturing = true;
                     editor.msg.clear();
@@ -690,7 +729,12 @@ fn bind_key(
     }
 
     let slots = editor_slots(id, &config.keymap(id));
-    let sel = editor.sel.min(slots.len().saturating_sub(1));
+    // The settings page may carry a flight-model row above the key slots; the
+    // cursor already excludes it (a capture can only target a key row).
+    let sel = editor
+        .sel
+        .saturating_sub(has_flight_model_row(id) as usize)
+        .min(slots.len().saturating_sub(1));
     let victim = slots
         .iter()
         .position(|(_, _, k)| *k == key)
@@ -745,7 +789,14 @@ fn start_flight(
         *sim = Sim::new(id);
     }
     sim.reset_ground();
-    *bindings = Bindings::for_aircraft(id, &config.keymap(id));
+    // Realistic or arcade, per the saved per-aircraft setting. Only the F-22
+    // reads this; every other model ignores the property.
+    sim.model.set("fcs/arcade-enable", config.arcade(id) as i32 as f64);
+    let mut controls = Bindings::for_aircraft(id, &config.keymap(id));
+    if config.arcade(id) {
+        controls.enable_arcade(id);
+    }
+    *bindings = controls;
     // The autopilot is the 737's flight law; every other aircraft starts manual.
     ap.enabled = crate::aircraft_profile::profile(id).has_autopilot;
     ap.phase = if ap.enabled { "roll" } else { "manual" };
@@ -828,6 +879,56 @@ mod tests {
         assert_eq!(editor_slots("ah1s", &Keymap::default()).len(), 12);
         // 737: c172p's slots + autopilot + gear toggles.
         assert_eq!(editor_slots("737", &Keymap::default()).len(), 18);
+    }
+
+    #[test]
+    fn only_the_f22_settings_page_gains_a_flight_model_row() {
+        let config = GameConfig::default();
+        // The row sits above the key slots, so the page has one more row.
+        assert!(has_flight_model_row("f22"));
+        assert_eq!(
+            settings_row_count("f22", &config),
+            editor_slots("f22", &Keymap::default()).len() + 1
+        );
+        // Every other aircraft's page is exactly its key slots.
+        assert!(!has_flight_model_row("737"));
+        assert_eq!(
+            settings_row_count("737", &config),
+            editor_slots("737", &Keymap::default()).len()
+        );
+    }
+
+    #[test]
+    fn the_flight_model_row_does_not_shift_a_f22_key_binding() {
+        // The header offset must be invisible to `bind_key`: binding the F-22's
+        // first key row (index 1, after the flight-model row) must land on
+        // elevator+, not on some row off by one.
+        let mut config = GameConfig::default();
+        let mut editor = EditorState { capturing: true, sel: 1, ..default() };
+        let s = sink();
+        bind_key(&mut config, &s, &mut editor, "f22", KeyCode::Digit5);
+
+        let b = Bindings::for_aircraft("f22", &config.keymap("f22"));
+        let elev = b.list.iter().find(|b| b.action == Action::Elevator).unwrap();
+        assert_eq!(elev.pos, KeyCode::Digit5, "elevator+ takes the new key");
+    }
+
+    #[test]
+    fn the_f22_page_renders_the_flight_model_switch() {
+        let editor = EditorState::default();
+        let mut config = GameConfig::default();
+        let realistic = editor_text("f22", &config, &editor);
+        assert!(realistic.contains("flight model"), "{realistic}");
+        assert!(realistic.contains("< Realistic >"), "{realistic}");
+
+        config.set_arcade("f22", true);
+        let arcade = editor_text("f22", &config, &editor);
+        assert!(arcade.contains("< Arcade >"), "{arcade}");
+        assert!(!arcade.contains("Realistic"), "{arcade}");
+
+        // A non-arcade aircraft's page has no such row.
+        let c172 = editor_text("c172p", &config, &editor);
+        assert!(!c172.contains("flight model"), "{c172}");
     }
 
     #[test]

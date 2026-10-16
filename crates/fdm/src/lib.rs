@@ -24,6 +24,7 @@
 
 mod aero;
 mod aircraft;
+mod arcade;
 mod atmos;
 mod engine;
 mod fcs;
@@ -134,6 +135,9 @@ pub struct Fdm {
     // Pilot master switch for thrust vectoring (`fcs/tvc-enable`). On by
     // default; only the F-22's FBW uses it.
     tvc_enable: bool,
+    // Arcade mode (`fcs/arcade-enable`). Off by default; when on, `advance`
+    // swaps the aero/FBW force resolution for the simplified [`arcade`] rules.
+    arcade: bool,
     // Landing gear. `gear_cmd` is the pilot's selector (true = down); `gear_pos`
     // is the achieved position (1 = down, 0 = up) rolled toward the command at
     // the gear-cycle rate. Fixed-gear aircraft stay at 1.
@@ -211,6 +215,7 @@ impl Fdm {
             engine_power_hp: 0.0,
             wow: false,
             tvc_enable: true,
+            arcade: false,
             gear_cmd: true,
             gear_pos: 1.0,
             diag: Diag::default(),
@@ -374,6 +379,19 @@ impl Fdm {
         let arms = &self.gear_arms_ft;
         let rudder = self.rudder_cmd;
         let brake = [self.left_brake_cmd, self.right_brake_cmd];
+        // Arcade ("game") mode: snapshot its inputs here, since the closure below
+        // can't borrow `self`. The pinning gate is decided from this step's own
+        // airspeed and weight-on-wheels — off on the ground, so the gear and
+        // steering own the jet on the takeoff roll.
+        let arcade = self.arcade;
+        let arcade_cfg = arcade::Cfg {
+            elevator: self.elevator_cmd,
+            aileron: self.aileron_cmd,
+            rudder: self.rudder_cmd,
+            thrust,
+            mass,
+            align: arcade && !self.wow && vt > arcade::ALIGN_MIN_KT * KT_TO_FPS,
+        };
         // Reuse the scratch map's allocation across steps; take it out of `self`
         // so the aero closure can hold it mutably without borrowing all of `self`.
         let mut props = std::mem::take(&mut self.props);
@@ -405,6 +423,18 @@ impl Fdm {
                 moment_prop: mprop,
                 thrust,
             };
+            if arcade {
+                // Only the airframe's axial (drag) force survives; the arcade
+                // rules supply the rate-command moment and the pinning force.
+                return arcade::force_moment(
+                    &arcade_cfg,
+                    s,
+                    aero.force_body[0],
+                    &inertia,
+                    ground.force_body,
+                    ground.moment_body,
+                );
+            }
             (
                 [
                     aero.force_body[0] + thrust + ground.force_body[0] + rotor_force[0],
@@ -951,6 +981,12 @@ impl FlightModel for Fdm {
     /// takes the [`Fdm::trim_fbw`] path instead: solve the equilibrium elevator
     /// angle and pre-load it into the rate loop's integrator.
     fn trim(&mut self, vc_kts: f64, alt_ft: f64) {
+        // Arcade mode has no aero to trim against: the FBW solve would seat an
+        // elevator the arcade rules ignore. `apply_ic` already leaves a level,
+        // unaccelerated state at the target speed, which is enough.
+        if self.arcade {
+            return;
+        }
         if let ControlSystem::Fbw(_) = self.ac.control {
             self.trim_fbw(vc_kts, alt_ft);
             return;
@@ -1153,6 +1189,7 @@ impl FlightModel for Fdm {
             "fcs/lef-pos-rad" => self.surf.lef_rad,
             "fcs/tvc-pos-rad" => self.surf.tvc_rad,
             "fcs/tvc-enable" => self.tvc_enable as i32 as f64,
+            "fcs/arcade-enable" => self.arcade as i32 as f64,
             "fcs/thrust-norm" => self.surf.thrust_norm,
             "fcs/elevator-cmd-norm" => self.elevator_cmd,
             "fcs/aileron-cmd-norm" => self.aileron_cmd,
@@ -1242,6 +1279,9 @@ impl FlightModel for Fdm {
             "fcs/yaw-trim-cmd-norm" => self.yaw_trim_cmd = value,
             "fcs/flap-cmd-norm" => self.flap_cmd = value,
             "fcs/tvc-enable" => self.tvc_enable = value != 0.0,
+            // Arcade ("game") mode: swaps the aero/FBW force resolution for the
+            // simplified rules in `arcade`. Off by default.
+            "fcs/arcade-enable" => self.arcade = value != 0.0,
             // Gear selector: 1 = down, 0 = up (JSBSim's convention). The
             // achieved position rolls toward it; fixed-gear aircraft ignore it.
             "gear/gear-cmd-norm" => self.gear_cmd = value > 0.5,
@@ -1983,6 +2023,109 @@ mod tests {
         }
         assert!(m.get("gear/wow") > 0.5, "should still be on the wheels");
         assert_eq!(m.get("fcs/tvc-pos-rad"), 0.0, "TVC must be inhibited on the ground");
+    }
+
+    /// A level, cruising F-22 with arcade mode on. No trim is applied: the FBW
+    /// trim is bypassed in arcade mode, and the velocity-pinning term holds the
+    /// flight path on the nose without it.
+    fn f22_arcade() -> Fdm {
+        let mut m = Fdm::new("f22");
+        m.set("ic/vc-kts", 350.0);
+        m.set("ic/h-sl-ft", 15000.0);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        m.set("fcs/arcade-enable", 1.0);
+        m
+    }
+
+    #[test]
+    fn arcade_is_off_by_default() {
+        // The realistic F-22 must be the default; arcade is opt-in through the
+        // property bus (which the menu sets from the saved config).
+        let mut m = Fdm::new("f22");
+        assert_eq!(m.get("fcs/arcade-enable"), 0.0, "arcade must be opt-in");
+        m.set("fcs/arcade-enable", 1.0);
+        assert_eq!(m.get("fcs/arcade-enable"), 1.0, "the flag must round-trip");
+    }
+
+    #[test]
+    fn arcade_tracks_a_pitch_rate_command() {
+        // Elevator is nose-down positive, so half nose-up stick commands
+        // +0.5·RATE_Q_UP of pitch rate. The synthesised moment should drive the
+        // body rate straight onto that command with the TAU_ROT lag.
+        let mut m = f22_arcade();
+        for _ in 0..120 {
+            m.set("fcs/elevator-cmd-norm", -0.5);
+            m.step();
+        }
+        let q = m.get("velocities/q-rad_sec");
+        let want = 0.5 * arcade::RATE_Q_UP;
+        println!("arcade q = {q:.3} rad/s (want {want:.3})");
+        assert!(
+            (q - want).abs() < 0.15 * want,
+            "pitch rate should reach the command: q = {q:.3}, want {want:.3}"
+        );
+        assert!(m.get("attitude/theta-deg") > 5.0, "the nose should have come up");
+    }
+
+    #[test]
+    fn arcade_points_the_velocity_at_the_nose() {
+        // The realistic F-22 departs into a tumble under a hard sustained pull
+        // (see `f22_tvc_off_departs`). Arcade drops the aero normal force and
+        // pins the velocity to the nose, so alpha stays small — no stall, no
+        // spin — while the nose keeps coming up.
+        let mut m = f22_arcade();
+        let mut peak_alpha = 0.0_f64;
+        for i in 0..120 * 3 {
+            m.set("fcs/elevator-cmd-norm", -1.0);
+            m.step();
+            if i % 12 == 0 {
+                peak_alpha = peak_alpha.max(m.get("aero/alpha-deg"));
+            }
+        }
+        println!("arcade peak alpha under a hard pull = {peak_alpha:.1} deg");
+        assert!(
+            peak_alpha < 45.0,
+            "arcade should hold alpha well below departure: peak = {peak_alpha:.1}"
+        );
+    }
+
+    #[test]
+    fn arcade_roll_follows_the_aileron() {
+        // Full right stick should command RATE_P rad/s of roll and bank the jet.
+        let mut m = f22_arcade();
+        for _ in 0..60 {
+            m.set("fcs/aileron-cmd-norm", 1.0);
+            m.step();
+        }
+        let p = m.get("velocities/p-rad_sec");
+        println!("arcade p = {p:.3} rad/s");
+        assert!(
+            p > 0.5 * arcade::RATE_P,
+            "full aileron should roll right fast: p = {p:.3}"
+        );
+        assert!(m.get("attitude/phi-deg") > 10.0, "the roll should have banked the jet");
+    }
+
+    #[test]
+    fn arcade_trim_leaves_the_jet_level() {
+        // The FBW trim seats an elevator the arcade rules ignore, so `trim` is a
+        // no-op there: it must not move the stick, and a level jet stays level.
+        let mut m = f22_arcade();
+        m.trim(350.0, 15000.0);
+        assert_eq!(
+            m.get("fcs/elevator-cmd-norm"),
+            0.0,
+            "arcade trim must not move the stick"
+        );
+        for _ in 0..12 {
+            m.step();
+        }
+        assert!(
+            m.get("velocities/q-rad_sec").abs() < 1e-3,
+            "a level arcade jet should not pitch on its own"
+        );
     }
 
     // ---------------------------- Boeing 737 -------------------------------

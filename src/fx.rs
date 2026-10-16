@@ -6,11 +6,14 @@
 //!
 //! - **Afterburner plume** — a stream of billboard puffs per nozzle
 //!   ([`FlamePuffMaterial`] + `assets/shaders/flame_puff.wesl`). The burner is a
-//!   hard step in the FDM (full reheat above 99 % throttle), so it is latched
-//!   off the throttle command rather than eased in with it: dry power shows a
+//!   hard step in the FDM (full reheat above 99 % throttle), latched off the
+//!   throttle command; the visual then *spools* toward it rather than snapping,
+//!   so the flame trails the lever the way an engine does. Dry power shows a
 //!   short warm stub, and reheat stretches it out and drives it up the
 //!   temperature ramp — a blue-white core at the nozzle, orange through the
 //!   body, a dull red tail — with shock diamonds, flaring once as it lights. The
+//!   plume's size follows the engine's actual thrust (`fcs/thrust-norm`, altitude
+//!   and Mach scaled), so thin air gives a longer, fainter, cooler plume. The
 //!   camera's bloom pass (see `view.rs`) turns the >1 hot core into a glow.
 //! - **Exhaust heat haze** — a screen-space refraction behind the nozzles
 //!   ([`ExhaustHaze`] + `assets/shaders/exhaust_haze.wesl`), riding on Bevy's
@@ -119,12 +122,38 @@ const DIAMOND_DECAY: f32 = 0.30;
 
 /// Throttle command above which the FDM lights the burner — the same `0.99` the
 /// engine's augmentation branch tests, so the visual cuts exactly when the
-/// thrust does. (`fcs/thrust-norm` can't serve here: it is scaled by the
-/// altitude/Mach thrust tables, so reheat reads ~1.4 at sea level but only ~0.7
-/// at 30,000 ft, under dry power at sea level.)
+/// thrust does. The *regime* is latched off the command because `fcs/thrust-norm`
+/// conflates reheat with altitude (it reads ~1.4 at sea level reheat but only
+/// ~0.7 at 30,000 ft, under dry power on the deck); that signal instead scales
+/// the plume's size for the atmosphere — see [`thrust_q`].
 const AB_THROTTLE: f64 = 0.99;
-/// Seconds for the burner to reach full, so light-up ramps instead of popping.
-const AB_RAMP: f32 = 0.12;
+/// In arcade mode there is no reheat detent: the burner tracks the lever
+/// *continuously*, so the plume swells and shrinks with the throttle rather than
+/// popping on at 0.99. This is where the afterburner starts to light — below it
+/// the plume is the dry military stub, above it the reheat plume grows in.
+const ARC_AB_LO: f32 = 0.60;
+/// Seconds for the burner to reach full. Long enough that light-up ramps rather
+/// than popping, short enough that the plume still answers the lever.
+const AB_RAMP: f32 = 0.35;
+/// Seconds for the *core* to wind up. A jet engine does not step with the
+/// throttle — it spools over a second or two — and the flame follows the engine,
+/// not the lever, so a slam from idle to full waits on the spool before the dry
+/// plume arrives. The burner ramps faster than this (the core is already lit).
+const SPOOL_TAU: f32 = 1.1;
+
+/// Sea-level full-reheat reading of `fcs/thrust-norm`, so normalising the plume
+/// by it leaves the deck-reheat case (the reference the flame was tuned at)
+/// untouched. See [`thrust_q`].
+const THRUST_REF: f32 = 1.394;
+/// Extra plume reach at zero thrust: the plume is scaled by `1 + ALT_LONG·(1−q)`,
+/// so where the air is thin and thrust is low the gas expands into the lower
+/// back-pressure and stretches out.
+const ALT_LONG: f32 = 0.6;
+/// Floors on the altitude fade: brightness and temperature are scaled by
+/// `f + (1−f)·q`, so however thin the air gets they bottom out rather than
+/// vanishing. Thin air burns cooler and fainter, but not to nothing.
+const ALT_ALPHA_FLOOR: f32 = 0.35;
+const ALT_TEMP_FLOOR: f32 = 0.70;
 /// Seconds of flare after light-up: the plume punches long and bright, then
 /// settles. The lurch reads as the nozzle opening.
 const IGN_TIME: f32 = 0.30;
@@ -239,6 +268,9 @@ impl Default for Plume {
 struct Burner {
     /// 0 = dry, 1 = full reheat, eased so light-up and cut are visible.
     level: f32,
+    /// Spooled dry thrust 0..1, lagging the throttle command by [`SPOOL_TAU`] so
+    /// the plume winds up with the engine instead of snapping to the lever.
+    spool: f32,
     lit: bool,
     /// Seconds since the burner last lit.
     since_light: f32,
@@ -387,6 +419,42 @@ fn puff_radius(heat: f32, f: f32) -> f32 {
     dry.lerp(ab, heat)
 }
 
+/// The engine's actual thrust as a fraction of sea-level reheat, from
+/// `fcs/thrust-norm`. This is the model's own altitude/Mach thrust scaling — thin
+/// air makes less thrust — so the plume is not guessing at the atmosphere: at
+/// 30,000 ft, full reheat reads about half of what it does on the deck. Above 1
+/// (reheat on the deck) is clamped away so the reference look is preserved.
+fn thrust_q(thrust_norm: f64) -> f32 {
+    (thrust_norm as f32 / THRUST_REF).clamp(0.0, 1.0)
+}
+
+/// How the plume answers `q` (see [`thrust_q`]) as `(reach, alpha, temp)` scale
+/// factors: thin air (low `q`) stretches the plume, fades it and cools it. Each
+/// factor is 1 at sea-level reheat, so the tuned deck look is the reference.
+fn plume_at_q(q: f32) -> (f32, f32, f32) {
+    (
+        1.0 + ALT_LONG * (1.0 - q),
+        ALT_ALPHA_FLOOR + (1.0 - ALT_ALPHA_FLOOR) * q,
+        ALT_TEMP_FLOOR + (1.0 - ALT_TEMP_FLOOR) * q,
+    )
+}
+
+/// The burner level the lever commands. In the realistic model the reheat is a
+/// hard detent — nothing below `AB_THROTTLE`, full above it — which is what the
+/// engine's own augmentation branch tests, so the visual cuts exactly when the
+/// thrust does. Arcade has no detent: the lever maps continuously from
+/// `ARC_AB_LO` (the burner just lighting) to 1 (full reheat), so the plume grows
+/// and shrinks smoothly with the throttle.
+fn burner_cmd(arcade: bool, throttle: f64) -> f32 {
+    if arcade {
+        ((throttle as f32 - ARC_AB_LO) / (1.0 - ARC_AB_LO)).clamp(0.0, 1.0)
+    } else if throttle > AB_THROTTLE {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 /// Latch the burner off the throttle command, advance every puff down its
 /// plume, and refresh each puff's transform, colour and intensity.
 fn drive_flames(
@@ -416,10 +484,17 @@ fn drive_flames(
     let dt = time.delta_secs().min(1.0 / 30.0);
     let t = time.elapsed_secs();
 
-    // Latch on the same predicate the FDM's engine uses, and ease a level toward
-    // it so the hard thrust step becomes a visible light-up; then time a flare
-    // off the moment it latches.
-    let ab = state.throttle > AB_THROTTLE;
+    // Realistic: latch on the same predicate the FDM's engine uses (the 0.99
+    // reheat detent), then time an ignition flare off the moment it latches.
+    //
+    // Arcade: the burner instead follows the lever continuously — the plume
+    // swells and shrinks with the throttle, with no detent and no flare, which is
+    // the whole point of the mode. `fcs/arcade-enable` is the single source of
+    // truth, so the plume and the dynamics can never disagree.
+    let arcade = sim.model.get("fcs/arcade-enable") > 0.5;
+    let throttle = state.throttle.clamp(0.0, 1.0) as f32;
+    let level_cmd = burner_cmd(arcade, state.throttle);
+    let ab = level_cmd > 0.0;
     if ab && !burner.lit {
         burner.lit = true;
         burner.since_light = 0.0;
@@ -429,14 +504,19 @@ fn drive_flames(
     if burner.lit {
         burner.since_light += dt;
     }
-    let k = 1.0 - (-dt / AB_RAMP).exp();
-    burner.level += (if ab { 1.0 } else { 0.0 } - burner.level) * k;
+    // Ease the burner and the core toward their targets so the plume trails the
+    // lever, not the lever itself: the burner ramps in `AB_RAMP` (the core is
+    // already lit), the core spools in `SPOOL_TAU`.
+    let k_ab = 1.0 - (-dt / AB_RAMP).exp();
+    burner.level += (level_cmd - burner.level) * k_ab;
+    let dry_cmd = ((throttle - 0.15) / 0.85).clamp(0.0, 1.0);
+    let k_spool = 1.0 - (-dt / SPOOL_TAU).exp();
+    burner.spool += (dry_cmd - burner.spool) * k_spool;
 
     // Dry thrust, for the military plume: idle leaves nothing, full mil a blue
     // stub. Ignition flare: 1 at light-up, decaying to 0 over `IGN_TIME`.
-    let throttle = state.throttle.clamp(0.0, 1.0) as f32;
-    let dry = ((throttle - 0.15) / 0.85).clamp(0.0, 1.0);
-    let burst = if burner.lit {
+    let dry = burner.spool;
+    let burst = if burner.lit && !arcade {
         (1.0 - burner.since_light / IGN_TIME).clamp(0.0, 1.0)
     } else {
         0.0
@@ -446,12 +526,16 @@ fn drive_flames(
     let level = (burner.level * (1.0 + IGN_FLARE * burst)).min(1.0);
     let flare = IGN_STRETCH * burst;
 
+    // The engine's own altitude/Mach thrust scaling: thin air means less thrust,
+    // so the plume runs long, faint and cool as the jet climbs.
+    let (alt_reach, alt_alpha, alt_temp) = plume_at_q(thrust_q(state.thrust_norm));
+
     // Advance every live puff down its plume. A puff that has reached its reach
     // is parked there — `f` then reads 1, the shader gets no opacity, and the
     // hidden test below skips it without needing a separate flag.
     for n in 0..NOZZLES {
         for i in 0..SAMPLES {
-            let reach = reach_of(plume.level[n][i], plume.dry[n][i], plume.flare[n][i]);
+            let reach = reach_of(plume.level[n][i], plume.dry[n][i], plume.flare[n][i]) * alt_reach;
             let d = plume.dist[n][i];
             if d < reach {
                 plume.dist[n][i] = (d + AXIAL * dt).min(reach);
@@ -493,7 +577,7 @@ fn drive_flames(
         let heat = lvl.max(dry_v);
         // How far through its life the puff is. Every scale below keys off this,
         // so the plume's colour, size and spread all track its length.
-        let f = (d / reach_of(lvl, dry_v, flare_v)).clamp(0.0, 1.0);
+        let f = (d / (reach_of(lvl, dry_v, flare_v) * alt_reach)).clamp(0.0, 1.0);
 
         // Deterministic per-slot jitter, so the plume is never a row of identical
         // puffs: independent hashes for size, brightness and scatter direction.
@@ -526,7 +610,7 @@ fn drive_flames(
         // core runs blue-white, through orange, to a dull red tail, and a cool
         // dry stub only ever reaches the warm end. Only the hot end rides past
         // 1.0, which is what lets the bloom catch the core.
-        let temp = heat * (1.0 - 0.85 * f);
+        let temp = heat * (1.0 - 0.85 * f) * alt_temp;
         let mut col = flame_ramp(temp);
 
         // Shock diamonds, gaussian so they have no hard edge. Anchored to
@@ -540,8 +624,12 @@ fn drive_flames(
         let diamond = lvl * (-dd * dd * 14.0).exp() * (-d * DIAMOND_DECAY).exp();
         col = col.lerp(flame_ramp(temp + 0.30), 0.45 * diamond);
 
-        let peak =
-            PUFF_GAIN * heat * alpha_j * (1.0 - f).powf(1.4) * (1.0 + DIAMOND_GAIN * diamond);
+        let peak = PUFF_GAIN
+            * heat
+            * alpha_j
+            * alt_alpha
+            * (1.0 - f).powf(1.4)
+            * (1.0 + DIAMOND_GAIN * diamond);
         if peak < 0.004 {
             if *vis != Visibility::Hidden {
                 *vis = Visibility::Hidden;
@@ -574,11 +662,12 @@ fn manage_haze(
     mut cameras: Query<(Entity, &Camera, &GlobalTransform, Option<&ExhaustHaze>), With<Camera3d>>,
 ) {
     let throttle = state.throttle.clamp(0.0, 1.0) as f32;
-    // Exhaust heat, the same blend the plume colours itself from: dry throttle,
-    // lifted by the burner. The haze rides on it so light-up shows as a jump in
-    // the shimmer, not just in the flame.
-    let dry = ((throttle - 0.15) / 0.85).clamp(0.0, 1.0);
-    let temp = burner.level.max(dry);
+    // Exhaust heat, the same blend the plume colours itself from: the spooled
+    // core, lifted by the burner, then cooled by the thin air at altitude. The
+    // haze rides on it so light-up shows as a jump in the shimmer, not just in
+    // the flame.
+    let (_, _, alt_temp) = plume_at_q(thrust_q(state.thrust_norm));
+    let temp = burner.level.max(burner.spool) * alt_temp;
     let want = is_f22(&sim) && throttle > 0.02;
     let root_tf = root.single().ok();
     let name = sim.name.as_str();
@@ -697,6 +786,49 @@ mod tests {
             let c = flame_ramp(i as f32 / 10.0);
             assert!(c.y <= c.x.max(c.z) + 1e-4, "green ran hot at {i}: {c}");
         }
+    }
+
+    #[test]
+    fn thrust_q_normalises_to_sea_level_reheat() {
+        // Deck reheat is the reference (1); the FDM's ~0.7 at 30,000 ft reads
+        // about half; idle reads ~0; and anything above the reference clamps to
+        // 1 so the tuned deck look is preserved.
+        assert!((thrust_q(THRUST_REF as f64) - 1.0).abs() < 1e-6);
+        assert!((thrust_q(0.7) - 0.5).abs() < 0.02, "got {}", thrust_q(0.7));
+        assert_eq!(thrust_q(0.0), 0.0);
+        assert_eq!(thrust_q(2.0), 1.0);
+    }
+
+    #[test]
+    fn thin_air_stretches_the_plume_but_fades_and_cools_it() {
+        // Sea-level reheat is the reference: reach, brightness and temperature
+        // all unchanged.
+        let (reach, alpha, temp) = plume_at_q(1.0);
+        assert!((reach - 1.0).abs() < 1e-6);
+        assert!((alpha - 1.0).abs() < 1e-6);
+        assert!((temp - 1.0).abs() < 1e-6);
+        // Thin air (low thrust) stretches the plume but fades and cools it —
+        // and neither bottoms out at zero.
+        let (reach, alpha, temp) = plume_at_q(0.0);
+        assert!(reach > 1.0, "got {reach}");
+        assert!(alpha > 0.0 && alpha < 1.0, "got {alpha}");
+        assert!(temp > 0.0 && temp < 1.0, "got {temp}");
+    }
+
+    #[test]
+    fn arcade_burner_follows_the_lever_continuously() {
+        // Realistic is a hard detent: nothing until 0.99, then full.
+        assert_eq!(burner_cmd(false, 0.98), 0.0);
+        assert_eq!(burner_cmd(false, 0.99), 0.0);
+        assert_eq!(burner_cmd(false, 1.0), 1.0);
+        // Arcade grows in from `ARC_AB_LO`: dry below it, part-lit in the middle,
+        // full reheat at the stop. Monotone, so the plume never jumps.
+        assert_eq!(burner_cmd(true, 0.0), 0.0);
+        assert_eq!(burner_cmd(true, ARC_AB_LO as f64), 0.0);
+        let mid = burner_cmd(true, 0.8);
+        assert!(mid > 0.0 && mid < 1.0, "got {mid}");
+        assert_eq!(burner_cmd(true, 1.0), 1.0);
+        assert!(burner_cmd(true, 0.8) < burner_cmd(true, 0.9));
     }
 
     #[test]

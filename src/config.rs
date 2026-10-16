@@ -10,7 +10,7 @@
 //! a default in [`crate::aircraft_profile`] still reaches everyone who left that
 //! key alone.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use bevy::prelude::*;
@@ -65,6 +65,9 @@ pub struct GameConfig {
     /// Index into [`crate::weather::RAIN_LEVELS`].
     pub weather_level: usize,
     keymaps: HashMap<String, Keymap>,
+    /// Aircraft set to fly in arcade mode, by canonical id. An id is present iff
+    /// arcade is on, so the realistic default is simply absence.
+    arcade: HashSet<String>,
 }
 
 impl GameConfig {
@@ -81,6 +84,23 @@ impl GameConfig {
     pub fn keymap_mut(&mut self, id: &str) -> &mut Keymap {
         let id = aircraft_profile::normalized(id).to_owned();
         self.keymaps.entry(id).or_default()
+    }
+
+    /// Whether an aircraft flies arcade. Realistic (the default) unless the
+    /// pilot has switched it on.
+    pub fn arcade(&self, id: &str) -> bool {
+        self.arcade.contains(aircraft_profile::normalized(id))
+    }
+
+    /// Turn an aircraft's arcade mode on or off, dropping the entry when off so
+    /// the default (realistic) is just absence.
+    pub fn set_arcade(&mut self, id: &str, on: bool) {
+        let id = aircraft_profile::normalized(id).to_owned();
+        if on {
+            self.arcade.insert(id);
+        } else {
+            self.arcade.remove(&id);
+        }
     }
 }
 
@@ -118,8 +138,15 @@ fn apply_weather(config: Res<GameConfig>, mut weather: ResMut<Weather>) {
 //   elevator = KeyS KeyW
 //   gear = KeyU
 //
+//   [arcade]
+//   f22 = 1
+//
 // Action and toggle ids live in the same `[aircraft]` section because the two
-// id namespaces are disjoint.
+// id namespaces are disjoint. The one reserved section name is `arcade`, whose
+// keys are aircraft ids rather than controls.
+
+/// The section header whose keys are aircraft ids, not control ids.
+const ARCADE_SECTION: &str = "arcade";
 
 fn serialize(config: &GameConfig) -> String {
     let mut out = format!("weather = {}\n", config.weather_level);
@@ -151,6 +178,15 @@ fn serialize(config: &GameConfig) -> String {
             out.push_str(&format!("{} = {key:?}\n", action.id()));
         }
     }
+
+    if !config.arcade.is_empty() {
+        out.push_str(&format!("\n[{ARCADE_SECTION}]\n"));
+        let mut ids: Vec<&String> = config.arcade.iter().collect();
+        ids.sort();
+        for id in ids {
+            out.push_str(&format!("{id} = 1\n"));
+        }
+    }
     out
 }
 
@@ -178,6 +214,13 @@ fn parse(text: &str) -> GameConfig {
                     if let Ok(n) = value.parse::<usize>() {
                         config.weather_level = n;
                     }
+                }
+            }
+            Some(ARCADE_SECTION) => {
+                // `key` is an aircraft id here, not a control. Only a truthy
+                // value is stored; anything else means "leave realistic".
+                if matches!(value, "1" | "true" | "on") {
+                    config.set_arcade(key, true);
                 }
             }
             Some(id) => {
@@ -267,6 +310,31 @@ mod tests {
 
         // And again, so serialize is idempotent on a parsed file.
         assert_eq!(serialize(&parse(&text)), text);
+    }
+
+    #[test]
+    fn arcade_mode_round_trips_per_aircraft() {
+        let mut config = GameConfig::default();
+        config.set_arcade("f22", true);
+        // Realistic is the default, so it is simply not stored.
+        assert!(!config.arcade("c172p"));
+        assert!(config.arcade("f22"));
+
+        let text = serialize(&config);
+        assert_eq!(parse(&text), config);
+        assert_eq!(serialize(&parse(&text)), text);
+        assert!(parse(&text).arcade("f22"));
+
+        // Toggling off drops the entry, so the file has no stale section.
+        config.set_arcade("f22", false);
+        assert!(!config.arcade("f22"));
+        assert!(!serialize(&config).contains("[arcade]"));
+    }
+
+    #[test]
+    fn arcade_section_normalizes_the_aircraft_id() {
+        let cfg = parse("[arcade]\nb737 = 1\n");
+        assert!(cfg.arcade("737") && cfg.arcade("b737"));
     }
 
     #[test]

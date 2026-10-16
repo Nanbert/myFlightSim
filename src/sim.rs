@@ -172,6 +172,10 @@ pub struct AircraftState {
     /// coordinated — drives the turn coordinator's slip ball.
     pub slip: f64,
     pub throttle: f64,
+    /// Normalised thrust per engine (`fcs/thrust-norm`), which the FDM scales by
+    /// its altitude/Mach thrust tables: ~1.4 at full reheat on the deck, ~0.7 at
+    /// 30,000 ft. The F-22's exhaust plume keys its size off this.
+    pub thrust_norm: f64,
     pub elevator: f64,
     pub aileron: f64,
     pub rudder: f64,
@@ -321,6 +325,7 @@ fn publish_state(sim: Res<Sim>, ap: Res<Autopilot>, mut state: ResMut<AircraftSt
         slip: m.get("accelerations/n-pilot-y-norm"),
         // Report what is actually driving the surfaces, auto or manual.
         throttle: m.get("fcs/throttle-cmd-norm"),
+        thrust_norm: m.get("fcs/thrust-norm"),
         elevator: m.get("fcs/elevator-cmd-norm"),
         aileron: m.get("fcs/aileron-cmd-norm"),
         rudder: m.get("fcs/rudder-cmd-norm"),
