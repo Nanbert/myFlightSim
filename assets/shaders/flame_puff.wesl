@@ -87,7 +87,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // leaves the nozzle end with a clean round cross-section, which is what
     // makes the column look like it is still coming out of a pipe.
     let rim = noise2(ring * 1.7 + vec2<f32>(seed * 23.0, seed * 7.0));
-    let d_r = d * (1.0 + ragged * 0.75 * (rim - 0.5) * 2.0);
+    let d_r = d * (1.0 + ragged * 0.55 * (rim - 0.5) * 2.0);
 
     // Body: a soft radial ramp, brightest on the axis. The low floor on the
     // inner smoothstep is deliberate — a hard core would show as a disc wherever
@@ -96,19 +96,20 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var a = 1.0 - smoothstep(0.08, 1.0, d_r);
 
     // Interior mottle, also in polar coordinates: breaks each disc into patches
-    // so the plume boils instead of brightening and dimming as one sheet. On the
-    // opacity, not the colour, because against a dark sky it is *coverage* that
-    // the eye reads as density.
-    let gust = noise2(ring * 3.6 + vec2<f32>(time * 2.1, seed * 31.0));
-    a = a * mix(0.40, 1.30, gust);
+    // so the plume does not brighten and dim as one sheet. On the opacity, not
+    // the colour, because against a dark sky it is *coverage* that the eye reads
+    // as density. The scroll is slow and the swing narrow on purpose — a fast,
+    // wide mottle is what made the plume boil and shimmer like static.
+    let gust = noise2(ring * 3.6 + vec2<f32>(time * 0.85, seed * 31.0));
+    a = a * mix(0.62, 1.18, gust);
 
     // Tearing, scaled by the same `ragged` the rim uses. The mottle above only
     // varies density; this one is allowed to reach zero, so the outer plume is
     // punched through with holes and its silhouette breaks into wisps. That is
     // what keeps the tail reading as *particles* rather than as one long smudge
     // — the discs alone overlap far too much to separate on their own.
-    let tear = noise2(ring * 2.8 + vec2<f32>(seed * 13.0, time * 1.4));
-    a = a * mix(1.0, smoothstep(0.28, 0.60, tear), ragged * 0.90);
+    let tear = noise2(ring * 2.8 + vec2<f32>(seed * 13.0, time * 0.6));
+    a = a * mix(1.0, smoothstep(0.28, 0.60, tear), ragged * 0.55);
 
     a = a * params.color.a;
     if (a < 0.002) {

@@ -8,9 +8,10 @@
 //!   ([`FlamePuffMaterial`] + `assets/shaders/flame_puff.wesl`). The burner is a
 //!   hard step in the FDM (full reheat above 99 % throttle), so it is latched
 //!   off the throttle command rather than eased in with it: dry power shows a
-//!   short dark-blue stub, and reheat swaps in the long orange plume with shock
-//!   diamonds, flaring once as it lights. The camera's bloom pass (see
-//!   `view.rs`) turns the >1 hot core into a glow.
+//!   short warm stub, and reheat stretches it out and drives it up the
+//!   temperature ramp — a blue-white core at the nozzle, orange through the
+//!   body, a dull red tail — with shock diamonds, flaring once as it lights. The
+//!   camera's bloom pass (see `view.rs`) turns the >1 hot core into a glow.
 //! - **Exhaust heat haze** — a screen-space refraction behind the nozzles
 //!   ([`ExhaustHaze`] + `assets/shaders/exhaust_haze.wesl`), riding on Bevy's
 //!   `FullscreenMaterial` exactly like the rain-on-lens pass in `lens.rs`.
@@ -64,22 +65,27 @@ const STEP: f32 = AB_REACH / (SAMPLES as f32 - 1.0);
 const AXIAL: f32 = 17.0;
 
 /// Distance (m, body frame) a puff covers before it dies, by regime: a dry
-/// nozzle leaves a short stub, the burner stretches it out. Real reheat plumes
-/// are long — this is a little under half the aircraft's own length.
-const MIL_REACH: f32 = 1.4;
-const AB_REACH: f32 = 8.5;
+/// nozzle leaves a short stub, the burner stretches it out. Deliberately short —
+/// a reheat plume that hugs the tail reads as *power*; a long one reads as a
+/// smoke trail.
+const MIL_REACH: f32 = 1.0;
+const AB_REACH: f32 = 6.0;
 
-/// Puff radius (m) at the nozzle and at the tail. The plume barrels out of the
-/// engine and then breaks up, so puffs grow as they travel.
-const PUFF_R0: f32 = 0.38;
-const PUFF_R1: f32 = 0.95;
+/// Puff radius (m) at the nozzle and at the tail, by regime. A reheat plume is
+/// broadest right at the nozzle and tapers to a hard point — that taper is what
+/// makes it read as a flame rather than as a cloud, and it keeps the bright
+/// mass on the nozzle instead of trailing off it. A dry stub instead billows as
+/// it dissipates.
+const AB_R0: f32 = 0.44;
+const AB_R1: f32 = 0.13;
+const DRY_R0: f32 = 0.30;
+const DRY_R1: f32 = 0.70;
 
 /// How far (m) a puff's centre may be thrown off the axis, at the nozzle and at
-/// the tail. This is what gives the plume its cone and, at the tail, its torn
-/// edge: with no scatter every puff sits on the axis and the silhouette stays a
-/// neat line.
-const SPREAD0: f32 = 0.14;
-const SPREAD1: f32 = 0.55;
+/// the tail. Kept small so the plume stays a tight column; the scatter only
+/// softens its edge, it does not fan it into a cone.
+const SPREAD0: f32 = 0.06;
+const SPREAD1: f32 = 0.26;
 
 /// Peak opacity of a single puff, before its per-slot jitter. High enough that
 /// a handful of overlapping puffs near the nozzle reach full opacity — that
@@ -87,16 +93,22 @@ const SPREAD1: f32 = 0.55;
 /// haze of separate discs.
 const PUFF_GAIN: f32 = 0.50;
 
-/// Reheat colours. The camera runs `Tonemapping::None`, so a channel at or above
-/// 1.0 clips flat; that is why only red rides past 1.0 (it is what makes the
-/// near plume incandescent and lets the bloom catch it) and green and blue are
-/// held well under it. The earlier plume read as pale beige because its palette
-/// clipped all three channels over most of its length.
-const AB_HOT: Vec3 = Vec3::new(1.70, 0.50, 0.10);
-const AB_COOL: Vec3 = Vec3::new(0.60, 0.075, 0.012);
-/// The dry plume: a dim, dark blue that never gets near the clip.
-const DRY_HOT: Vec3 = Vec3::new(0.10, 0.16, 0.52);
-const DRY_COOL: Vec3 = Vec3::new(0.03, 0.05, 0.20);
+/// The flame's temperature ramp: cool gas glows dull red, hotter gas orange,
+/// then yellow, and the hottest gas runs blue-white. Colour follows temperature
+/// along the whole plume — the nozzle end is the hottest and the tail the
+/// coolest — so one ramp covers both regimes and a hotter plume simply reaches
+/// further up it.
+///
+/// The camera runs `Tonemapping::None`, so a channel at or above 1.0 clips flat;
+/// only the hot end is allowed past 1.0 (on blue), which is what makes the core
+/// bloom blue-white. Everything cooler stays under 1.0, or the plume washes out
+/// to pale beige.
+const COLD: Vec3 = Vec3::new(0.60, 0.075, 0.012);
+const WARM: Vec3 = Vec3::new(1.70, 0.50, 0.10);
+const HOT: Vec3 = Vec3::new(1.75, 1.25, 0.45);
+/// Deliberately blue-dominant rather than near-white: with only blue past 1.0
+/// the core clips to blue instead of washing out to a white blob.
+const WHITE_HOT: Vec3 = Vec3::new(0.55, 0.85, 2.10);
 
 /// Shock diamonds: the standing bright cells a reheat plume forms just aft of
 /// the nozzle. They are pinned to distance, not carried downstream — the shocks
@@ -262,7 +274,9 @@ struct ExhaustHaze {
     pad1: f32,
     time: f32,
     intensity: f32,
-    pad2: f32,
+    /// Exhaust heat 0..1 (dry throttle blended with the burner), which the
+    /// shader uses to speed the shimmer up as the plume gets hotter.
+    temp: f32,
     pad3: f32,
 }
 
@@ -350,22 +364,27 @@ fn reach_of(level: f32, dry: f32, flare: f32) -> f32 {
     (MIL_REACH + (AB_REACH - MIL_REACH) * level) * (0.30 + 0.70 * heat) * (1.0 + flare)
 }
 
-/// Hermite smoothstep, for the ramps the shader cannot do because they depend on
-/// a puff's recorded state rather than its pixels.
-fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
+/// The flame colour at temperature `t` (0 = cold, 1 = white hot), read off the
+/// ramp [`COLD`] → [`WARM`] → [`HOT`] → [`WHITE_HOT`]. Both the plume and the
+/// ignition flare go through here, so a hotter flame is simply a further-along
+/// flame and the light-up reads as the gas heating up.
+fn flame_ramp(t: f32) -> Vec3 {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.45 {
+        COLD.lerp(WARM, t / 0.45)
+    } else if t < 0.78 {
+        WARM.lerp(HOT, (t - 0.45) / 0.33)
+    } else {
+        HOT.lerp(WHITE_HOT, (t - 0.78) / 0.22)
+    }
 }
 
-/// Blend the dry-blue flame into the reheat-orange one without passing through
-/// purple. A straight lerp of a blue and an orange gives a desaturated violet in
-/// the middle, which is what the plume flashed as the burner lit; routing the
-/// interpolation through a warm white makes the light-up read as the flame
-/// heating up instead.
-fn heat_mix(a: Vec3, b: Vec3, k: f32) -> Vec3 {
-    const W: Vec3 = Vec3::new(1.3, 1.05, 0.85);
-    let t = k.clamp(0.0, 1.0);
-    a.lerp(W, t).lerp(W.lerp(b, t), t)
+/// A puff's radius (m) at life fraction `f`, blending the dry billow and the
+/// reheat taper by `heat` so the near-nozzle mass tracks the power setting.
+fn puff_radius(heat: f32, f: f32) -> f32 {
+    let dry = DRY_R0 + (DRY_R1 - DRY_R0) * f;
+    let ab = AB_R0 + (AB_R1 - AB_R0) * f;
+    dry.lerp(ab, heat)
 }
 
 /// Latch the burner off the throttle command, advance every puff down its
@@ -478,18 +497,20 @@ fn drive_flames(
 
         // Deterministic per-slot jitter, so the plume is never a row of identical
         // puffs: independent hashes for size, brightness and scatter direction.
+        // Kept narrow — wide jitter is what made the plume boil.
         let h = n as f32 * 0.37 + i as f32 * 0.618_034;
-        let size_j = 0.60 + 0.85 * (h * 1.3).fract();
-        let alpha_j = 0.65 + 0.55 * (h * 2.7).fract();
+        let size_j = 0.82 + 0.36 * (h * 1.3).fract();
+        let alpha_j = 0.82 + 0.30 * (h * 2.7).fract();
 
         // Body-frame placement. The AircraftRoot frame has the nose on -Z, so +Z
-        // is aft and a puff's downstream offset is a plain +Z translation.
-        let spread = SPREAD0 + (SPREAD1 - SPREAD0) * f;
+        // is aft and a puff's downstream offset is a plain +Z translation. The
+        // scatter shrinks with `heat` so a hot plume stays a tight column.
+        let spread = (SPREAD0 + (SPREAD1 - SPREAD0) * f) * (1.0 - 0.5 * heat);
         let dir = Quat::from_rotation_z((h * 3.1).fract() * std::f32::consts::TAU) * Vec3::X;
         let local = nozzles[n] + Vec3::Z * d + dir * spread * size_j;
         let world = root_tf.translation + root_tf.rotation * local;
         tf.translation = world;
-        tf.scale = Vec3::splat((PUFF_R0 + (PUFF_R1 - PUFF_R0) * f) * size_j);
+        tf.scale = Vec3::splat(puff_radius(heat, f) * size_j);
         // Billboard about the quad's normal (+Z) so the puff always faces the
         // viewer.
         if let Some(cam) = cam {
@@ -499,32 +520,25 @@ fn drive_flames(
             }
         }
 
-        // Colour: a dry plume is a dim dark blue; the burner runs white-hot at
-        // the nozzle through orange to a dull red tail.
-        let hot = heat_mix(DRY_HOT, AB_HOT, lvl);
-        let cool = heat_mix(DRY_COOL, AB_COOL, lvl);
-        let mut col = hot.lerp(cool, smoothstep(0.0, 0.8, f));
-        // Blowout right at the nozzle, reheat only. It can be pushed hard here —
-        // the plume composites as a translucent volume, so this tints the first
-        // metre and nothing downstream — but it must decay fast, or the whole
-        // plume turns the pale beige that made the old cone read as painted card.
-        // Past 1.0 on purpose: this is the one part of the plume the bloom is
-        // meant to catch.
-        col = col.lerp(Vec3::new(1.55, 1.30, 1.05), lvl * (-f * 9.0).exp() * 0.85);
+        // Colour, read off the temperature ramp. The gas is hottest as it leaves
+        // the nozzle and cools down the plume, so a puff's colour is its power
+        // setting's temperature faded by how far it has travelled: the reheat
+        // core runs blue-white, through orange, to a dull red tail, and a cool
+        // dry stub only ever reaches the warm end. Only the hot end rides past
+        // 1.0, which is what lets the bloom catch the core.
+        let temp = heat * (1.0 - 0.85 * f);
+        let mut col = flame_ramp(temp);
 
         // Shock diamonds, gaussian so they have no hard edge. Anchored to
         // distance rather than to the puff, so the train stands still in the
-        // nozzle's frame while the puffs march through it.
-        //
-        // A cell is brighter because it is *hotter*, so it moves toward the same
-        // warm white the nozzle blowout uses, rather than being scaled channel by
-        // channel. Scaling green on its own is the trap here: red is pinned at
-        // the top of the range all through the near plume, so lifting green
-        // alone does not make an orange cell yellow, it makes it *green*.
+        // nozzle's frame while the puffs march through it. A cell is brighter
+        // because it is *hotter*, so it climbs the same ramp rather than being
+        // scaled channel by channel — lifting green alone on an orange cell
+        // makes it green, not yellow.
         let ph = d / DIAMOND_SPACING;
         let dd = (ph - ph.round()).abs();
         let diamond = lvl * (-dd * dd * 14.0).exp() * (-d * DIAMOND_DECAY).exp();
-        col = col.lerp(Vec3::new(1.55, 1.35, 1.05), 0.45 * diamond);
+        col = col.lerp(flame_ramp(temp + 0.30), 0.45 * diamond);
 
         let peak =
             PUFF_GAIN * heat * alpha_j * (1.0 - f).powf(1.4) * (1.0 + DIAMOND_GAIN * diamond);
@@ -555,10 +569,16 @@ fn manage_haze(
     time: Res<Time>,
     sim: Res<Sim>,
     state: Res<AircraftState>,
+    burner: Res<Burner>,
     root: Query<&Transform, With<AircraftRoot>>,
     mut cameras: Query<(Entity, &Camera, &GlobalTransform, Option<&ExhaustHaze>), With<Camera3d>>,
 ) {
     let throttle = state.throttle.clamp(0.0, 1.0) as f32;
+    // Exhaust heat, the same blend the plume colours itself from: dry throttle,
+    // lifted by the burner. The haze rides on it so light-up shows as a jump in
+    // the shimmer, not just in the flame.
+    let dry = ((throttle - 0.15) / 0.85).clamp(0.0, 1.0);
+    let temp = burner.level.max(dry);
     let want = is_f22(&sim) && throttle > 0.02;
     let root_tf = root.single().ok();
     let name = sim.name.as_str();
@@ -611,12 +631,14 @@ fn manage_haze(
             continue;
         };
 
-        // Strongest just off idle, holding through the burner.
-        let intensity = 0.35 + 0.65 * throttle;
+        // The refraction grows with the exhaust heat, and the lobes stretch a
+        // little as it does — a hot plume distorts a longer slipstream.
+        let intensity = 0.25 + 0.75 * temp;
         // A subtle shimmer: the offset is a small fraction of the screen, not a
         // full warp. `rad`/`len` are the lobe's half-width and length in
         // aspect-corrected UV.
         let str = 0.011 * intensity;
+        let len = 0.070 + 0.070 * temp;
         commands.entity(e).insert(ExhaustHaze {
             uv0x: uv0.x,
             uv0y: uv0.y,
@@ -624,7 +646,7 @@ fn manage_haze(
             dir0y: dir0.y,
             str0: str,
             rad0: 0.035,
-            len0: 0.085,
+            len0: len,
             pad0: 0.0,
             uv1x: uv1.x,
             uv1y: uv1.y,
@@ -632,11 +654,11 @@ fn manage_haze(
             dir1y: dir1.y,
             str1: str,
             rad1: 0.035,
-            len1: 0.085,
+            len1: len,
             pad1: 0.0,
             time: time.elapsed_secs(),
             intensity,
-            pad2: 0.0,
+            temp,
             pad3: 0.0,
         });
     }
@@ -662,12 +684,26 @@ mod tests {
     }
 
     #[test]
-    fn heat_mix_never_passes_through_purple() {
-        // Every waypoint from dry blue to reheat orange keeps green on top of
-        // blue, which is what stops the mid-transition reading as violet.
-        let mid = heat_mix(DRY_HOT, AB_HOT, 0.5);
-        assert!(mid.y > mid.z, "expected a warm midpoint, got {mid}");
-        assert_eq!(heat_mix(DRY_HOT, AB_HOT, 0.0), DRY_HOT);
-        assert_eq!(heat_mix(DRY_HOT, AB_HOT, 1.0), AB_HOT);
+    fn flame_ramp_runs_from_red_up_to_blue_white() {
+        // The cool end is red-dominant, the hot end blue-dominant — the whole
+        // point of the temperature ramp.
+        let cold = flame_ramp(0.0);
+        assert!(cold.x > cold.z * 5.0, "cold end should be red, got {cold}");
+        let hot = flame_ramp(1.0);
+        assert!(hot.z > hot.x, "hot end should be blue, got {hot}");
+        // And green stays a middle channel throughout, so no leg of the ramp
+        // reads as a pure primary.
+        for i in 0..=10 {
+            let c = flame_ramp(i as f32 / 10.0);
+            assert!(c.y <= c.x.max(c.z) + 1e-4, "green ran hot at {i}: {c}");
+        }
+    }
+
+    #[test]
+    fn reheat_puffs_taper_while_dry_ones_billow() {
+        // The reheat plume is broadest at the nozzle and tapers aft; the dry one
+        // grows.
+        assert!(puff_radius(1.0, 0.0) > puff_radius(1.0, 1.0));
+        assert!(puff_radius(0.0, 1.0) > puff_radius(0.0, 0.0));
     }
 }

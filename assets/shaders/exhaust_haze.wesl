@@ -31,10 +31,10 @@ struct Haze {
     rad1: f32,
     len1: f32,
     pad1: f32,
-    // x = time (s), y = global intensity 0..1, z/w = unused.
+    // x = time (s), y = global intensity 0..1, z = exhaust heat 0..1, w = unused.
     time: f32,
     intensity: f32,
-    pad2: f32,
+    temp: f32,
     pad3: f32,
 };
 
@@ -75,8 +75,9 @@ fn haze_at(q: vec2<f32>, p: vec2<f32>, d: vec2<f32>, rad: f32, len: f32) -> vec2
     // A short upstream skirt so the plume base doesn't cut off abruptly.
     w = w + 0.25 * exp(-a * a) * exp(-max(-along, 0.0) / max(len * 0.3, 1e-5));
 
-    // Scrolling shimmer, aligned to the lobe so it flows downstream.
-    let s = noise2(vec2<f32>(across * 60.0, along * 45.0 - settings.time * 26.0));
+    // Scrolling shimmer, aligned to the lobe so it flows downstream. It speeds
+    // up with the exhaust heat: a hotter plume churns its slipstream faster.
+    let s = noise2(vec2<f32>(across * 60.0, along * 45.0 - settings.time * (20.0 + 26.0 * settings.temp)));
     return n * (clamp(w, 0.0, 1.0) * (0.45 + 0.55 * s));
 }
 
