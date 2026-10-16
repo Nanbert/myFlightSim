@@ -21,6 +21,11 @@
 //!
 //! Values are imperial: areas ft², arms ft, moments slug·ft², positions inches.
 
+// Transcribed angle breakpoints land on π fractions by coincidence (1.57 = 90°,
+// 3.14 = 180°); they are the model's stall landmarks copied verbatim from
+// `ah1s.xml`, not approximations of the math constants clippy is looking for.
+#![allow(clippy::approx_constant)]
+
 use super::{Aircraft, MassSpec};
 use crate::aero::{Aerodynamics, Axis, Factor, Function, NamedFn};
 use crate::engine::{PowerplantSpec, RotorDriveSpec};

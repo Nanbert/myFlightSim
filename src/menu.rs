@@ -545,6 +545,9 @@ fn menu_input(
     // read-only. Enter/Escape dismiss the read-only pages.
     if let Some(page) = sel.page {
         match page {
+            // The wrap arithmetic is a no-op while GLOBAL has its single row,
+            // but it stays general so adding a row is a one-line change.
+            #[allow(clippy::modulo_one)]
             Page::Global => {
                 if keys.just_pressed(KeyCode::ArrowUp) {
                     settings.row = (settings.row + SETTINGS_ROWS - 1) % SETTINGS_ROWS;
