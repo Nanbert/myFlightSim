@@ -272,12 +272,21 @@ pub(crate) struct ControlRig {
     tail_rotor_phase: f32,
 }
 
+/// Smoothed chase-camera offset from the aircraft, in world space. Seated on the
+/// first frame the pose exists, then eased toward the desired offset so a
+/// heading change swings the view round instead of snapping.
+#[derive(Resource, Default)]
+pub(crate) struct Chase {
+    offset: Option<Vec3>,
+}
+
 pub struct ViewPlugin;
 
 impl Plugin for ViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Ui>()
             .init_resource::<ControlRig>()
+            .init_resource::<Chase>()
             .add_systems(Startup, (setup_scene, setup_hud))
             .add_systems(
                 Update,
@@ -668,6 +677,7 @@ pub(crate) fn follow_camera(
     rp: Res<RenderPose>,
     sim: Res<Sim>,
     ui: Res<Ui>,
+    mut chase: ResMut<Chase>,
     mut q: Query<&mut Transform, With<Camera3d>>,
 ) {
     let Ok(mut t) = q.single_mut() else {
@@ -699,12 +709,22 @@ pub(crate) fn follow_camera(
 
     // Yaw-only offset keeps the horizon level instead of rolling with the plane.
     let yaw = Quat::from_rotation_y(-heading);
-    let target = pos + yaw * Vec3::new(0.0, 6.0, 22.0);
+    let want = yaw * Vec3::new(0.0, 6.0, 22.0);
 
-    // Ease toward the target so heading changes read as a smooth swing rather
-    // than an instant snap. Frame-rate independent exponential smoothing.
+    // Ease the *offset*, not the camera's world position. Smoothing the position
+    // leaves the camera trailing its target by `speed / CAM_FOLLOW_RATE` — a lag
+    // that dwarfs the 22 m the framing is built from once the jet is fast, so
+    // adding power visibly pulls the view back and holds it there. Easing the
+    // offset instead pins the camera to the aircraft's interpolated pose, so the
+    // framing survives any speed, while a heading change still swings round
+    // smoothly rather than snapping.
     let alpha = 1.0 - (-CAM_FOLLOW_RATE * time.delta_secs()).exp();
-    t.translation = t.translation.lerp(target, alpha);
+    let offset = match chase.offset {
+        Some(prev) => prev.lerp(want, alpha),
+        None => want,
+    };
+    chase.offset = Some(offset);
+    t.translation = pos + offset;
     t.look_at(pos, Vec3::Y);
 }
 
