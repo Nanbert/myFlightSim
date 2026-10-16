@@ -8,6 +8,7 @@ mod lens;
 mod menu;
 mod sim;
 mod sky;
+mod vapor;
 mod view;
 mod weather;
 
@@ -37,6 +38,7 @@ fn main() {
             input::InputPlugin,
             view::ViewPlugin,
             fx::FxPlugin,
+            vapor::VaporPlugin,
             gauge::GaugePlugin,
             sky::SkyPlugin,
             weather::WeatherPlugin,

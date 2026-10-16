@@ -158,6 +158,11 @@ pub struct AircraftState {
     pub cas_kts: f64,
     /// Vertical speed (`velocities/h-dot-fps` × 60), ft/min.
     pub vs_fpm: f64,
+    /// Angle of attack (`aero/alpha-rad`), degrees — drives the F-22's wingtip
+    /// vapor trails (`vapor.rs`), which feed with the wing's load.
+    pub alpha_deg: f64,
+    /// Mach number (`velocities/mach`) — drives the transonic vapor cone.
+    pub mach: f64,
     pub heading_deg: f64,
     pub pitch_deg: f64,
     pub roll_deg: f64,
@@ -307,6 +312,8 @@ fn publish_state(sim: Res<Sim>, ap: Res<Autopilot>, mut state: ResMut<AircraftSt
         alt_ft: m.get("position/h-sl-ft"),
         cas_kts: m.get("velocities/vc-kts"),
         vs_fpm: m.get("velocities/h-dot-fps") * 60.0,
+        alpha_deg: m.get("aero/alpha-rad").to_degrees(),
+        mach: m.get("velocities/mach"),
         heading_deg: m.get("attitude/psi-deg"),
         pitch_deg: m.get("attitude/theta-deg"),
         roll_deg: m.get("attitude/phi-deg"),
