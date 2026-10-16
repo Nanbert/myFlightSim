@@ -36,23 +36,6 @@ struct ModelSpec {
     eye: Option<[f32; 3]>,
 }
 
-/// Does the optional full-interior C172 model exist on disk? Resolves the asset
-/// directory the same way Bevy's `AssetPlugin` does (`BEVY_ASSET_ROOT` →
-/// `CARGO_MANIFEST_DIR` → the executable's directory), so the check lands on the
-/// same file the loader will use.
-fn has_full_c172() -> bool {
-    let base = std::env::var("BEVY_ASSET_ROOT")
-        .or_else(|_| std::env::var("CARGO_MANIFEST_DIR"))
-        .map(std::path::PathBuf::from)
-        .ok()
-        .or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(std::path::Path::to_owned))
-        });
-    base.is_some_and(|b| b.join("assets/c172_full.glb").exists())
-}
-
 /// Does `name`'s model carry a pilot-eye cockpit view? Mirrors the check
 /// `follow_camera` makes, so callers can line up with the camera actually used.
 pub(crate) fn has_cockpit(name: &str) -> bool {
@@ -97,48 +80,23 @@ fn model_spec(name: &str) -> ModelSpec {
             yaw: -std::f32::consts::FRAC_PI_2,
             eye: None,
         },
-        // Default: the Cessna 172. Prefer the "full" model (interior **and**
-        // exterior, `c172_full.glb`) — the one that supports the cockpit view —
-        // but the repo doesn't ship it (45 MB, kept as a local symlink), so fall
-        // back to the older rigged mesh when it's absent.
+        // Default: the Cessna 172, using the full model (`c172_full.glb`) — the
+        // one that carries interior **and** exterior, and so the cockpit view.
         //
-        // Full model: authored nose +Z / up +Y (metres) → the F-22's 180° yaw.
-        // `scale` shrinks its 12.6 m span to the real 11.0 m; `drop` seats the
-        // wheels (lowest vertex −0.060 model units) on the runway at the FDM's
-        // rest CG height (1.4326 m = the c172p `root_y`): rest_h + lowest·scale.
-        // `eye` is the pilot's eye, dialled in with `examples/cockpit_shot.rs`.
-        _ if has_full_c172() => ModelSpec {
+        // Authored nose +Z / up +Y (metres) → the F-22's 180° yaw. `scale`
+        // shrinks its 12.6 m span to the real 11.0 m; `drop` seats the wheels
+        // (lowest vertex −0.060 model units) on the runway at the FDM's rest CG
+        // height (1.4326 m = the c172p `root_y`): rest_h + lowest·scale. `eye`
+        // is the pilot's eye, dialled in with `examples/cockpit_shot.rs`.
+        _ => ModelSpec {
             file: "c172_full.glb",
             scale: 11.0 / 12.598,
             drop: 1.4326 - 0.060 * (11.0 / 12.598),
             yaw: std::f32::consts::PI,
             eye: Some([0.209, 1.835, -0.350]),
         },
-        // Fallback: the older rigged `cessna_172.glb`. Bone rig, driven by name
-        // in `is_control_bone`; no modelled interior, so no cockpit view.
-        _ => ModelSpec {
-            file: "cessna_172.glb",
-            scale: 1.0,
-            drop: 1.4326,
-            yaw: std::f32::consts::FRAC_PI_2,
-            eye: None,
-        },
     }
 }
-
-/// Hinge axis of each control bone, in the bone's LOCAL (bind-pose) frame.
-/// Each is the surface's leading-edge direction (its span, found from the
-/// bind-pose geometry) mapped into the bone's local frame via `Rᵀ·a`, where
-/// `R` is the bone's bind orientation. The rudder's hinge is its *swept*
-/// leading edge (~22° off vertical) — rotating about a plain vertical axis
-/// slides the whole rudder instead of hinging it, which reads as the rudder
-/// "rotating". The prop spins about the disc normal (model ±X).
-const AILERON_L: [f32; 3] = [0.0419, -0.0981, 0.9943];
-const AILERON_R: [f32; 3] = [-0.0388, 0.1054, 0.9937];
-const ELEVATOR: [f32; 3] = [0.0, 0.0, 1.0];
-const RUDDER: [f32; 3] = [-1.0, 0.018, 0.004];
-const FLAPS: [f32; 3] = [0.0, 0.0, 1.0];
-const PROP: [f32; 3] = [0.0, 0.0, -1.0];
 
 /// Deflection at full command, radians (~20°).
 const MAX_DEFLECT: f32 = 0.35;
@@ -484,10 +442,8 @@ fn capture_rig(names: Query<(Entity, &Name, &Transform)>, mut rig: ResMut<Contro
 fn is_control_bone(name: &str) -> bool {
     matches!(
         name,
-        // c172 bone rig (skinned, the older `cessna_172.glb`).
-        "aileron-left_3" | "aileron-right_2" | "elevator_0" | "rudder_4" | "flaps_1" | "prop_5"
         // F-22 model-A pivots (plain node transforms).
-        | "Cube.043_66" | "Cube.044_79"
+        "Cube.043_66" | "Cube.044_79"
         | "Empty.009_39" | "Empty.010_41" | "Empty.011_43" | "Empty.012_45"
         | "Empty.007_35" | "Empty.008_37"
         // Mi-24 rotor hubs (spun in `drive_surfaces`).
@@ -558,22 +514,9 @@ fn drive_surfaces(
         }
 
         // Rigged models: each bone's origin is its hinge, so a plain rotation on
-        // top of the bind pose is enough.
-        // Signs are set so each surface moves the way JSBSim's command means:
-        // a positive angle swings that bone's trailing edge DOWN for the
-        // ailerons/elevator/flaps and toward +Z (right) for the rudder
-        // (verified by skinning math against the bind pose).
+        // top of the bind pose is enough. The F-22's per-surface signs live in
+        // the axis consts (see `F22_*`).
         let (axis, angle) = match name.as_str() {
-            // Roll right: right aileron up, left aileron down.
-            "aileron-left_3" => (AILERON_L, state.aileron as f32 * MAX_DEFLECT),
-            "aileron-right_2" => (AILERON_R, -state.aileron as f32 * MAX_DEFLECT),
-            "elevator_0" => (ELEVATOR, state.elevator as f32 * MAX_DEFLECT),
-            // +rudder yaws left, so swing the trailing edge toward -Z (left).
-            "rudder_4" => (RUDDER, state.rudder as f32 * MAX_DEFLECT),
-            // Flap position already comes in degrees (0..~30).
-            "flaps_1" => (FLAPS, (state.flap_deg as f32).to_radians()),
-            "prop_5" => (PROP, prop_phase),
-
             // F-22 model-A pivots. Stabilators take the elevator command; the
             // four flaperons take aileron (per-side sign already in the const,
             // so left drops and right lifts for a positive roll); both v-tails

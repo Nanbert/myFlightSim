@@ -161,9 +161,9 @@ gear = KeyU
 │   ├── shim/shim.cpp  # C ABI 垫片
 │   ├── build.rs       # 编译 libJSBSim、链接垫片
 │   └── examples/      # takeoff.rs：无头自动驾驶演示
-├── examples/          # confirm_controls.rs、sim_view_shot.rs、cockpit_shot.rs、
+├── examples/          # sim_view_shot.rs、cockpit_shot.rs、
 │                      # panel_calib.rs、panel_view_shot.rs
-├── assets/            # cessna_172.glb、f22.glb…；c172_full.glb 是本机自备文件，不入库
+├── assets/            # c172_full.glb、f22.glb…（3D 模型，全部入库）
 └── CREDITS.md         # 3D 模型署名
 ```
 
@@ -174,8 +174,6 @@ gear = KeyU
 - `cargo run -p jsbsim-sys --example takeoff` —— 无窗口跑完整自动驾驶任务，
   打印遥测表（高度/空速/升降率/姿态/油门/phase）。用来证明 FDM 本身能飞出一条
   正常的航线，从而把手感问题归因到“操纵”而非“模拟”。
-- `cargo run --example confirm_controls` —— 直接驱动 `cessna_172.glb` 的操纵面
-  骨骼（不经过 JSBSim），写出一张静置图和一张偏转图，用来核对模型绑定是否正确。
 - `cargo run --example sim_view_shot` —— 离屏渲染场景，逐个偏转副翼 / 升降舵 /
   方向舵各出一张图，核对新机模的操纵面接线；`COCKPIT=1 cargo run --example
   sim_view_shot` 则强制座舱视角，只出一张图，核对内饰框景。
@@ -197,19 +195,12 @@ cargo test
 
 ## 机模与座舱视角
 
-C172 默认用带内饰的大机模 `assets/c172_full.glb`（机外蒙皮 + 座舱内饰 + 仪表面
-板，故支持 `C` 座舱视角）。它**不入库**（44 MB 的原始文件），需自备并把文件放到
-该路径：
-
-```sh
-cp ~/box/cessna172.glb assets/c172_full.glb
-```
-
-文件不存在时自动回退到入库的 `cessna_172.glb`（仅机外、无内饰，因此没有座舱视
-角）。大机模没有骨骼也没有动画：舵面是各自独立的节点、几何烘焙在同一坐标系里，
-所有节点原点都落在机体重心，所以 `view.rs` 的 `C172_SURFACES` 表用“绕各自前缘
-线旋转”（`Transform::rotate_around`）把它们铰接起来——轴与铰链点由绑定姿态顶点
-量出来。座舱相机的眼睛位置同样写在 `model_spec` 里（模型坐标系，鼻朝 +Z）。
+C172 用带内饰的大机模 `assets/c172_full.glb`（机外蒙皮 + 座舱内饰 + 仪表面板，
+故支持 `C` 座舱视角），随仓库一起入库。大机模没有骨骼也没有动画：舵面是各自独立
+的节点、几何烘焙在同一坐标系里，所有节点原点都落在机体重心，所以 `view.rs` 的
+`C172_SURFACES` 表用“绕各自前缘线旋转”（`Transform::rotate_around`）把它们铰接
+起来——轴与铰链点由绑定姿态顶点量出来。座舱相机的眼睛位置同样写在 `model_spec`
+里（模型坐标系，鼻朝 +Z）。
 
 大机模的面板是**静态贴图**，表针不会动。为了不让屏幕底角的 7 个实时表和贴图画好
 的表盘打架，座舱视角下这 7 个表会**贴到面板上**：`gauge/mod.rs` 里为每个表存了一份
@@ -228,6 +219,5 @@ GYRO/LOC、备用高度表、VOR、备用升降率等）不动——模型上没
 
 ## 署名
 
-3D 模型 `assets/cessna_172.glb`（作者 Viva_1）与可选的 `c172_full.glb`（作者
-KOG_THORNS）均来自 Sketchfab，采用 **CC BY 4.0** 许可。完整的 TASL 署名见
-[CREDITS.md](CREDITS.md)。
+3D 模型 `assets/c172_full.glb`（作者 KOG_THORNS）来自 Sketchfab，采用
+**CC BY 4.0** 许可。完整的 TASL 署名见 [CREDITS.md](CREDITS.md)。

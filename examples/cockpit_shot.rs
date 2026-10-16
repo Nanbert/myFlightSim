@@ -1,10 +1,7 @@
 //! Cockpit-view viewer: loads the big C172 model (interior **and** exterior,
-//! `~/box/cessna172.glb`) on its own with a free-fly camera, so the pilot-eye
+//! `assets/c172_full.glb`) on its own with a free-fly camera, so the pilot-eye
 //! framing can be dialled in by hand. Prints the camera pose once a second —
 //! paste those numbers back and they can be hard-coded.
-//!
-//! Needs `assets/c172_full.glb`, a symlink to that model:
-//!   `ln -s ~/box/cessna172.glb assets/c172_full.glb`
 //!
 //! Controls: right-drag = look, W/A/S/D = move, E/Q = up/down, Shift = faster,
 //! P = screenshot to `/tmp/cockpit_view.png`, Esc = quit.
