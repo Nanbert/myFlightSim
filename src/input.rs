@@ -20,13 +20,22 @@ use crate::config::{GameConfig, Keymap};
 
 /// How fast the arcade throttle spools up while its key is held, in normalized
 /// units per second. Faster than the realistic lever (0.6/s) so a tap of the
-/// boost key is felt at once.
+/// boost key snaps the burner to full.
 const ARCADE_SPOOL_RATE: f64 = 2.5;
 
-/// How fast an [`Axis::Detent`] control springs back to its rest (starting)
-/// value once the keys are released. Slower than the spool-up so the
-/// afterburner fades rather than snapping off.
-const DETENT_RETURN_RATE: f64 = 1.2;
+/// Summed pitch + yaw body rate (rad/s) that counts as a full-drain manoeuvre
+/// for the arcade throttle bleed — roughly the arcade envelope's own rate caps.
+const ARCADE_BLEED_FULL: f64 = 1.2;
+
+/// How fast a full-drain manoeuvre pulls the arcade throttle down, in normalized
+/// units per second. A sustained hard turn therefore drains full reheat back to
+/// cruise in under a second.
+const ARCADE_BLEED_RATE: f64 = 0.5;
+
+/// How fast the arcade auto-throttle spools back up when the jet is left alone,
+/// in normalized units per second. Slower than the drain, so a hard turn costs
+/// energy you earn back over about a second — the "auto-throttle" feel.
+const ARCADE_RECOVER_RATE: f64 = 0.35;
 
 /// One key pair driving one normalized JSBSim property.
 pub struct Binding {
@@ -40,8 +49,8 @@ pub struct Binding {
     axis: Axis,
     min: f64,
     max: f64,
-    /// The value [`Axis::Detent`] springs back to once released (its starting
-    /// setting, e.g. cruise throttle). Unused by the other axis types.
+    /// The axis's starting setting, e.g. cruise throttle. Also the cruise anchor
+    /// the arcade auto-throttle falls back to under a hard manoeuvre.
     initial: f64,
     /// Current normalized value in `[min, max]`.
     pub value: f64,
@@ -72,15 +81,6 @@ impl Binding {
             Axis::Spring => ramp(&mut self.value, dir, self.rate * dt),
             Axis::Hold => {
                 self.value = (self.value + dir * self.rate * dt).clamp(self.min, self.max)
-            }
-            // Keys spool like `Hold`, but releasing springs back to the starting
-            // value (cruise) instead of holding.
-            Axis::Detent => {
-                if dir == 0.0 {
-                    ramp(&mut self.value, self.initial, DETENT_RETURN_RATE * dt);
-                } else {
-                    self.value = (self.value + dir * self.rate * dt).clamp(self.min, self.max);
-                }
             }
         }
     }
@@ -131,16 +131,15 @@ impl Bindings {
     }
 
     /// Give the throttle the arcade boost feel for aircraft whose profile offers
-    /// arcade mode (the F-22): hold the key to spool up, release and it springs
-    /// back to cruise, so the afterburner grows and fades on its own. A no-op on
-    /// every other aircraft.
+    /// arcade mode (the F-22): a tap spools it to full and it *stays* there, so
+    /// the burner doesn't need a key held down. The spool just runs faster than
+    /// the realistic lever. A no-op on every other aircraft.
     pub fn enable_arcade(&mut self, id: &str) {
         if !aircraft_profile::profile(id).has_arcade {
             return;
         }
         for b in &mut self.list {
             if b.action == Action::Throttle {
-                b.axis = Axis::Detent;
                 b.rate = ARCADE_SPOOL_RATE;
             }
         }
@@ -176,6 +175,28 @@ fn read_input(
     let dt = time.delta_secs_f64();
     for b in &mut bindings.list {
         b.update(&keys, dt);
+    }
+
+    // The arcade throttle is automatic in the air: left alone in straight flight
+    // it spools itself up to full reheat, and a hard pull or yaw drains it back
+    // toward cruise, where the burner dies. Space tops it up on demand. On the
+    // ground it stays a plain lever, so the jet still taxis and lands. Roll is
+    // ignored — a pure roll doesn't swing the flight path.
+    if config.arcade(&sim.name) && sim.model.get("gear/wow") < 0.5 {
+        let q = sim.model.get("velocities/q-rad_sec");
+        let r = sim.model.get("velocities/r-rad_sec");
+        let manoeuvre = manoeuvre_intensity(q, r);
+        if let Some(b) = bindings
+            .list
+            .iter_mut()
+            .find(|b| b.action == Action::Throttle)
+        {
+            // Don't fight a pilot actively working the throttle keys.
+            let pilot = keys.pressed(b.pos) || b.neg.is_some_and(|k| keys.pressed(k));
+            if !pilot {
+                b.value = arcade_throttle(b.value, b.initial, b.max, manoeuvre, dt);
+            }
+        }
     }
 
     // Edge toggles declared by the active profile. Collect first so the borrow
@@ -258,6 +279,26 @@ fn adopt_trim(bindings: &mut Bindings, sim: &crate::sim::Sim) {
     }
 }
 
+/// How hard the jet is manoeuvring, 0 (flying straight) .. 1 (a full-rate
+/// pitch, or a pitch and yaw that sum to one). Reads the actual body rates, so
+/// it responds to the nose actually moving, not to the stick being pressed.
+fn manoeuvre_intensity(q: f64, r: f64) -> f64 {
+    ((q.abs() + r.abs()) / ARCADE_BLEED_FULL).min(1.0)
+}
+
+/// The arcade auto-throttle. `manoeuvre` sets a target between full reheat
+/// (straight) and cruise (a hard pull); the throttle moves toward it — draining
+/// fast under a hard pull, spooling back up at [`ARCADE_RECOVER_RATE`] when the
+/// jet is left alone — so the burner relights itself once the fight stops.
+fn arcade_throttle(value: f64, cruise: f64, full: f64, manoeuvre: f64, dt: f64) -> f64 {
+    let target = full - (full - cruise) * manoeuvre;
+    if value > target {
+        (value - ARCADE_BLEED_RATE * manoeuvre * dt).max(target)
+    } else {
+        (value + ARCADE_RECOVER_RATE * dt).min(target)
+    }
+}
+
 fn ramp(value: &mut f64, target: f64, step: f64) {
     if (*value - target).abs() <= step {
         *value = target;
@@ -270,7 +311,7 @@ fn ramp(value: &mut f64, target: f64, step: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Binding, Bindings, adopt_trim, ramp};
+    use super::{Binding, Bindings, adopt_trim, arcade_throttle, manoeuvre_intensity, ramp};
     use crate::aircraft_profile::{Action, Axis};
     use crate::config::Keymap;
     use bevy::prelude::KeyCode;
@@ -458,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn arcade_throttle_spools_up_and_springs_back_to_cruise() {
+    fn arcade_throttle_latches_at_full_and_stays() {
         use bevy::prelude::ButtonInput;
         let mut bindings = Bindings::for_aircraft("f22", &Keymap::default());
         bindings.enable_arcade("f22");
@@ -467,32 +508,64 @@ mod tests {
             .iter()
             .find(|b| b.action == Action::Throttle)
             .unwrap();
-        assert_eq!(throttle.axis, Axis::Detent);
+        assert_eq!(throttle.axis, Axis::Hold);
         assert_eq!(throttle.pos, KeyCode::Space);
 
         let dt = 1.0 / 120.0;
-        let mut held = ButtonInput::<KeyCode>::default();
+        let mut keys = ButtonInput::<KeyCode>::default();
 
-        // Hold the boost for a second: it spools to the top.
-        held.press(KeyCode::Space);
+        // A tap of the boost: it spools to the top.
+        keys.press(KeyCode::Space);
         for _ in 0..120 {
             for b in &mut bindings.list {
-                b.update(&held, dt);
+                b.update(&keys, dt);
             }
         }
         assert!(throttle_value(&bindings) > 0.99, "boost never reached full");
 
-        // Release: it springs back to the cruise rest (its starting value).
-        held.release(KeyCode::Space);
+        // Release: it holds at full — no key needed to keep the thrust.
+        keys.release(KeyCode::Space);
         for _ in 0..240 {
             for b in &mut bindings.list {
-                b.update(&held, dt);
+                b.update(&keys, dt);
             }
         }
         assert!(
-            (throttle_value(&bindings) - 0.6).abs() < 1e-6,
-            "did not spring back to cruise: {}",
+            throttle_value(&bindings) > 0.99,
+            "the latched throttle drifted on release: {}",
             throttle_value(&bindings)
+        );
+    }
+
+    #[test]
+    fn arcade_throttle_is_auto_between_cruise_and_full() {
+        let dt = 1.0 / 120.0;
+        let step = |mut v: f64, manoeuvre: f64| {
+            for _ in 0..600 {
+                v = arcade_throttle(v, 0.6, 1.0, manoeuvre, dt);
+            }
+            v
+        };
+
+        // Roll alone is not a manoeuvre.
+        assert_eq!(manoeuvre_intensity(0.0, 0.0), 0.0);
+
+        // Left alone in straight flight it spools itself back up to full reheat.
+        assert!(
+            (step(0.6, 0.0) - 1.0).abs() < 1e-6,
+            "straight flight did not recharge the throttle"
+        );
+
+        // A hard pull drains full reheat to cruise and holds there.
+        assert!(
+            (step(1.0, 1.0) - 0.6).abs() < 1e-6,
+            "a hard pull did not drain to cruise"
+        );
+
+        // A half-strength manoeuvre settles halfway between the two.
+        assert!(
+            (step(1.0, 0.5) - 0.8).abs() < 1e-6,
+            "a half pull did not settle mid-range"
         );
     }
 

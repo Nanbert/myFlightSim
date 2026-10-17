@@ -19,10 +19,6 @@ pub enum Axis {
     Spring,
     /// Accumulate while a key is held; hold position on release.
     Hold,
-    /// Accumulate while a key is held, then spring back to the starting value on
-    /// release. The F-22's arcade throttle: hold to spool up, let go and it falls
-    /// back to cruise, so the afterburner grows and fades on its own.
-    Detent,
 }
 
 /// Semantic id for an axis control. Used by the HUD hint line and (later) the
