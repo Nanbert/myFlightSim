@@ -13,6 +13,14 @@
 // lens, and the tiles that hold no water return a zero offset so the rest of
 // the glass stays perfectly sharp.
 //
+// The uniform carries the air data that makes the film behave like water in a
+// slipstream: `phase` is an animation clock advanced faster with dynamic
+// pressure, `flow` both stretches each drop into a wake and sets how fast the
+// whole field streams across the glass, and `rain_share` decides whether the
+// deposit is a downpour or a fine condensation haze. The wetness itself
+// (`intensity`) is supplied by `src/lens.rs`, which only feeds the film when
+// there is rain or condensing air to deposit.
+//
 // License: *The Drive Home* is published under Shadertoy's default
 // CC BY-NC-SA 3.0 (non-commercial, share-alike) — resolve before shipping the
 // sim commercially. The Bevy plumbing around it (`src/lens.rs`) is original.
@@ -21,9 +29,9 @@ import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
 
 struct RainLens {
     intensity: f32,
-    time: f32,
-    pad0: f32,
-    pad1: f32,
+    phase: f32,
+    flow: f32,
+    rain_share: f32,
 };
 
 @group(0) @binding(0) var screenTexture: texture_2d<f32>;
@@ -80,10 +88,13 @@ struct Drop {
 // drop that slides downward, dragging a beaded trail. Returns the offset of the
 // water within the cell — zero where the glass is clear — plus a mask marking
 // where water sits at all (the drop, or its trail).
-fn GetDrops(uv_in: vec2<f32>, seed: f32, m: f32, time: f32) -> Drop {
+// `scroll` is the vertical drift for one unit of `t`, in this layer's pattern
+// space; callers scale it by their uv multiplier so every layer streams at the
+// same speed on screen.
+fn GetDrops(uv_in: vec2<f32>, seed: f32, m: f32, time: f32, scroll: f32) -> Drop {
     var t = time + m * 30.0;
     var uv = uv_in;
-    uv.y = uv.y + t * 0.05;
+    uv.y = uv.y + t * scroll;
     uv = uv * vec2<f32>(13.0, 3.5);
 
     let id = floor(uv);
@@ -129,6 +140,28 @@ fn GetDrops(uv_in: vec2<f32>, seed: f32, m: f32, time: f32) -> Drop {
     return Drop(offset, mask, nrm);
 }
 
+// One layer, smeared by the airflow. A second sample further along the +y side
+// the beaded trail already occupies extends the drop into a wake: the head
+// still does the refracting, the displaced copy just stretches the silhouette.
+// `shear` and `scroll` are in this layer's pattern space, so callers scale both
+// by their uv multiplier to keep the streak length and stream speed fixed on
+// screen.
+fn GetStreaked(uv: vec2<f32>, seed: f32, m: f32, t: f32, shear: f32, scroll: f32) -> Drop {
+    let head = GetDrops(uv, seed, m, t, scroll);
+    if shear <= 0.0 {
+        return head;
+    }
+    let tail = GetDrops(uv + vec2<f32>(0.0, shear), seed, m, t, scroll);
+    // Weight by coverage squared: the head dominates where it is present, and
+    // the tail only takes over where the head has already slid away.
+    let wa = head.mask * head.mask;
+    let wb = tail.mask * tail.mask;
+    let norm = wa + wb + 1e-5;
+    let offset = (head.offset * wa + tail.offset * wb) / norm;
+    let nrm = normalize((head.nrm * wa + tail.nrm * wb) / norm + vec2<f32>(1e-5, 1e-5));
+    return Drop(offset, max(head.mask, tail.mask), nrm);
+}
+
 @fragment
 fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let res = vec2<f32>(textureDimensions(screenTexture));
@@ -139,8 +172,16 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(src, 1.0);
     }
 
-    let t = settings.time;
+    let t = settings.phase;
     let m = 0.0;
+    // Dynamic pressure stretches each drop into a wake. A fixed screen length,
+    // so the per-layer uv scale below is compensated in the shear passed down.
+    let shear = 0.10 * settings.flow;
+    // How far the whole field streams per unit of `t`, in screen-heights. The
+    // rest value is the original windshield drift; the flow term is the
+    // slipstream. `PHASE_FLOW` in `lens.rs` already quickens `t` with q, so the
+    // two together make the film race at fighter speed instead of crawling.
+    let scroll = 0.05 + 0.8 * settings.flow;
 
     // Seed space: centred and aspect-corrected.
     var uv = in.uv - vec2<f32>(0.5, 0.5);
@@ -154,14 +195,26 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     var dropUv = vec2<f32>(uv.x * ca + uv.y * sa, -uv.x * sa + uv.y * ca);
     dropUv.x = dropUv.x + (-sin(t * 0.1)) * 0.5;
 
-    // More rain → more layers come up, from a thin mist to a downpour.
-    let l0 = S(0.0, 0.35, settings.intensity);
-    let l1 = S(0.0, 0.6, settings.intensity);
-    let l2 = S(0.0, 1.0, settings.intensity);
+    // More water → more layers come up, from a thin mist to a downpour.
+    // Condensation (low `rain_share`) only ever reaches the fine layers: it is
+    // a haze of beads, not the sheet of drops a rainstorm throws at the glass.
+    //
+    // Dynamic pressure tears large beads apart long before it can keep them on
+    // the glass. Above a couple hundred knots the big-drop layers fade out
+    // entirely and what remains is a fine, streaked spray — not a screenful of
+    // bubbles. (`lens.rs` thins the film's coverage with flow for the same
+    // reason.) These are just weights, not extra geometry: the pass costs the
+    // same however many droplets are visible.
+    let thin = S(0.0, 1.0, settings.flow);
+    let l0 = S(0.0, 0.35, settings.intensity) * max(1.0 - 1.4 * thin, 0.0);
+    let l1 = S(0.0, 0.6, settings.intensity) * (0.35 + 0.65 * settings.rain_share)
+        * max(1.0 - 0.75 * thin, 0.0);
+    let l2 = S(0.0, 1.0, settings.intensity) * (0.15 + 0.85 * settings.rain_share)
+        * (1.0 - 0.30 * thin);
 
-    let d0 = GetDrops(dropUv, 1.0, m, t);
-    let d1 = GetDrops(dropUv * 1.4, 10.0, m, t);
-    let d2 = GetDrops(dropUv * 2.4, 25.0, m, t);
+    let d0 = GetStreaked(dropUv, 1.0, m, t, shear, scroll);
+    let d1 = GetStreaked(dropUv * 1.4, 10.0, m, t, shear * 1.4, scroll * 1.4);
+    let d2 = GetStreaked(dropUv * 2.4, 25.0, m, t, shear * 2.4, scroll * 2.4);
 
     var offs = d0.offset * l0 + d1.offset * l1 + d2.offset * l2;
     let lens = max(d0.mask * l0, max(d1.mask * l1, d2.mask * l2));

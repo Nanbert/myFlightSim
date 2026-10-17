@@ -46,6 +46,12 @@ pub struct Sim {
     pub name: String,
     origin_lat: f64,
     origin_lon: f64,
+    /// Highest load factor (`forces/load-factor`) since the last reset, for the
+    /// F-22 HUD's max-G readout.
+    max_g: f64,
+    /// Smoothed rate of change of KCAS (kt/s), for the HUD's accel/decel caret.
+    speed_trend: f64,
+    last_cas_kts: f64,
 }
 
 /// The aircraft the app starts with: `AIRCRAFT=f22` overrides the c172 default.
@@ -71,6 +77,9 @@ impl Sim {
             name: name.to_owned(),
             origin_lat: 0.0,
             origin_lon: 0.0,
+            max_g: 0.0,
+            speed_trend: 0.0,
+            last_cas_kts: 0.0,
         };
         sim.reset_ground();
         sim
@@ -90,6 +99,7 @@ impl Sim {
         self.model.set("gear/gear-pos-norm", 1.0);
         // Light the engine; without this the throttle commands produce no thrust.
         self.model.set("propulsion/set-running", -1.0);
+        self.reset_hud_memory();
         self.origin_lat = self.model.get("position/lat-gc-deg");
         self.origin_lon = self.model.get("position/long-gc-deg");
     }
@@ -108,8 +118,16 @@ impl Sim {
         self.model.set("gear/gear-pos-norm", 0.0);
         self.model.set("propulsion/set-running", -1.0);
         self.model.trim(vc_kts, alt_ft);
+        self.reset_hud_memory();
         self.origin_lat = self.model.get("position/lat-gc-deg");
         self.origin_lon = self.model.get("position/long-gc-deg");
+    }
+
+    /// Clear the per-flight HUD history (peak G, speed trend) after a reset.
+    fn reset_hud_memory(&mut self) {
+        self.max_g = 0.0;
+        self.speed_trend = 0.0;
+        self.last_cas_kts = self.model.get("velocities/vc-kts");
     }
 
     /// Airborne trimmed start at the default cruise point.
@@ -122,7 +140,8 @@ impl Sim {
     pub fn trim_now(&mut self) {
         let vc = self.model.get("velocities/vc-kts");
         let alt = self.model.get("position/h-sl-ft");
-        self.model.set("ic/psi-true-deg", self.model.get("attitude/psi-deg"));
+        self.model
+            .set("ic/psi-true-deg", self.model.get("attitude/psi-deg"));
         self.model.trim(vc, alt);
     }
 
@@ -141,9 +160,8 @@ impl Sim {
         let theta = self.model.get("attitude/theta-rad") as f32;
         let psi = self.model.get("attitude/psi-rad") as f32;
 
-        let r_nb = Mat3::from_rotation_z(psi)
-            * Mat3::from_rotation_y(theta)
-            * Mat3::from_rotation_x(phi);
+        let r_nb =
+            Mat3::from_rotation_z(psi) * Mat3::from_rotation_y(theta) * Mat3::from_rotation_x(phi);
         let s = axis_map();
         let rot = Quat::from_mat3(&(s * r_nb * s.transpose()));
         (pos, rot, psi)
@@ -171,6 +189,12 @@ pub struct AircraftState {
     /// Lateral load factor at the pilot (`accelerations/n-pilot-y-norm`), 0 when
     /// coordinated — drives the turn coordinator's slip ball.
     pub slip: f64,
+    /// Roll rate (`velocities/p-rad_sec`), deg/s, +right — biases the F-22's
+    /// leading-edge vapor toward the wing rolling down.
+    pub roll_rate_dps: f64,
+    /// Yaw rate (`velocities/r-rad_sec`), deg/s, +right — feeds the F-22's
+    /// forebody vapor in a yaw, where the flow off the chine is strongest.
+    pub yaw_rate_dps: f64,
     pub throttle: f64,
     /// Normalised thrust per engine (`fcs/thrust-norm`), which the FDM scales by
     /// its altitude/Mach thrust tables: ~1.4 at full reheat on the deck, ~0.7 at
@@ -204,6 +228,30 @@ pub struct AircraftState {
     pub torque_lbsft: f64,
     /// Whether the loaded model is a rotorcraft (AH-1S only).
     pub rotor_available: bool,
+
+    // --- F-22 HUD quantities ---
+    /// True airspeed (`velocities/vtrue-kts`).
+    pub tas_kts: f64,
+    /// Ground speed (`velocities/vg-fps`, converted to knots).
+    pub gs_kts: f64,
+    /// Ground track (`atan2(v-east, v-north)`), deg true. With the flight-path
+    /// angle, places the HUD's flight path marker — wind drift included.
+    pub track_deg: f64,
+    /// Flight path angle (`asin(h-dot / ground-speed)`), deg, + climbing.
+    pub flight_path_deg: f64,
+    /// Load factor (`forces/load-factor`), 1.0 in level flight.
+    pub g_norm: f64,
+    /// Peak load factor reached since the last reset.
+    pub max_g_norm: f64,
+    /// Smoothed rate of change of KCAS, kt/s.
+    pub speed_trend: f64,
+    /// Height above the ground (`position/h-agl-ft`).
+    pub radar_alt_ft: f64,
+    /// Angle of sideslip (`aero/beta-deg`).
+    pub beta_deg: f64,
+    /// Wind velocity components (`atmosphere/wind-{north,east}-fps`), fps.
+    pub wind_north_fps: f64,
+    pub wind_east_fps: f64,
 }
 
 /// The two most recent *fixed-step* poses. The FDM advances at 120 Hz while the
@@ -256,7 +304,11 @@ impl Plugin for SimPlugin {
     }
 }
 
-fn advance_fdm(mut sim: ResMut<Sim>, bindings: Res<crate::input::Bindings>, mut ap: ResMut<Autopilot>) {
+fn advance_fdm(
+    mut sim: ResMut<Sim>,
+    bindings: Res<crate::input::Bindings>,
+    mut ap: ResMut<Autopilot>,
+) {
     // Pilot bindings drive every property the loaded model exposes. This runs
     // unconditionally so flaps and brakes stay live even under the autopilot.
     // `effective()` folds in the trim offset (a rotorcraft's solved cyclic).
@@ -297,25 +349,65 @@ fn capture_render_pose(sim: Res<Sim>, mut rp: ResMut<RenderPose>) {
     rp.curr_heading = heading;
 }
 
-fn publish_state(sim: Res<Sim>, ap: Res<Autopilot>, mut state: ResMut<AircraftState>) {
+fn publish_state(
+    mut sim: ResMut<Sim>,
+    time: Res<Time>,
+    ap: Res<Autopilot>,
+    mut state: ResMut<AircraftState>,
+) {
     let (pos, _, _) = sim.pose();
-    let m = &sim.model;
+    // Split the borrow: the FDM is read through `m` while the HUD history
+    // fields are written below, without either aliasing the other.
+    let Sim {
+        model,
+        name,
+        max_g,
+        speed_trend,
+        last_cas_kts,
+        ..
+    } = &mut *sim;
+    let m = &**model;
     // Rate of heading change, from the body rates and attitude:
     // psi-dot = (q sinφ + r cosφ) / cosθ (rad/s → deg/s). This is the turn
     // coordinator's rate-of-turn input, and it's exact kinematic heading rate.
-    let (phi, theta) = (
-        m.get("attitude/phi-rad"),
-        m.get("attitude/theta-rad"),
-    );
+    let (phi, theta) = (m.get("attitude/phi-rad"), m.get("attitude/theta-rad"));
     let turn_rate_dps = ((m.get("velocities/q-rad_sec") * phi.sin()
         + m.get("velocities/r-rad_sec") * phi.cos())
         / theta.cos().max(1e-3))
     .to_degrees();
+
+    // Ground-referenced velocity, for the HUD's flight path marker and wind.
+    let gs_fps = m.get("velocities/vg-fps");
+    let hdot_fps = m.get("velocities/h-dot-fps");
+    let vn_fps = m.get("velocities/v-north-fps");
+    let ve_fps = m.get("velocities/v-east-fps");
+    let track_deg = ve_fps.atan2(vn_fps).to_degrees().rem_euclid(360.0);
+    let flight_path_deg = if gs_fps > 1.0 {
+        (hdot_fps / gs_fps).clamp(-1.0, 1.0).asin().to_degrees()
+    } else {
+        0.0
+    };
+    let cas_kts = m.get("velocities/vc-kts");
+    let g_norm = m.get("forces/load-factor");
+
+    // HUD history: peak G for the flight, and a lightly smoothed speed trend
+    // (a raw per-frame derivative is far too noisy to read).
+    let dt = time.delta_secs_f64().clamp(1e-4, 0.25);
+    if g_norm > *max_g {
+        *max_g = g_norm;
+    }
+    let trend_raw = (cas_kts - *last_cas_kts) / dt;
+    let blend = 1.0 - (-dt / 0.35).exp();
+    *speed_trend += (trend_raw - *speed_trend) * blend;
+    *last_cas_kts = cas_kts;
+    let max_g_norm = *max_g;
+    let speed_trend = (*speed_trend).clamp(-99.0, 99.0);
+
     *state = AircraftState {
         pos,
         alt_ft: m.get("position/h-sl-ft"),
-        cas_kts: m.get("velocities/vc-kts"),
-        vs_fpm: m.get("velocities/h-dot-fps") * 60.0,
+        cas_kts,
+        vs_fpm: hdot_fps * 60.0,
         alpha_deg: m.get("aero/alpha-rad").to_degrees(),
         mach: m.get("velocities/mach"),
         heading_deg: m.get("attitude/psi-deg"),
@@ -323,6 +415,8 @@ fn publish_state(sim: Res<Sim>, ap: Res<Autopilot>, mut state: ResMut<AircraftSt
         roll_deg: m.get("attitude/phi-deg"),
         turn_rate_dps,
         slip: m.get("accelerations/n-pilot-y-norm"),
+        roll_rate_dps: m.get("velocities/p-rad_sec").to_degrees(),
+        yaw_rate_dps: m.get("velocities/r-rad_sec").to_degrees(),
         // Report what is actually driving the surfaces, auto or manual.
         throttle: m.get("fcs/throttle-cmd-norm"),
         thrust_norm: m.get("fcs/thrust-norm"),
@@ -333,7 +427,7 @@ fn publish_state(sim: Res<Sim>, ap: Res<Autopilot>, mut state: ResMut<AircraftSt
         flap_deg: m.get("fcs/flap-pos-deg"),
         rpm: m.get("propulsion/engine[0]/engine-rpm"),
         autopilot: ap.enabled,
-        autopilot_available: crate::aircraft_profile::profile(&sim.name).has_autopilot,
+        autopilot_available: crate::aircraft_profile::profile(name).has_autopilot,
         phase: ap.phase,
         tvc_on: m.get("fcs/tvc-enable") > 0.5,
         tvc_available: m.has_tvc(),
@@ -344,6 +438,17 @@ fn publish_state(sim: Res<Sim>, ap: Res<Autopilot>, mut state: ResMut<AircraftSt
         collective: m.get("fcs/collective-cmd-norm"),
         torque_lbsft: m.get("propulsion/engine[0]/torque-lbsft"),
         rotor_available: m.has_rotor(),
+        tas_kts: m.get("velocities/vtrue-kts"),
+        gs_kts: gs_fps * 0.592_483_801,
+        track_deg,
+        flight_path_deg,
+        g_norm,
+        max_g_norm,
+        speed_trend,
+        radar_alt_ft: m.get("position/h-agl-ft"),
+        beta_deg: m.get("aero/beta-deg"),
+        wind_north_fps: m.get("atmosphere/wind-north-fps"),
+        wind_east_fps: m.get("atmosphere/wind-east-fps"),
     };
 }
 
@@ -397,7 +502,10 @@ mod tests {
     fn reset_air_retracts_the_gear_before_trimming() {
         let mut sim = rust_f22();
         sim.reset_ground();
-        assert!(sim.model.get("gear/gear-pos-norm") > 0.99, "parked gear down");
+        assert!(
+            sim.model.get("gear/gear-pos-norm") > 0.99,
+            "parked gear down"
+        );
         sim.reset_air(15_000.0, 350.0);
         assert!(sim.model.get("gear/gear-pos-norm") < 0.01, "cruise gear up");
         // Trim ran on the gear-up jet, so the seated point must hold. Seating a
@@ -407,7 +515,10 @@ mod tests {
             sim.model.step();
         }
         let vc1 = sim.model.get("velocities/vc-kts");
-        assert!((vc1 - vc0).abs() < 4.0, "gear-up trim must hold: {vc0} -> {vc1}");
+        assert!(
+            (vc1 - vc0).abs() < 4.0,
+            "gear-up trim must hold: {vc0} -> {vc1}"
+        );
     }
 
     #[test]

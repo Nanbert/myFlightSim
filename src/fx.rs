@@ -341,11 +341,15 @@ impl Plugin for FxPlugin {
                 .after(crate::view::sync_aircraft)
                 .run_if(in_state(AppState::Flying)),
         )
-        // The haze needs the final airframe/camera pose, so it runs after the
-        // view systems have placed everything.
+        // The haze needs the final airframe/camera pose — including this frame's
+        // camera shake — so it runs after transform propagation has folded the
+        // Update-time transforms into GlobalTransform. A stale camera pose would
+        // make the haze anchor swim against the jet under shake.
         .add_systems(
             PostUpdate,
-            manage_haze.run_if(in_state(AppState::Flying)),
+            manage_haze
+                .after(bevy::transform::TransformSystems::Propagate)
+                .run_if(in_state(AppState::Flying)),
         );
     }
 }
@@ -668,7 +672,7 @@ fn manage_haze(
     // core, lifted by the burner, then cooled by the thin air at altitude. The
     // haze rides on it so light-up shows as a jump in the shimmer, not just in
     // the flame.
-    let (_, _, alt_temp) = plume_at_q(thrust_q(state.thrust_norm));
+    let (alt_reach, _, alt_temp) = plume_at_q(thrust_q(state.thrust_norm));
     let temp = burner.level.max(burner.spool) * alt_temp;
     let want = is_f22(&sim) && throttle > 0.02;
     let root_tf = root.single().ok();
@@ -691,30 +695,45 @@ fn manage_haze(
         }
         let aspect = size.x / size.y;
 
-        // A nozzle's screen UV plus the on-screen direction its exhaust trails
-        // toward, both in aspect-corrected UV. `None` if it is behind the camera.
-        let nozzle = |model: Vec3| -> Option<(Vec2, Vec2)> {
-            let world = root_tf.translation
+        // The plume's real size, so the lobe tracks the flame on screen rather
+        // than a fixed slice of the frame. A fixed ellipse looks huge when the
+        // chase camera sits close (it covers the rear fuselage) and tiny from far
+        // away. `reach_of` matches what `drive_flames` gives the puffs.
+        let heat = burner.level.max(burner.spool);
+        let plume_len = (reach_of(burner.level, burner.spool, 0.0) * alt_reach).max(0.3);
+        let plume_rad = puff_radius(heat, 0.1).max(0.25);
+
+        // A nozzle's screen UV, the on-screen direction its exhaust trails
+        // toward, and the projected plume length/radius — all in aspect-corrected
+        // UV. `None` if the plume is behind the camera.
+        let nozzle = |model: Vec3| -> Option<(Vec2, Vec2, f32, f32)> {
+            let base = root_tf.translation
                 + root_tf.rotation * (root_tf.scale * model_to_body(name, model));
-            let p = cam.world_to_viewport(cam_gt, world).ok()?;
-            // The plume runs along the body's aft axis (+Z); sample a point a
-            // few metres downstream to get its screen direction.
-            let aft = world + root_tf.rotation * (root_tf.scale * Vec3::Z) * 4.0;
-            let p2 = cam.world_to_viewport(cam_gt, aft).ok()?;
+            let aft = root_tf.rotation * Vec3::Z;
             let to_uv = |v: Vec2| ((v - rect.min) / size - Vec2::splat(0.5)) * Vec2::new(aspect, 1.0);
-            let a = to_uv(p);
-            let b = to_uv(p2);
+
+            let p0 = to_uv(cam.world_to_viewport(cam_gt, base).ok()?);
+            let p1 = to_uv(cam.world_to_viewport(cam_gt, base + aft * plume_len).ok()?);
+            // Measure the radius sideways in screen space, where it is round
+            // whatever the plume's own angle to the view.
+            let side = cam_gt.rotation() * Vec3::X;
+            let edge = to_uv(cam.world_to_viewport(cam_gt, base + side * plume_rad).ok()?);
+
+            let off = p1 - p0;
+            let len = off.length();
             // Looking straight down the exhaust the two points nearly coincide;
-            // fall back to "heat rises" so there is still a shimmer.
-            let off = b - a;
-            let dir = if off.length() < 1e-4 {
+            // fall back to "heat rises". The threshold is a whole percent of the
+            // screen: near it the projected direction is noise, and a camera
+            // shake would flip the shimmer from frame to frame.
+            let dir = if len < 0.01 {
                 Vec2::NEG_Y
             } else {
-                off.normalize()
+                off / len
             };
-            Some((a, dir))
+            Some((p0, dir, len.max(0.01), (edge - p0).length().max(1e-3)))
         };
-        let (Some((uv0, dir0)), Some((uv1, dir1))) = (nozzle(F22_NOZZLE_L), nozzle(F22_NOZZLE_R))
+        let (Some((uv0, dir0, len0, rad0)), Some((uv1, dir1, len1, rad1))) =
+            (nozzle(F22_NOZZLE_L), nozzle(F22_NOZZLE_R))
         else {
             if existing.is_some() {
                 commands.entity(e).remove::<ExhaustHaze>();
@@ -722,30 +741,28 @@ fn manage_haze(
             continue;
         };
 
-        // The refraction grows with the exhaust heat, and the lobes stretch a
-        // little as it does — a hot plume distorts a longer slipstream.
+        // The refraction grows with the exhaust heat. Its UV offset scales with
+        // the lobe, so the haze stays a small fraction of the flame's own size
+        // and never becomes a screen-wide warp.
         let intensity = 0.25 + 0.75 * temp;
-        // A subtle shimmer: the offset is a small fraction of the screen, not a
-        // full warp. `rad`/`len` are the lobe's half-width and length in
-        // aspect-corrected UV.
-        let str = 0.011 * intensity;
-        let len = 0.070 + 0.070 * temp;
+        let str0 = 0.30 * rad0 * intensity;
+        let str1 = 0.30 * rad1 * intensity;
         commands.entity(e).insert(ExhaustHaze {
             uv0x: uv0.x,
             uv0y: uv0.y,
             dir0x: dir0.x,
             dir0y: dir0.y,
-            str0: str,
-            rad0: 0.035,
-            len0: len,
+            str0,
+            rad0,
+            len0,
             pad0: 0.0,
             uv1x: uv1.x,
             uv1y: uv1.y,
             dir1x: dir1.x,
             dir1y: dir1.y,
-            str1: str,
-            rad1: 0.035,
-            len1: len,
+            str1,
+            rad1,
+            len1,
             pad1: 0.0,
             time: time.elapsed_secs(),
             intensity,

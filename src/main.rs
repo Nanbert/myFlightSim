@@ -3,6 +3,7 @@ mod app_state;
 mod config;
 mod fx;
 mod gauge;
+mod hud;
 mod input;
 mod lens;
 mod menu;
@@ -40,6 +41,7 @@ fn main() {
             fx::FxPlugin,
             vapor::VaporPlugin,
             gauge::GaugePlugin,
+            hud::HudPlugin,
             sky::SkyPlugin,
             weather::WeatherPlugin,
             lens::LensPlugin,

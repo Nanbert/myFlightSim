@@ -5,6 +5,7 @@ use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
+use bevy::post_process::motion_blur::MotionBlur;
 use bevy::prelude::*;
 use bevy::text::FontSize;
 use bevy::window::{CursorGrabMode, CursorOptions};
@@ -288,6 +289,7 @@ impl Plugin for ViewPlugin {
             .init_resource::<ControlRig>()
             .init_resource::<Chase>()
             .add_systems(Startup, (setup_scene, setup_hud))
+            .add_systems(OnExit(AppState::Flying), reset_camera_feel)
             .add_systems(
                 Update,
                 (
@@ -295,7 +297,9 @@ impl Plugin for ViewPlugin {
                     cockpit_look
                         .run_if(in_state(AppState::Flying))
                         .before(follow_camera),
-                    follow_camera.run_if(in_state(AppState::Flying)),
+                    (follow_camera, camera_feel)
+                        .chain()
+                        .run_if(in_state(AppState::Flying)),
                     update_hud.run_if(in_state(AppState::Flying)),
                     toggle_ui.run_if(in_state(AppState::Flying)),
                     capture_rig.run_if(in_state(AppState::Flying)),
@@ -377,6 +381,13 @@ fn setup_scene(mut commands: Commands) {
         // Keep the sky's authored colours (the default filmic tonemapper washes
         // the gradient toward grey).
         Tonemapping::None,
+        // Speed cue: `camera_feel` drives the shutter angle from airspeed. At
+        // rest it is 0 (no blur); the component stays put so the render pipeline
+        // never changes shape as the jet accelerates.
+        MotionBlur {
+            shutter_angle: 0.0,
+            samples: 1,
+        },
         // HDR keeps the exhaust's emissive values above 1 all the way to the
         // bloom pass (without it the flame clips to flat white before it can
         // spread). The prefilter threshold sits above 1 so only the flame's
@@ -598,6 +609,28 @@ fn drive_gear(state: Res<AircraftState>, mut q: Query<(&Name, &mut Transform)>) 
 /// Chase-camera catch-up rate, per second. Higher = tighter / shakier.
 const CAM_FOLLOW_RATE: f32 = 4.0;
 
+/// How much of the airframe's bank the chase camera takes on. Keeping the
+/// horizon level is what makes a hard roll read as the *world* pivoting; a
+/// little coupling makes it read as the jet rolling. Blended toward world-up, so
+/// inverted flight never flips the view.
+const CAM_BANK_COUPLING: f32 = 0.25;
+
+/// Airspeed (kt) the camera buffet starts at and is full at. The airframe — and
+/// so the view — shakes as dynamic pressure builds.
+const SHAKE0_KT: f32 = 120.0;
+const SHAKE1_KT: f32 = 420.0;
+/// Peak buffet amplitude at full weight: metres of camera position and degrees
+/// of camera rotation. Small on purpose — a shake you notice, not one you fight.
+const SHAKE_POS_M: f32 = 0.30;
+const SHAKE_ROT_DEG: f32 = 0.40;
+/// Degrees the vertical FOV widens at speed, on a slight ease. Makes the world
+/// sweep past faster without the fisheye look of a big boost.
+const FOV_BOOST_DEG: f32 = 5.0;
+/// Peak motion-blur shutter angle at speed (0 = none). The camera is pinned to
+/// the jet, so this mostly streaks the ground past underneath — the clearest
+/// low-level speed cue.
+const BLUR_MAX: f32 = 0.35;
+
 /// Cockpit head-look sensitivity, in degrees of head rotation per pixel of
 /// mouse motion.
 const LOOK_DEG_PER_PX: f32 = 0.12;
@@ -688,13 +721,13 @@ pub(crate) fn follow_camera(
     }
     let a = fixed.overstep_fraction();
     let pos = rp.prev_pos.lerp(rp.curr_pos, a);
+    let rot = rp.prev_rot.slerp(rp.curr_rot, a);
 
     // Cockpit view: pin the camera at the modelled pilot eye and copy the
     // airframe's interpolated attitude, so the panel and horizon move with the
     // plane. Falls through to the chase view when the model has no interior.
     if ui.cockpit {
         if let Some(eye) = cockpit_eye(&model_spec(&sim.name)) {
-            let rot = rp.prev_rot.slerp(rp.curr_rot, a);
             t.translation = pos + rot * eye;
             // Head-look turns the view *relative to the airframe*; the eye
             // offset above is unrotated by it, so the camera position is fixed.
@@ -725,7 +758,91 @@ pub(crate) fn follow_camera(
     };
     chase.offset = Some(offset);
     t.translation = pos + offset;
-    t.look_at(pos, Vec3::Y);
+    // Take on a fraction of the airframe's bank, blended toward world-up so an
+    // inverted jet still gives a usable view. Without any coupling a hard roll
+    // reads as the world pivoting around a static jet; with all of it the view
+    // is just the cockpit again.
+    let up = (Vec3::Y + (rot * Vec3::Y - Vec3::Y) * CAM_BANK_COUPLING).normalize();
+    t.look_at(pos, up);
+}
+
+/// How hard the airframe — and so the view — is being buffeted, 0..1.
+///
+/// Dynamic pressure is the dominant term: the ramp from `SHAKE0_KT` to
+/// `SHAKE1_KT`. High angle of attack adds its own share (stalled / separated
+/// flow looks far rougher than the airspeed alone suggests), but capped below
+/// full so a slow high-alpha hold still reads as speed-related. Take the worse
+/// of the two: either one alone can shake the jet.
+fn buffet_weight(cas_kts: f64, alpha_deg: f64) -> f32 {
+    let speed01 = ((cas_kts as f32 - SHAKE0_KT) / (SHAKE1_KT - SHAKE0_KT)).clamp(0.0, 1.0);
+    let alpha01 = (((alpha_deg as f32) - 12.0) / 18.0).clamp(0.0, 1.0) * 0.6;
+    speed01.max(alpha01)
+}
+
+/// Undo the parts of `camera_feel` that outlive a flight — the widened lens and
+/// the motion blur — so the menu isn't left looking like it's at 400 kt. The
+/// shake itself needs no cleanup: `follow_camera` rewrites the pose every frame.
+fn reset_camera_feel(mut q: Query<(&mut Projection, Option<&mut MotionBlur>), With<Camera3d>>) {
+    let Ok((mut projection, blur)) = q.single_mut() else {
+        return;
+    };
+    if let Projection::Perspective(p) = &mut *projection {
+        p.fov = std::f32::consts::FRAC_PI_4;
+    }
+    if let Some(mut blur) = blur {
+        blur.shutter_angle = 0.0;
+    }
+}
+
+/// Camera "feel": buffet, a wider lens and motion blur, layered on the pose
+/// `follow_camera` just set. Runs *after* it (and reads the final pose), so the
+/// shake never feeds back into `Chase::offset` or the aircraft's framing.
+///
+/// The buffet is a deterministic sum of sines — no state, the same every run —
+/// and rises with dynamic pressure and with angle of attack, the two things that
+/// actually shake an airframe. It is squared so the view stays calm in cruise
+/// and comes alive only as the jet gets busy.
+fn camera_feel(
+    time: Res<Time>,
+    state: Res<AircraftState>,
+    mut q: Query<
+        (&mut Transform, &mut Projection, Option<&mut MotionBlur>),
+        With<Camera3d>,
+    >,
+) {
+    let Ok((mut t, mut projection, blur)) = q.single_mut() else {
+        return;
+    };
+    let dt = time.delta_secs();
+    let now = time.elapsed_secs();
+
+    let feel = buffet_weight(state.cas_kts, state.alpha_deg);
+    let amp = feel * feel;
+
+    // Three incommensurate frequencies per axis, seeded apart, so the shake
+    // never repeats on a visible beat. 2–6 Hz: buffet, not electrical noise
+    // (which would alias badly at 60 fps).
+    let noise = |seed: f32| {
+        (now * 12.9 + seed).sin() * 0.55
+            + (now * 23.3 + seed * 1.7).sin() * 0.30
+            + (now * 37.1 + seed * 2.3).sin() * 0.15
+    };
+
+    t.translation += Vec3::new(noise(0.0), noise(11.3), noise(21.7)) * (SHAKE_POS_M * amp);
+    let rot = Vec3::new(noise(31.1), noise(41.9), noise(51.7))
+        * (SHAKE_ROT_DEG.to_radians() * amp);
+    // `YXZ` takes (yaw, pitch, roll).
+    t.rotation *= Quat::from_euler(EulerRot::YXZ, rot.y, rot.x, rot.z);
+
+    if let Projection::Perspective(p) = &mut *projection {
+        let want = std::f32::consts::FRAC_PI_4 + FOV_BOOST_DEG.to_radians() * feel;
+        p.fov += (want - p.fov) * (1.0 - (-6.0 * dt).exp());
+    }
+    // Kept on the camera at all times (shutter 0 when idle) so its presence in
+    // the render pipeline never changes with speed.
+    if let Some(mut blur) = blur {
+        blur.shutter_angle = BLUR_MAX * feel;
+    }
 }
 
 fn toggle_ui(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<Ui>) {
@@ -945,7 +1062,8 @@ fn draw_grid(state: Res<AircraftState>, mut gizmos: Gizmos) {
 #[cfg(test)]
 mod tests {
     use super::{
-        LOOK_PITCH_LIMIT, Ui, apply_look_delta, bar, look_rotation, signed_bar,
+        LOOK_PITCH_LIMIT, SHAKE0_KT, SHAKE1_KT, Ui, apply_look_delta, bar, buffet_weight,
+        look_rotation, signed_bar,
     };
     use bevy::prelude::{Vec2, Vec3};
 
@@ -1012,6 +1130,26 @@ mod tests {
     }
 
     #[test]
+    fn buffet_is_calm_slow_and_full_fast() {
+        assert_eq!(buffet_weight(0.0, 0.0), 0.0);
+        assert_eq!(buffet_weight(SHAKE0_KT as f64, 0.0), 0.0);
+        assert_eq!(buffet_weight(SHAKE1_KT as f64, 0.0), 1.0);
+        assert_eq!(buffet_weight(600.0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn buffet_rises_with_angle_of_attack_but_below_full() {
+        // A slow, high-alpha hold: no speed ramp, but the airframe is still busy.
+        let slow_high_alpha = buffet_weight(0.0, 30.0);
+        assert!(slow_high_alpha > 0.0);
+        assert!(slow_high_alpha < 0.7, "alpha alone must not read as full speed");
+        // Below the buffet alpha it does nothing.
+        assert_eq!(buffet_weight(100.0, 10.0), 0.0);
+        // Speed still wins when it's the worse of the two.
+        assert_eq!(buffet_weight(SHAKE1_KT as f64, 30.0), 1.0);
+    }
+
+    #[test]
     fn bar_fills_left_to_right() {
         assert_eq!(bar(0.0), "---------");
         assert_eq!(bar(1.0), "#########");
@@ -1019,3 +1157,4 @@ mod tests {
         assert_eq!(bar(2.0), bar(1.0));
     }
 }
+

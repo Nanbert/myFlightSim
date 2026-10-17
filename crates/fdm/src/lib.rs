@@ -1161,7 +1161,24 @@ impl FlightModel for Fdm {
             "velocities/vc-kts" => {
                 self.isa.tas_to_cas(self.state.airspeed(), self.alt_ft()) * FPS_TO_KT
             }
+            "velocities/vtrue-kts" => self.state.airspeed() * FPS_TO_KT,
+            // NED ground velocity components. The Rust model flies in still air,
+            // so these are the true air-mass velocity components as well.
+            "velocities/v-north-fps" => self.state.body_to_ned(self.state.vel)[0],
+            "velocities/v-east-fps" => self.state.body_to_ned(self.state.vel)[1],
+            "velocities/vg-fps" => {
+                let v = self.state.body_to_ned(self.state.vel);
+                (v[0] * v[0] + v[1] * v[1]).sqrt()
+            }
             "velocities/h-dot-fps" => self.h_dot_fps(),
+            // Flat-earth ground plane at sea level.
+            "position/h-agl-ft" => self.alt_ft(),
+            // Normal load factor: the aero force along the body z axis over
+            // weight, so 1.0 in level flight (JSBSim's `forces/load-factor`).
+            "forces/load-factor" => -self.diag.force_aero[2] / (self.mass * G0),
+            // Sideslip: body lateral over forward velocity, positive when the
+            // relative wind comes from the right.
+            "aero/beta-deg" => self.state.vel[1].atan2(self.state.vel[0]) * R2D,
             "velocities/mach" => {
                 self.state.airspeed() / self.isa.sound_speed(self.alt_ft()).max(1.0)
             }

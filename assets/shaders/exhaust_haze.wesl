@@ -61,8 +61,13 @@ fn noise2(p: vec2<f32>) -> f32 {
 
 // Displacement contributed by one nozzle at aspect-corrected screen point `q`.
 // The lobe is an ellipse: `rad` wide across the exhaust and `len` long
-// downstream, so the refraction stretches out behind the nozzle. The result is
-// normalised to about unit length, so the CPU's strength sets the UV scale.
+// downstream. Both come from projecting the actual plume (see `manage_haze`),
+// so the haze tracks the flame's on-screen size instead of covering a fixed
+// rectangle of the frame.
+//
+// Nothing upstream of the nozzle may shimmer: that region is the airframe. The
+// weight is therefore zero for `along < 0`, ramps in over the first few percent
+// of the plume (a smooth seam at the rim) and fades out at the plume's tail.
 fn haze_at(q: vec2<f32>, p: vec2<f32>, d: vec2<f32>, rad: f32, len: f32) -> vec2<f32> {
     let n = vec2<f32>(-d.y, d.x);
     let v = q - p;
@@ -70,15 +75,15 @@ fn haze_at(q: vec2<f32>, p: vec2<f32>, d: vec2<f32>, rad: f32, len: f32) -> vec2
     let across = dot(v, n);
 
     let a = across / max(rad, 1e-5);
-    let b = max(along, 0.0) / max(len, 1e-5);
-    var w = exp(-a * a) * exp(-b);
-    // A short upstream skirt so the plume base doesn't cut off abruptly.
-    w = w + 0.25 * exp(-a * a) * exp(-max(-along, 0.0) / max(len * 0.3, 1e-5));
+    let t = along / max(len, 1e-5);
+    let head = smoothstep(0.0, 0.08, t);
+    let tail = 1.0 - smoothstep(0.55, 1.0, t);
+    let w = exp(-a * a) * head * tail;
 
     // Scrolling shimmer, aligned to the lobe so it flows downstream. It speeds
     // up with the exhaust heat: a hotter plume churns its slipstream faster.
     let s = noise2(vec2<f32>(across * 60.0, along * 45.0 - settings.time * (20.0 + 26.0 * settings.temp)));
-    return n * (clamp(w, 0.0, 1.0) * (0.45 + 0.55 * s));
+    return n * (w * (0.45 + 0.55 * s));
 }
 
 @fragment

@@ -1,6 +1,6 @@
-//! F-22 condensation vapor: the white mist a fighter drags off its wingtips in a
-//! hard manoeuvre, and the cone that blooms as it pushes through the sound
-//! barrier.
+//! F-22 condensation vapor: the white mist that blooms over a fighter's wing and
+//! body in a hard manoeuvre, and the cone that appears as it pushes through the
+//! sound barrier.
 //!
 //! Both effects are gated to the F-22 (`sim.name == "f22"`), like the engine
 //! effects in `fx.rs`: only that model ships the measured wing-tip anchors, and
@@ -9,14 +9,20 @@
 //! smoke: the air's own water vapor condensing where the flow drops in pressure
 //! and temperature, so both track the *flow*, not the engine.
 //!
-//! - **Wingtip trails.** Condensation first shows in the low-pressure core of
-//!   the wingtip vortex, which strengthens with the wing's load. So the trails
-//!   are driven by angle of attack: pull and they feed, unload and they stop
-//!   and dissipate. Each tip drops soft billboard puffs into **world** space,
-//!   recycled from a fixed ring, so the aircraft flies out of them and a hard
-//!   turn draws long curved ribbons for free. Samples are spaced by *distance*
-//!   along the tip's path, so the ribbon stays continuous whether the jet is
-//!   ambling at 200 kt or crossing the barrier.
+//! - **Vortex trails.** Condensation shows wherever the flow drops in pressure
+//!   over a lifting surface, so the jet wears it in several places at once: the
+//!   wingtip vortices, the leading edge along the span, and the forebody/chine
+//!   over the centerline — the last two being a fighter's strongest vortex
+//!   sources at high angle of attack (the [`EMITTERS`] table). Every emitter is
+//!   driven by its own *local* angle of attack: pull and they feed, unload and
+//!   they stop and dissipate. Roll rate biases each emitter by its side, since
+//!   the wing rolling *down* meets the flow at a higher effective angle — so a
+//!   roll lights the leading edge on one side, the way it reads in footage. Each
+//!   emitter drops soft billboard puffs into **world** space, recycled from a
+//!   fixed ring, so the aircraft flies out of them and a hard turn draws long
+//!   curved ribbons for free. Samples are spaced by *distance* along the
+//!   emitter's path, so a ribbon stays continuous whether the jet is ambling at
+//!   200 kt or crossing the barrier.
 //! - **Transonic cone.** Near Mach 1 the shock condenses the air into a
 //!   translucent cone wrapping the airframe: one cone shell, a child of the
 //!   airframe, whose opacity peaks in a band around Mach 1.
@@ -36,13 +42,58 @@ use crate::sim::{AircraftState, Sim};
 use crate::view::{AircraftRoot, model_to_body};
 use crate::weather::Weather;
 
-/// Wing-tip emitters in the F-22's own glTF frame (metres, +X left / +Y up /
-/// +Z nose), read off the wing mesh (span ±1.01 model units) at the tip chord.
-const F22_TIP_L: Vec3 = Vec3::new(1.00, 0.14, -0.72);
-const F22_TIP_R: Vec3 = Vec3::new(-1.00, 0.14, -0.72);
+/// One condensation-vapor emitter, anchored in the F-22's own glTF frame
+/// (metres, +X left / +Y up / +Z nose). Every emitter runs the same trail
+/// machinery — only where it sits and how its feed is shaped differ, since the
+/// mist tracks the local *flow*, not the emitter.
+struct Emitter {
+    /// Anchor on the airframe, at the surface the vortex peels off.
+    model: Vec3,
+    /// Roll sensitivity: `+1` on the wing a *positive (right) roll* drives
+    /// down — the model's −x / right side — and `−1` on the other, so a roll
+    /// raises the local angle of attack on the descending wing alone. `0` for a
+    /// symmetric emitter, which the roll does not bias.
+    roll_side: f32,
+    /// Local angle-of-attack window (deg) the vapor ramps in over. Emitters
+    /// nearer a vortex origin (the LEX, the forebody) fog sooner, so their
+    /// window opens lower.
+    aoa0: f32,
+    aoa1: f32,
+    /// Degrees of effective angle of attack added per deg/s of roll / yaw, at
+    /// [`RATE_CAL_KT`]. Roll carries `roll_side`; yaw is symmetric (a yaw feeds
+    /// both chines). This is what lets a fast roll light the leading edge at an
+    /// angle of attack too low for the wingtips to show.
+    roll_gain: f32,
+    yaw_gain: f32,
+    /// Share of the transonic pickup this emitter takes. Only the tips take any:
+    /// near Mach 1 the shock condenses air off them, which is a *different*
+    /// effect from the vortex vapor, and letting every emitter draw on the band
+    /// would pile all seven into one blob over the wing.
+    mach_gain: f32,
+}
 
-/// One trail per wingtip.
-const SIDES: usize = 2;
+/// The F-22's vortex sources. The two wingtips are the anchors the model was
+/// measured around (span ±1.01 model units, tip chord at z ≈ −0.72); the rest
+/// were read off the wing and fuselage meshes — the leading edge runs from the
+/// tip back to the root, and the forebody/chine sits over the centerline ahead
+/// of the canopy. All distances are model units.
+const EMITTERS: &[Emitter] = &[
+    // Wingtips (left +x, right −x; the roll only biases the ones that move).
+    Emitter { model: Vec3::new( 1.00, 0.14, -0.72), roll_side: -1.0, aoa0: 5.0, aoa1: 16.0, roll_gain: 0.000, yaw_gain: 0.00, mach_gain: 1.0 },
+    Emitter { model: Vec3::new(-1.00, 0.14, -0.72), roll_side:  1.0, aoa0: 5.0, aoa1: 16.0, roll_gain: 0.000, yaw_gain: 0.00, mach_gain: 1.0 },
+    // Leading edge, mid-span (the tip-to-root sweep line).
+    Emitter { model: Vec3::new( 0.66, 0.08, -0.31), roll_side: -1.0, aoa0: 6.0, aoa1: 14.0, roll_gain: 0.035, yaw_gain: 0.02, mach_gain: 0.0 },
+    Emitter { model: Vec3::new(-0.66, 0.08, -0.31), roll_side:  1.0, aoa0: 6.0, aoa1: 14.0, roll_gain: 0.035, yaw_gain: 0.02, mach_gain: 0.0 },
+    // Wing-root leading edge / LEX, where the vortex is strongest.
+    Emitter { model: Vec3::new( 0.34, 0.08,  0.06), roll_side: -1.0, aoa0: 5.0, aoa1: 13.0, roll_gain: 0.026, yaw_gain: 0.03, mach_gain: 0.0 },
+    Emitter { model: Vec3::new(-0.34, 0.08,  0.06), roll_side:  1.0, aoa0: 5.0, aoa1: 13.0, roll_gain: 0.026, yaw_gain: 0.03, mach_gain: 0.0 },
+    // Forebody / chine, over the centerline ahead of the canopy. On the roll axis,
+    // so the roll does not bias it — only the yaw does.
+    Emitter { model: Vec3::new( 0.00, 0.22,  0.34), roll_side:  0.0, aoa0: 7.0, aoa1: 20.0, roll_gain: 0.000, yaw_gain: 0.05, mach_gain: 0.0 },
+];
+
+/// One trail ring per emitter.
+const EMITTER_COUNT: usize = EMITTERS.len();
 
 /// History samples per trail; the ring holds `SAMPLES · STEP` metres of trail.
 const SAMPLES: usize = 60;
@@ -60,21 +111,18 @@ const LIFE: f32 = 1.6;
 /// Puff radius (m) at birth and at death; a puff expands as it dissipates. Born
 /// wider than half the sample spacing so consecutive puffs merge into a ribbon
 /// rather than reading as a row of beads.
-const PUFF_R0: f32 = 1.6;
-const PUFF_R1: f32 = 3.4;
+const PUFF_R0: f32 = 1.4;
+const PUFF_R1: f32 = 2.8;
 /// Peak opacity of a fresh puff on a fully-fed trail. Kept low because a dense
-/// stream of them accumulates.
-const PUFF_ALPHA: f32 = 0.13;
+/// stream of them accumulates; dialled down from the two-emitter version now
+/// that a hard pull lights several streams at once.
+const PUFF_ALPHA: f32 = 0.06;
 /// How far (m) a puff's centre may wander off the sampled path. Breaks the
 /// ribbon up so it reads as vapor rather than a smooth tube, without pulling
 /// neighbouring puffs far enough apart to come unstitched.
 const PUFF_WANDER: f32 = 0.7;
 
-/// Angle of attack (deg) below which no vapor shows, and the level that feeds
-/// the trail fully.
-const AOA0: f32 = 5.0;
-const AOA1: f32 = 16.0;
-/// Speed (m/s) below which the wingtip trail is suppressed — on rotation the
+/// Speed (m/s) below which the vortex trails are suppressed — on rotation the
 /// wing is loaded but the aircraft is slow, and a stationary puff pile looks
 /// wrong. Fades in over `SPEED0..SPEED1`.
 const SPEED0: f32 = 25.0;
@@ -82,6 +130,13 @@ const SPEED1: f32 = 60.0;
 /// Mach near which the transonic cone is full, and the half-width of its band.
 const MACH_C: f32 = 1.02;
 const MACH_W: f32 = 0.20;
+/// Airspeed (kt) the emitters' rate gains are calibrated at. The manoeuvre bias
+/// scales as `RATE_CAL_KT / airspeed`, since the same roll rate swings the local
+/// angle of attack further the more slowly the air is moving past — which is why
+/// a fighter wears the vapor low and slow. `RATE_MIN_KT` floors the divisor so a
+/// slow roll can't blow the bias up.
+const RATE_CAL_KT: f32 = 320.0;
+const RATE_MIN_KT: f32 = 140.0;
 
 /// Transonic vapor cone, in the model frame: the apex sits just behind the
 /// radome, opening aft past the wing root. The F-22's glTF runs z ∈ [-1.34,
@@ -162,34 +217,34 @@ struct VaporPuff {
     idx: usize,
 }
 
-/// Ring of history samples, one per wingtip. A slot holds where the tip was,
+/// Ring of history samples, one per emitter. A slot holds where the emitter was,
 /// how long ago, and how strong the vapor feed was when it was dropped.
 #[derive(Resource)]
 struct Trails {
-    pos: [[Vec3; SAMPLES]; SIDES],
-    age: [[f32; SAMPLES]; SIDES],
-    feed: [[f32; SAMPLES]; SIDES],
-    cursor: [usize; SIDES],
+    pos: [[Vec3; SAMPLES]; EMITTER_COUNT],
+    age: [[f32; SAMPLES]; EMITTER_COUNT],
+    feed: [[f32; SAMPLES]; EMITTER_COUNT],
+    cursor: [usize; EMITTER_COUNT],
     /// Distance the tip has covered since its last sample, per side.
-    acc: [f32; SIDES],
+    acc: [f32; EMITTER_COUNT],
     /// Where the tip was on the previous frame, per side.
-    last: [Vec3; SIDES],
+    last: [Vec3; EMITTER_COUNT],
     /// Whether the tip has been sighted yet; the first sample is dropped as soon
     /// as it is, so the trail starts under the wing rather than behind it.
-    live: [bool; SIDES],
+    live: [bool; EMITTER_COUNT],
 }
 
 impl Default for Trails {
     fn default() -> Self {
         Trails {
-            pos: [[Vec3::ZERO; SAMPLES]; SIDES],
+            pos: [[Vec3::ZERO; SAMPLES]; EMITTER_COUNT],
             // Start every slot "old" so an untouched one stays hidden.
-            age: [[f32::MAX; SAMPLES]; SIDES],
-            feed: [[0.0; SAMPLES]; SIDES],
-            cursor: [0; SIDES],
-            acc: [0.0; SIDES],
-            last: [Vec3::ZERO; SIDES],
-            live: [false; SIDES],
+            age: [[f32::MAX; SAMPLES]; EMITTER_COUNT],
+            feed: [[0.0; SAMPLES]; EMITTER_COUNT],
+            cursor: [0; EMITTER_COUNT],
+            acc: [0.0; EMITTER_COUNT],
+            last: [Vec3::ZERO; EMITTER_COUNT],
+            live: [false; EMITTER_COUNT],
         }
     }
 }
@@ -258,7 +313,7 @@ fn spawn_vapor(
     // Trail puffs: one unit-radius quad per sample slot (Rectangle is 2×2, so
     // the transform's scale is the puff radius).
     let quad = meshes.add(Rectangle::new(2.0, 2.0));
-    for side in 0..SIDES {
+    for side in 0..EMITTER_COUNT {
         for idx in 0..SAMPLES {
             let material = puffs.add(PuffMaterial {
                 params: PuffParams {
@@ -325,13 +380,24 @@ fn model_scale(name: &str) -> f32 {
 
 // --- drive -----------------------------------------------------------------
 
-/// Vapor "feed" from the wing's load (0..1): ramps in with angle of attack, and
-/// picks up again in the transonic band, where the shock also condenses air off
-/// the tips. Above the band it falls away again — a supersonic jet does not
-/// trail wingtip vapor.
-fn wing_feed(alpha_deg: f32, mach: f32) -> f32 {
-    let a = ((alpha_deg - AOA0) / (AOA1 - AOA0)).clamp(0.0, 1.0);
-    a.max(cone_band(mach))
+/// Vapor "feed" for one emitter (0..1): ramps in with the *local* angle of
+/// attack — the aircraft's alpha plus the manoeuvre bias of a roll (side-signed)
+/// or yaw — and picks up again in the transonic band, where the shock also
+/// condenses air off the wing. Above the band it falls away again: a supersonic
+/// jet does not trail vortex vapor.
+fn emitter_feed(
+    e: &Emitter,
+    alpha_deg: f32,
+    roll_dps: f32,
+    yaw_dps: f32,
+    mach: f32,
+    airspeed_kt: f32,
+) -> f32 {
+    let rate_scale = RATE_CAL_KT / airspeed_kt.max(RATE_MIN_KT);
+    let bias = (e.roll_gain * roll_dps * e.roll_side + e.yaw_gain * yaw_dps.abs()) * rate_scale;
+    let local = alpha_deg + bias;
+    let a = ((local - e.aoa0) / (e.aoa1 - e.aoa0)).clamp(0.0, 1.0);
+    a.max(cone_band(mach) * e.mach_gain)
 }
 
 /// Transonic weighting (0..1): a band centred on Mach 1, used by both the
@@ -378,33 +444,42 @@ fn drive_vapor(
     let humidity = (0.72 + 0.5 * weather.rain).min(1.0);
     let speed = (state.cas_kts as f32 * 0.5144).max(0.0);
     let speed_gate = ((speed - SPEED0) / (SPEED1 - SPEED0)).clamp(0.0, 1.0);
-    let feed = wing_feed(state.alpha_deg as f32, state.mach as f32) * humidity * speed_gate;
+    let alpha = state.alpha_deg as f32;
+    let roll = state.roll_rate_dps as f32;
+    let yaw = state.yaw_rate_dps as f32;
+    let mach = state.mach as f32;
+    // Each emitter's feed, from its own local flow.
+    let feeds: [f32; EMITTER_COUNT] = std::array::from_fn(|i| {
+        emitter_feed(&EMITTERS[i], alpha, roll, yaw, mach, state.cas_kts as f32)
+            * humidity
+            * speed_gate
+    });
 
     // Age every sample every frame, fed or not, so a trail thins out and dies
     // once the wing unloads.
-    for side in 0..SIDES {
+    for side in 0..EMITTER_COUNT {
         for i in 0..SAMPLES {
             trails.age[side][i] += dt;
         }
     }
 
     if let Ok(root_tf) = root.single() {
-        for (side, model) in [F22_TIP_L, F22_TIP_R].iter().enumerate() {
-            let tip = root_tf.translation + root_tf.rotation * model_to_body(&sim.name, *model);
+        for (side, e) in EMITTERS.iter().enumerate() {
+            let at = root_tf.translation + root_tf.rotation * model_to_body(&sim.name, e.model);
             // Drop a sample every `STEP` metres, and record the *current*
             // strength with it, so the trail's brightness follows the load.
             if !trails.live[side] {
                 trails.live[side] = true;
-                trails.last[side] = tip;
+                trails.last[side] = at;
             }
-            trails.acc[side] += (tip - trails.last[side]).length();
-            trails.last[side] = tip;
+            trails.acc[side] += (at - trails.last[side]).length();
+            trails.last[side] = at;
             while trails.acc[side] >= STEP {
                 trails.acc[side] -= STEP;
                 let c = trails.cursor[side];
-                trails.pos[side][c] = tip;
+                trails.pos[side][c] = at;
                 trails.age[side][c] = 0.0;
-                trails.feed[side][c] = feed;
+                trails.feed[side][c] = feeds[side];
                 trails.cursor[side] = (c + 1) % SAMPLES;
             }
         }
@@ -475,25 +550,91 @@ fn drive_vapor(
 mod tests {
     use super::*;
 
+    /// The left wingtip — the plain angle-of-attack emitter.
+    fn tip() -> &'static Emitter {
+        &EMITTERS[0]
+    }
+
+    /// Feed with no manoeuvre, at the calibration airspeed.
+    fn still(e: &Emitter, alpha_deg: f32, mach: f32) -> f32 {
+        emitter_feed(e, alpha_deg, 0.0, 0.0, mach, RATE_CAL_KT)
+    }
+
     #[test]
-    fn wing_feed_is_off_at_cruise_alpha_and_full_when_pulled() {
+    fn tip_feed_is_off_at_cruise_alpha_and_full_when_pulled() {
         // Level cruise: a few degrees of alpha, subsonic — no vapor.
-        assert_eq!(wing_feed(2.0, 0.6), 0.0);
+        assert_eq!(still(tip(), 2.0, 0.6), 0.0);
         // A hard pull feeds it fully.
-        assert_eq!(wing_feed(20.0, 0.6), 1.0);
+        assert_eq!(still(tip(), 20.0, 0.6), 1.0);
         // Between the thresholds it ramps.
-        let mid = wing_feed((AOA0 + AOA1) / 2.0, 0.6);
+        let mid = still(tip(), (tip().aoa0 + tip().aoa1) / 2.0, 0.6);
         assert!(mid > 0.0 && mid < 1.0, "expected a ramp, got {mid}");
     }
 
     #[test]
-    fn wing_feed_picks_up_near_the_sound_barrier() {
+    fn tip_feed_picks_up_near_the_sound_barrier() {
         // Little alpha, but crossing the barrier still condenses off the tips:
         // full at the band's peak, ramping up on the way in and gone once past.
-        assert_eq!(wing_feed(0.0, MACH_C), 1.0);
-        let mid = wing_feed(0.0, MACH_C - MACH_W / 2.0);
+        assert_eq!(still(tip(), 0.0, MACH_C), 1.0);
+        let mid = still(tip(), 0.0, MACH_C - MACH_W / 2.0);
         assert!(mid > 0.0 && mid < 1.0, "expected a ramp, got {mid}");
-        assert_eq!(wing_feed(0.0, MACH_C + MACH_W), 0.0);
+        assert_eq!(still(tip(), 0.0, MACH_C + MACH_W), 0.0);
+    }
+
+    #[test]
+    fn only_the_tips_pick_up_the_transonic_band() {
+        // The leading edge and forebody are vortex emitters: crossing the
+        // barrier must not light them, or all seven pile into one blob.
+        for e in &EMITTERS[2..] {
+            assert_eq!(
+                still(e, 0.0, MACH_C),
+                0.0,
+                "a non-tip emitter drew on the transonic band"
+            );
+        }
+    }
+
+    #[test]
+    fn roll_fogs_only_the_descending_wing() {
+        // A right roll (p > 0) drives the model −x / right wing down, so at an
+        // angle of attack too low for the left leading edge, the right one fogs
+        // and the left stays clear. `EMITTERS[2]` is the left LE, `[3]` the
+        // right (same anchor, mirrored).
+        let (le_l, le_r) = (&EMITTERS[2], &EMITTERS[3]);
+        assert_eq!(le_l.model.x, -le_r.model.x, "the LE pair must be mirrored");
+        let alpha = 8.0; // inside the window (aoa0 6), so the base feed ramps
+        let quiet = still(le_l, alpha, 0.5);
+        let left = emitter_feed(le_l, alpha, 90.0, 0.0, 0.5, RATE_CAL_KT);
+        let right = emitter_feed(le_r, alpha, 90.0, 0.0, 0.5, RATE_CAL_KT);
+        assert!(
+            right > quiet && left < quiet,
+            "a right roll must raise the right wing's feed and lower the left's: \
+             quiet {quiet}, left {left}, right {right}"
+        );
+    }
+
+    #[test]
+    fn the_same_roll_feeds_harder_when_slow() {
+        // The manoeuvre bias scales as 1/airspeed: identical roll rate, more
+        // vapor at 200 kt than at 400 kt.
+        let le = &EMITTERS[3];
+        let fast = emitter_feed(le, 4.0, 200.0, 0.0, 0.5, 400.0);
+        let slow = emitter_feed(le, 4.0, 200.0, 0.0, 0.5, 200.0);
+        assert!(
+            slow > fast,
+            "a slow roll must feed harder than a fast one: slow {slow}, fast {fast}"
+        );
+    }
+
+    #[test]
+    fn the_centreline_emitter_ignores_roll() {
+        // The forebody sits on the roll axis, so a roll must not bias it.
+        let fore = EMITTERS.last().unwrap();
+        assert_eq!(fore.model.x, 0.0);
+        assert_eq!(fore.roll_gain, 0.0);
+        let a = emitter_feed(fore, 12.0, 200.0, 0.0, 0.5, RATE_CAL_KT);
+        let b = emitter_feed(fore, 12.0, -200.0, 0.0, 0.5, RATE_CAL_KT);
+        assert_eq!(a, b, "a roll must not bias an emitter on the centreline");
     }
 
     #[test]
