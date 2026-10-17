@@ -43,9 +43,11 @@ use crate::sim::{AircraftState, Sim};
 use crate::view::{AircraftRoot, model_to_body};
 
 /// Engine nozzle exits in the F-22's own glTF frame (metres, +X left / +Y up /
-/// +Z nose), measured from the model geometry. Left is +X in that frame.
-const F22_NOZZLE_L: Vec3 = Vec3::new(0.16, 0.145, -1.28);
-const F22_NOZZLE_R: Vec3 = Vec3::new(-0.16, 0.145, -1.28);
+/// +Z nose), sitting on the nozzle rim's exit plane (the aft-most ring of the
+/// nozzle mesh, at z ≈ −1.0) so the plume leaves the nozzle rather than trailing
+/// it. Left is +X in that frame.
+const F22_NOZZLE_L: Vec3 = Vec3::new(0.108, 0.136, -1.05);
+const F22_NOZZLE_R: Vec3 = Vec3::new(-0.108, 0.136, -1.05);
 
 /// One plume per nozzle.
 const NOZZLES: usize = 2;
