@@ -1,15 +1,21 @@
 //! F-22A head-up display.
 //!
-//! A full-screen [`UiMaterial`] overlay drawn procedurally by
-//! `assets/shaders/f22_hud.wesl` — heading tape, bank scale, earth-stabilised
-//! pitch ladder and horizon, flight path and waterline markers, the KCAS and
-//! altitude dials with their fine-scale needles, and the data blocks. The
-//! symbology follows the HUD chapter of the TMS F-22A manual; the quantities it
-//! needs are published each frame on [`AircraftState`], and this module only
-//! packs them into the shader's uniform.
+//! Symbology drawn procedurally by `assets/shaders/f22_hud_sym.wesl` — heading
+//! tape, bank scale, earth-stabilised pitch ladder and horizon, flight path and
+//! waterline markers, the KCAS and altitude dials with their fine-scale needles,
+//! and the data blocks. It follows the HUD chapter of the TMS F-22A manual; the
+//! quantities it needs are published each frame on [`AircraftState`], and this
+//! module only packs them into the shader's uniform.
 //!
-//! The overlay is F-22-only and lives above every other UI layer, so it is
-//! hidden in the menu and while flying any other aircraft (`sync_visibility`).
+//! Two views consume the same layout:
+//!
+//! - the chase view uses a full-screen [`UiMaterial`] overlay, above every
+//!   other UI layer;
+//! - the cockpit view draws it on a quad sitting on the combiner glass of the
+//!   F-22 cockpit model, so the symbology belongs to the aircraft instead of
+//!   the screen and moves with free-look.
+//!
+//! Both are F-22-only and hidden in the menu and for other aircraft.
 
 use bevy::asset::Asset;
 use bevy::prelude::*;
@@ -19,12 +25,13 @@ use bevy::ui_render::prelude::{MaterialNode, UiMaterial, UiMaterialPlugin};
 
 use crate::app_state::AppState;
 use crate::sim::{AircraftState, Sim};
+use crate::view::{CockpitModel, Ui};
 
 /// One knot in feet per second.
 const FPS_TO_KT: f64 = 0.592_483_801;
 
-/// Uniform for `assets/shaders/f22_hud.wesl`. Field order and packing match the
-/// WGSL `HudParams` struct exactly.
+/// Uniform for both HUD materials. Field order and packing match the WGSL
+/// `HudParams` struct in `assets/shaders/f22_hud_sym.wesl` exactly.
 #[derive(Clone, Copy, ShaderType, Default)]
 struct HudParams {
     /// cas_kts, alt_ft, vs_fpm, pitch_deg
@@ -37,6 +44,9 @@ struct HudParams {
     d: Vec4,
     /// speed_trend_kt_s, wind_from_deg, wind_kt, gear_pos
     e: Vec4,
+    /// Combiner layout only: xy = virtual screen size, z = downward shift that
+    /// centres the layout on the glass, w = unused.
+    f: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone, Default)]
@@ -51,8 +61,84 @@ impl UiMaterial for HudMaterial {
     }
 }
 
+/// The same symbology drawn on the cockpit model's combiner glass. Transparent
+/// and unlit: the shader writes the phosphor colour directly.
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct HudGlassMaterial {
+    #[uniform(0)]
+    params: HudParams,
+}
+
+impl Material for HudGlassMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/f22_hud_glass.wesl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+}
+
+#[derive(Resource)]
+struct GlassMaterial(Handle<HudGlassMaterial>);
+
 #[derive(Component)]
 struct HudOverlay;
+
+/// The quad on the combiner glass. A child of the cockpit model, so it lives
+/// in that model's frame and hides with it outside the cockpit view.
+#[derive(Component)]
+struct GlassHud;
+
+/// Live placement of the combiner quad, tunable from the cockpit view:
+/// `]`/`[` slide it toward the eye / back toward the glass, `.`/`,` scale it
+/// about its centre. Values are printed as they change.
+#[derive(Resource)]
+struct GlassTune {
+    /// Model units (0.1 m) pulled from the glass toward the pilot.
+    pull: f32,
+    scale: f32,
+}
+
+impl Default for GlassTune {
+    fn default() -> Self {
+        Self {
+            pull: 0.0,
+            scale: 1.0,
+        }
+    }
+}
+
+const PULL_STEP: f32 = 0.2;
+const PULL_MIN: f32 = -0.5;
+const PULL_MAX: f32 = 6.0;
+const SCALE_STEP: f32 = 0.05;
+const SCALE_MIN: f32 = 0.3;
+const SCALE_MAX: f32 = 3.0;
+
+/// Combiner glass in the F-22 cockpit model's frame (10 units/m, +X nose,
+/// +Y up, +Z right), read off its `hud` mesh: a plate tilted 17° back from
+/// vertical. The symbology quad sits a few millimetres in front of it (toward
+/// the pilot), sharing its tilt.
+const GLASS_CENTRE: Vec3 = Vec3::new(100.438, 11.083, 0.0);
+const GLASS_UP: Vec3 = Vec3::new(-0.2959, 0.9552, 0.0);
+const GLASS_NORMAL: Vec3 = Vec3::new(-0.9552, -0.2959, 0.0);
+const GLASS_SIZE: Vec2 = Vec2::new(1.836, 2.168);
+/// Virtual "screen" the symbology is laid out on, in pixel-like units: the
+/// shader's line widths and text sizes are fractions of this height. Its aspect
+/// matches the glass so the symbology isn't stretched.
+const GLASS_LAYOUT: Vec2 = Vec2::new(846.0, 1000.0);
+/// The layout's content sits in the upper part of its virtual screen; shifting
+/// the sampling down by this fraction of its height centres it on the glass.
+const GLASS_SHIFT: f32 = 0.183;
 
 /// Whether the F-22 symbology is drawn. `O` toggles it.
 #[derive(Resource)]
@@ -68,21 +154,39 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(UiMaterialPlugin::<HudMaterial>::default())
-            .init_resource::<HudShown>()
-            .add_systems(Startup, setup)
-            .add_systems(
-                Update,
-                (
-                    update,
-                    toggle_shown.run_if(in_state(AppState::Flying)),
-                    sync_visibility,
-                ),
-            );
+        app.add_plugins((
+            UiMaterialPlugin::<HudMaterial>::default(),
+            MaterialPlugin::<HudGlassMaterial>::default(),
+        ))
+        .init_resource::<HudShown>()
+        .init_resource::<GlassTune>()
+        .add_systems(Startup, setup)
+        .add_systems(
+            Update,
+            (
+                spawn_glass,
+                tune_glass,
+                update,
+                toggle_shown.run_if(in_state(AppState::Flying)),
+                sync_visibility,
+            ),
+        );
     }
 }
 
-fn setup(mut commands: Commands, mut materials: ResMut<Assets<HudMaterial>>) {
+fn setup(
+    mut commands: Commands,
+    mut materials: ResMut<Assets<HudMaterial>>,
+    mut glass: ResMut<Assets<HudGlassMaterial>>,
+) {
+    let glass = glass.add(HudGlassMaterial {
+        params: HudParams {
+            f: glass_layout(),
+            ..default()
+        },
+    });
+    commands.insert_resource(GlassMaterial(glass));
+
     let mat = materials.add(HudMaterial::default());
     commands.spawn((
         HudOverlay,
@@ -102,25 +206,27 @@ fn setup(mut commands: Commands, mut materials: ResMut<Assets<HudMaterial>>) {
     ));
 }
 
-/// Pack this frame's state into the shader uniform.
+/// The combiner's virtual layout size plus the shift that centres the content.
+fn glass_layout() -> Vec4 {
+    Vec4::new(GLASS_LAYOUT.x, GLASS_LAYOUT.y, GLASS_SHIFT, 0.0)
+}
+
+/// Pack this frame's state into the shader uniform, for both the screen overlay
+/// and the combiner-glass material.
 fn update(
     sim: Res<Sim>,
     state: Res<AircraftState>,
     mut materials: ResMut<Assets<HudMaterial>>,
-    q: Query<&MaterialNode<HudMaterial>>,
+    mut glass: ResMut<Assets<HudGlassMaterial>>,
+    overlay: Query<&MaterialNode<HudMaterial>>,
+    on_glass: Query<&MeshMaterial3d<HudGlassMaterial>>,
 ) {
     if sim.name != "f22" {
         return;
     }
-    let Ok(node) = q.single() else {
-        return;
-    };
-    let Some(mut mat) = materials.get_mut(&node.0) else {
-        return;
-    };
 
     let (wind_from, wind_kt) = wind(state.wind_north_fps, state.wind_east_fps);
-    mat.params = HudParams {
+    let params = HudParams {
         a: Vec4::new(
             state.cas_kts as f32,
             state.alt_ft as f32,
@@ -156,7 +262,88 @@ fn update(
             wind_kt,
             state.gear_pos as f32,
         ),
+        f: glass_layout(),
     };
+
+    if let Ok(node) = overlay.single() {
+        if let Some(mut mat) = materials.get_mut(&node.0) {
+            mat.params = params;
+        }
+    }
+    for node in &on_glass {
+        if let Some(mut mat) = glass.get_mut(&node.0) {
+            mat.params = params;
+        }
+    }
+}
+
+/// Spawn the combiner quad once the cockpit model exists. Parenting it to that
+/// model carries the model's scale/yaw/offset and its `Visibility`, so the quad
+/// appears exactly in the cockpit view and nowhere else.
+fn spawn_glass(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    cockpit: Query<Entity, With<CockpitModel>>,
+    existing: Query<(), With<GlassHud>>,
+    glass: Res<GlassMaterial>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    if sim.name != "f22" || !existing.is_empty() {
+        return;
+    }
+    let Ok(model) = cockpit.single() else {
+        return;
+    };
+    let rotation = Quat::from_mat3(&Mat3::from_cols(Vec3::Z, GLASS_UP, GLASS_NORMAL));
+    commands.spawn((
+        GlassHud,
+        Mesh3d(meshes.add(Rectangle::new(GLASS_SIZE.x, GLASS_SIZE.y))),
+        MeshMaterial3d(glass.0.clone()),
+        Transform {
+            translation: GLASS_CENTRE,
+            rotation,
+            ..default()
+        },
+        ChildOf(model),
+    ));
+}
+
+/// Live placement of the combiner quad, adjustable from the cockpit view. The
+/// quad rides an offset along the glass normal (toward the pilot) and is scaled
+/// about its centre, so the symbology can be brought closer and made larger
+/// than the physical glass. Prints the current values whenever they change.
+fn tune_glass(
+    keys: Res<ButtonInput<KeyCode>>,
+    ui: Res<Ui>,
+    mut tune: ResMut<GlassTune>,
+    mut hud: Query<&mut Transform, With<GlassHud>>,
+) {
+    if ui.cockpit {
+        let mut changed = false;
+        if keys.just_pressed(KeyCode::BracketRight) {
+            tune.pull = (tune.pull + PULL_STEP).min(PULL_MAX);
+            changed = true;
+        }
+        if keys.just_pressed(KeyCode::BracketLeft) {
+            tune.pull = (tune.pull - PULL_STEP).max(PULL_MIN);
+            changed = true;
+        }
+        if keys.just_pressed(KeyCode::Period) {
+            tune.scale = (tune.scale + SCALE_STEP).min(SCALE_MAX);
+            changed = true;
+        }
+        if keys.just_pressed(KeyCode::Comma) {
+            tune.scale = (tune.scale - SCALE_STEP).max(SCALE_MIN);
+            changed = true;
+        }
+        if changed {
+            info!("hud glass: pull={:.2} scale={:.2}", tune.pull, tune.scale);
+        }
+    }
+    for mut transform in &mut hud {
+        transform.translation = GLASS_CENTRE + GLASS_NORMAL * tune.pull;
+        transform.scale = Vec3::splat(tune.scale);
+    }
 }
 
 fn toggle_shown(keys: Res<ButtonInput<KeyCode>>, mut shown: ResMut<HudShown>) {
@@ -166,21 +353,36 @@ fn toggle_shown(keys: Res<ButtonInput<KeyCode>>, mut shown: ResMut<HudShown>) {
 }
 
 /// The HUD exists only for the F-22, only while flying it, and only while the
-/// pilot hasn't toggled it off with `O`.
+/// pilot hasn't toggled it off with `O`. Inside the cockpit the symbology moves
+/// onto the combiner glass, so the full-screen overlay is hidden there.
 fn sync_visibility(
     state: Res<State<AppState>>,
     sim: Res<Sim>,
     shown: Res<HudShown>,
-    mut q: Query<&mut Node, With<HudOverlay>>,
+    ui: Res<Ui>,
+    mut overlay: Query<&mut Node, With<HudOverlay>>,
+    mut glass: Query<&mut Visibility, With<GlassHud>>,
 ) {
-    let want = if *state.get() == AppState::Flying && sim.name == "f22" && shown.0 {
+    let want = if *state.get() == AppState::Flying && sim.name == "f22" && shown.0 && !ui.cockpit {
         Display::Flex
     } else {
         Display::None
     };
-    for mut node in &mut q {
+    for mut node in &mut overlay {
         if node.display != want {
             node.display = want;
+        }
+    }
+    // The quad's parent (the cockpit model) already hides it outside the
+    // cockpit view; this only honours the `O` toggle.
+    let vis = if shown.0 {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut glass {
+        if *v != vis {
+            *v = vis;
         }
     }
 }

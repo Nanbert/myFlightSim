@@ -29,20 +29,31 @@ struct ModelSpec {
     /// Mesh-origin drop below the CG reference (m): the child is translated by
     /// `(0, -drop, 0)`. Set so the model sits on its wheels at rest.
     drop: f32,
+    /// Extra translation in the parent (aircraft body) frame, before the
+    /// scale/yaw. Lines up a model whose origin isn't at the CG; zero for the
+    /// exterior models, whose origins already sit there.
+    offset: [f32; 3],
     /// Yaw that seats the model's authored forward onto Bevy's -Z. The c172 is
     /// +X-forward (+90°); the rigged F-22 is +Z-forward (+180°). Yaw alone
     /// suffices — both models share the same handedness (+Y up), so no mirror.
     yaw: f32,
-    /// Pilot-eye position in the model's own frame (metres, +Y up, nose +Z),
-    /// used by the cockpit view. `None` for models with no modelled interior;
-    /// cockpit mode then just keeps the chase camera.
+    /// Pilot-eye position in the model's own frame (+Y up, nose +Z, in the
+    /// same units as the glTF, i.e. scaled by `scale` like the mesh). Used by
+    /// the cockpit view. `None` for models with no modelled interior; cockpit
+    /// mode then just keeps the chase camera.
     eye: Option<[f32; 3]>,
+    /// Resting cockpit head-look yaw/pitch (radians) relative to straight
+    /// ahead, applied when entering the cockpit and when recentring. Lets a
+    /// dialled-in eye keep the panel/HUD framed instead of staring at the
+    /// horizon. Positive yaw looks left; positive pitch looks up.
+    eye_yaw: f32,
+    eye_pitch: f32,
 }
 
 /// Does `name`'s model carry a pilot-eye cockpit view? Mirrors the check
 /// `follow_camera` makes, so callers can line up with the camera actually used.
 pub(crate) fn has_cockpit(name: &str) -> bool {
-    model_spec(name).eye.is_some()
+    cockpit_spec(name).is_some()
 }
 
 /// Map a point from `name`'s model frame (+X left / +Y up / +Z nose) into the
@@ -59,13 +70,17 @@ fn model_spec(name: &str) -> ModelSpec {
         // Rigged F-22 (model A): per-surface pivots, driven in `drive_surfaces`.
         // `drop` seats the deployed wheels on the runway: the FDM settles the CG
         // at ~5.56 ft, and the model's lowest gear vertex sits at −0.116 model
-        // units, so drop = 1.694 − 6.8·0.116 ≈ 0.90.
+        // units, so drop = 1.694 − 6.8·0.116 ≈ 0.90. It has no interior; the
+        // cockpit view uses a second model (see `cockpit_spec`).
         "f22" => ModelSpec {
             file: "f22.glb",
             scale: 6.8,
             drop: 0.90,
+            offset: [0.0; 3],
             yaw: std::f32::consts::PI,
             eye: None,
+            eye_yaw: 0.0,
+            eye_pitch: 0.0,
         },
         // Mi-24 Hind (AH-1S physics stand-in). Authored +Z-forward, so the same
         // 180° yaw as the F-22 seats it on Bevy's -Z. `scale`/`drop` are fitted
@@ -76,8 +91,11 @@ fn model_spec(name: &str) -> ModelSpec {
             file: "mi-24_hind.glb",
             scale: 1.0,
             drop: 1.87,
+            offset: [0.0; 3],
             yaw: std::f32::consts::PI,
             eye: None,
+            eye_yaw: 0.0,
+            eye_pitch: 0.0,
         },
         // Boeing 737 (`b737.glb`): a Sketchfab model authored in metres (so
         // scale 1.0), nose along -X and origin at the wheels. Its wing,
@@ -89,8 +107,11 @@ fn model_spec(name: &str) -> ModelSpec {
             file: "b737.glb",
             scale: 1.0,
             drop: 1.2446,
+            offset: [0.0; 3],
             yaw: -std::f32::consts::FRAC_PI_2,
             eye: None,
+            eye_yaw: 0.0,
+            eye_pitch: 0.0,
         },
         // Default: the Cessna 172, using the full model (`c172_full.glb`) — the
         // one that carries interior **and** exterior, and so the cockpit view.
@@ -104,9 +125,44 @@ fn model_spec(name: &str) -> ModelSpec {
             file: "c172_full.glb",
             scale: 11.0 / 12.598,
             drop: 1.4326 - 0.060 * (11.0 / 12.598),
+            offset: [0.0; 3],
             yaw: std::f32::consts::PI,
             eye: Some([0.209, 1.835, -0.350]),
+            eye_yaw: 0.0,
+            eye_pitch: 0.0,
         },
+    }
+}
+
+/// The model used by the pilot-eye cockpit view. `None` = the aircraft has no
+/// modelled interior. Models that carry their interior in the exterior file
+/// (the C172) return that same spec; the F-22's exterior is interior-less, so
+/// its cockpit view uses a separate download.
+fn cockpit_spec(name: &str) -> Option<ModelSpec> {
+    match name {
+        // F-22 Raptor (bohmerang): authored +X nose / +Y up at ~10 units/m,
+        // with separate cockpit, canopy and HUD meshes. Only shown in the
+        // cockpit view, so its single welded airframe (no control-surface
+        // pivots) can't be seen moving from the chase view. `eye` and
+        // `eye_pitch` are in this model's own frame (unlike the metre-authored
+        // C172), dialled in with `examples/f22_cockpit_shot.rs`.
+        "f22" => Some(ModelSpec {
+            file: "f22_cockpit.glb",
+            scale: 0.1,
+            drop: 0.0,
+            // This model's origin sits 4.77 m behind the old model's, so the
+            // body is shifted aft to put the two noses (and canopies) in the
+            // same place relative to the CG.
+            offset: [0.0, 0.0, 4.77],
+            yaw: std::f32::consts::FRAC_PI_2,
+            eye: Some([96.09, 11.22, 0.12]),
+            eye_yaw: -2.1_f32.to_radians(),
+            eye_pitch: -3.9_f32.to_radians(),
+        }),
+        _ => {
+            let spec = model_spec(name);
+            spec.eye.map(|_| spec)
+        }
     }
 }
 
@@ -247,6 +303,15 @@ pub(crate) struct AircraftRoot;
 #[derive(Component)]
 struct MatteAirframe;
 
+/// The aircraft's exterior model. Hidden while the cockpit view shows a
+/// separate interior-equipped model (see `sync_view_models`).
+#[derive(Component)]
+struct ExteriorModel;
+
+/// Separate interior-equipped model, shown only in the cockpit view.
+#[derive(Component)]
+pub(crate) struct CockpitModel;
+
 #[derive(Component)]
 struct Hud;
 
@@ -308,6 +373,7 @@ impl Plugin for ViewPlugin {
                         .run_if(in_state(AppState::Flying)),
                     update_hud.run_if(in_state(AppState::Flying)),
                     toggle_ui.run_if(in_state(AppState::Flying)),
+                    sync_view_models.run_if(in_state(AppState::Flying)),
                     capture_rig.run_if(in_state(AppState::Flying)),
                     drive_surfaces.run_if(in_state(AppState::Flying)),
                     drive_gear.run_if(in_state(AppState::Flying)),
@@ -332,20 +398,34 @@ pub(crate) fn spawn_model_child(
     assets: &AssetServer,
     parent: Entity,
     id: &str,
-) {
-    let spec = model_spec(id);
-    let mut model = commands.spawn((
-        WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(spec.file))),
-        Transform {
-            translation: Vec3::new(0.0, -spec.drop, 0.0),
-            rotation: Quat::from_rotation_y(spec.yaw),
-            scale: Vec3::splat(spec.scale),
-        },
-        ChildOf(parent),
-    ));
+) -> Entity {
+    let model = spawn_model(commands, assets, parent, &model_spec(id), Visibility::Inherited);
     if id == "f22" {
-        model.insert(MatteAirframe);
+        commands.entity(model).insert(MatteAirframe);
     }
+    model
+}
+
+/// Spawn one glTF scene under `parent` with `spec`'s scale/yaw/drop.
+fn spawn_model(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    parent: Entity,
+    spec: &ModelSpec,
+    visibility: Visibility,
+) -> Entity {
+    commands
+        .spawn((
+            WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(spec.file))),
+            Transform {
+                translation: Vec3::from_array(spec.offset) + Vec3::new(0.0, -spec.drop, 0.0),
+                rotation: Quat::from_rotation_y(spec.yaw),
+                scale: Vec3::splat(spec.scale),
+            },
+            visibility,
+            ChildOf(parent),
+        ))
+        .id()
 }
 
 /// Replace the F-22's glossy paint with a matte finish once the glTF scene has
@@ -405,9 +485,8 @@ pub(crate) fn spawn_flight_aircraft(
     sim: Res<Sim>,
     mut ui: ResMut<Ui>,
 ) {
-    // A fresh flight opens with the cockpit head-look centred.
-    ui.look_yaw = 0.0;
-    ui.look_pitch = 0.0;
+    // A fresh flight opens with the cockpit head-look at its rest pose.
+    (ui.look_yaw, ui.look_pitch) = rest_look(&sim.name);
     let root = commands
         .spawn((
             AircraftRoot,
@@ -416,7 +495,42 @@ pub(crate) fn spawn_flight_aircraft(
             DespawnOnExit(AppState::Flying),
         ))
         .id();
-    spawn_model_child(&mut commands, &assets, root, &sim.name);
+    let exterior = spawn_model_child(&mut commands, &assets, root, &sim.name);
+    commands.entity(exterior).insert(ExteriorModel);
+    if let Some(spec) = cockpit_spec(&sim.name) {
+        // Models whose exterior file already carries the interior (the C172)
+        // need no second spawn; the F-22's does.
+        if spec.file != model_spec(&sim.name).file {
+            let cockpit =
+                spawn_model(&mut commands, &assets, root, &spec, Visibility::Hidden);
+            commands.entity(cockpit).insert(CockpitModel);
+        }
+    }
+}
+
+/// Show one model per view: the cockpit-view model replaces the exterior one
+/// while the camera sits inside (models with a built-in interior have no
+/// separate cockpit model, so their exterior stays visible).
+fn sync_view_models(
+    ui: Res<Ui>,
+    mut exterior: Query<&mut Visibility, (With<ExteriorModel>, Without<CockpitModel>)>,
+    mut cockpit: Query<&mut Visibility, (With<CockpitModel>, Without<ExteriorModel>)>,
+) {
+    let split = !cockpit.is_empty();
+    for mut visibility in &mut exterior {
+        *visibility = if ui.cockpit && split {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+    }
+    for mut visibility in &mut cockpit {
+        *visibility = if ui.cockpit {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
 }
 
 /// Drop the captured bind poses so the next aircraft's control bones are captured
@@ -760,9 +874,16 @@ fn cockpit_cursor(
 /// attitude and rolls with the plane).
 fn cockpit_eye(spec: &ModelSpec) -> Option<Vec3> {
     spec.eye.map(|e| {
-        Quat::from_rotation_y(spec.yaw) * (Vec3::from_array(e) * spec.scale)
+        Vec3::from_array(spec.offset)
+            + Quat::from_rotation_y(spec.yaw) * (Vec3::from_array(e) * spec.scale)
             + Vec3::new(0.0, -spec.drop, 0.0)
     })
+}
+
+/// Cockpit head-look at rest for `name`: the yaw/pitch the pilot-eye pose was
+/// dialled in with.
+fn rest_look(name: &str) -> (f32, f32) {
+    cockpit_spec(name).map_or((0.0, 0.0), |spec| (spec.eye_yaw, spec.eye_pitch))
 }
 
 pub(crate) fn follow_camera(
@@ -788,7 +909,7 @@ pub(crate) fn follow_camera(
     // airframe's interpolated attitude, so the panel and horizon move with the
     // plane. Falls through to the chase view when the model has no interior.
     if ui.cockpit {
-        if let Some(eye) = cockpit_eye(&model_spec(&sim.name)) {
+        if let Some(eye) = cockpit_spec(&sim.name).and_then(|spec| cockpit_eye(&spec)) {
             t.translation = pos + rot * eye;
             // Head-look turns the view *relative to the airframe*; the eye
             // offset above is unrotated by it, so the camera position is fixed.
@@ -863,9 +984,15 @@ fn reset_camera_feel(mut q: Query<(&mut Projection, Option<&mut MotionBlur>), Wi
 /// and rises with dynamic pressure and with angle of attack, the two things that
 /// actually shake an airframe. It is squared so the view stays calm in cruise
 /// and comes alive only as the jet gets busy.
+///
+/// This is all a chase-camera trick. In the cockpit the pilot's eye is pinned to
+/// the airframe and the lens is the eye, so the view gets none of it: the panel
+/// and combiner glass stay rock-solid, with no synthetic buffet, FOV boost or
+/// blur smearing them.
 fn camera_feel(
     time: Res<Time>,
     state: Res<AircraftState>,
+    ui: Res<Ui>,
     mut q: Query<
         (&mut Transform, &mut Projection, Option<&mut MotionBlur>),
         With<Camera3d>,
@@ -874,6 +1001,17 @@ fn camera_feel(
     let Ok((mut t, mut projection, blur)) = q.single_mut() else {
         return;
     };
+    if ui.cockpit {
+        // Leave the lens at its rest setting; `reset_camera_feel` does the same
+        // on exiting a flight.
+        if let Projection::Perspective(p) = &mut *projection {
+            p.fov = std::f32::consts::FRAC_PI_4;
+        }
+        if let Some(mut blur) = blur {
+            blur.shutter_angle = 0.0;
+        }
+        return;
+    }
     let dt = time.delta_secs();
     let now = time.elapsed_secs();
 
@@ -906,20 +1044,18 @@ fn camera_feel(
     }
 }
 
-fn toggle_ui(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<Ui>) {
+fn toggle_ui(keys: Res<ButtonInput<KeyCode>>, sim: Res<Sim>, mut ui: ResMut<Ui>) {
     if keys.just_pressed(KeyCode::KeyH) {
         ui.show_inputs = !ui.show_inputs;
     }
     if keys.just_pressed(KeyCode::KeyC) {
         ui.cockpit = !ui.cockpit;
-        // Every entry into the cockpit starts looking straight ahead.
-        ui.look_yaw = 0.0;
-        ui.look_pitch = 0.0;
+        // Every entry into the cockpit starts looking at its rest pose.
+        (ui.look_yaw, ui.look_pitch) = rest_look(&sim.name);
     }
     // Recentre the cockpit head-look (a no-op in the chase view).
     if keys.just_pressed(KeyCode::KeyN) {
-        ui.look_yaw = 0.0;
-        ui.look_pitch = 0.0;
+        (ui.look_yaw, ui.look_pitch) = rest_look(&sim.name);
     }
 }
 

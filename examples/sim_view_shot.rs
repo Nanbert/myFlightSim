@@ -15,6 +15,10 @@ mod config;
 mod input;
 #[path = "../src/app_state.rs"]
 mod app_state;
+#[path = "../src/hud.rs"]
+mod hud;
+#[path = "../src/lens.rs"]
+mod lens;
 #[path = "../src/sim.rs"]
 mod sim;
 #[path = "../src/view.rs"]
@@ -32,6 +36,10 @@ struct Frame(u32);
 /// `COCKPIT=1` forces the pilot-eye camera instead of the 3/4 chase override.
 #[derive(Resource, Default)]
 struct Cockpit(bool);
+
+/// `RAIN=1` forces a storm, for checking the lens/canopy film.
+#[derive(Resource, Default)]
+struct Rain(bool);
 
 fn main() {
     App::new()
@@ -54,6 +62,8 @@ fn main() {
             config::ConfigPlugin,
             input::InputPlugin,
             view::ViewPlugin,
+            hud::HudPlugin,
+            lens::LensPlugin,
             weather::WeatherPlugin,
         ))
         // No menu here: start directly in `Flying` and spawn the aircraft
@@ -70,8 +80,9 @@ fn main() {
         })
         .init_resource::<Frame>()
         .init_resource::<Cockpit>()
-        .add_systems(Startup, read_cockpit_env)
-        .add_systems(Update, apply_cockpit)
+        .init_resource::<Rain>()
+        .add_systems(Startup, (read_cockpit_env, read_rain_env))
+        .add_systems(Update, (apply_cockpit, apply_rain))
         // `Last` so our values survive `read_input`'s ramp-down and are what the
         // next FixedUpdate (advance_fdm) writes into the FDM.
         .add_systems(Last, pin_controls)
@@ -89,6 +100,16 @@ fn read_cockpit_env(mut cockpit: ResMut<Cockpit>) {
 /// Push the env choice into the view's own toggle, every frame (idempotent).
 fn apply_cockpit(cockpit: Res<Cockpit>, mut ui: ResMut<view::Ui>) {
     ui.cockpit = cockpit.0;
+}
+
+fn read_rain_env(mut rain: ResMut<Rain>) {
+    rain.0 = std::env::var("RAIN").is_ok_and(|v| v == "1");
+}
+
+fn apply_rain(rain: Res<Rain>, mut weather: ResMut<weather::Weather>) {
+    if rain.0 {
+        weather.rain = 0.9;
+    }
 }
 
 fn birdseye(cockpit: Res<Cockpit>, mut q: Query<&mut Transform, With<Camera3d>>) {

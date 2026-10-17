@@ -1,4 +1,5 @@
-// Rain on the lens: a screen-space droplet post-process.
+// Rain on glass: a screen-space droplet post-process, on the lens in the
+// chase views and on the canopy in the cockpit.
 //
 // Port of the droplet field from *The Drive Home* by Martijn Steinrucken
 // (BigWings), shadertoy.com/view/MdfBRX. The original is a night-drive scene
@@ -21,6 +22,12 @@
 // (`intensity`) is supplied by `src/lens.rs`, which only feeds the film when
 // there is rain or condensing air to deposit.
 //
+// In the cockpit the field is anchored to the canopy rather than the screen:
+// `canopy` switches on a direction-based lookup (through the pilot's head
+// look), so turning the head reveals different droplets instead of dragging
+// the same screen-space film around. The effect is also faded out over the
+// instrument panel, which rain never reaches.
+//
 // License: *The Drive Home* is published under Shadertoy's default
 // CC BY-NC-SA 3.0 (non-commercial, share-alike) — resolve before shipping the
 // sim commercially. The Bevy plumbing around it (`src/lens.rs`) is original.
@@ -32,6 +39,14 @@ struct RainLens {
     phase: f32,
     flow: f32,
     rain_share: f32,
+    // 1 in the cockpit view: the droplet field is indexed by canopy direction
+    // rather than screen position, so it behaves like water on the glass around
+    // the pilot instead of on the camera lens.
+    canopy: f32,
+    // Cockpit head-look relative to the airframe (radians).
+    look_yaw: f32,
+    look_pitch: f32,
+    _pad: f32,
 };
 
 @group(0) @binding(0) var screenTexture: texture_2d<f32>;
@@ -183,17 +198,58 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // two together make the film race at fighter speed instead of crawling.
     let scroll = 0.05 + 0.8 * settings.flow;
 
-    // Seed space: centred and aspect-corrected.
-    var uv = in.uv - vec2<f32>(0.5, 0.5);
-    uv.x = uv.x * aspect;
+    // Seed space. The chase views and menu treat the droplets as a lens
+    // effect: screen-space pattern coordinates. The cockpit treats them as
+    // water on the canopy: the screen ray is turned into the airframe frame
+    // through the pilot's head look and indexed by direction, so the drops stay
+    // put on the glass (and slide across the view) as the head turns.
+    var dropUv = vec2<f32>(0.0, 0.0);
+    var canopy_fade = 1.0;
+    if settings.canopy > 0.5 {
+        // Camera-space ray for this pixel. The cockpit camera is pinned to a
+        // 45° vertical FOV (`camera_feel` in `view.rs`), so tan(fov/2) is a
+        // constant here.
+        let tan_half = 0.41421356;
+        let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
+        let d_cam = normalize(vec3<f32>(
+            ndc.x * aspect * tan_half,
+            ndc.y * tan_half,
+            -1.0,
+        ));
+        // Airframe direction = R_y(yaw) * R_x(pitch) * camera direction.
+        let cp = cos(settings.look_pitch);
+        let sp = sin(settings.look_pitch);
+        let p = vec3<f32>(
+            d_cam.x,
+            d_cam.y * cp - d_cam.z * sp,
+            d_cam.y * sp + d_cam.z * cp,
+        );
+        let cy = cos(settings.look_yaw);
+        let sy = sin(settings.look_yaw);
+        let d = vec3<f32>(p.x * cy + p.z * sy, p.y, -p.x * sy + p.z * cy);
 
-    // The droplet pattern drifts and turns slowly, so it never sits static.
-    let ang = -((sin(t * 0.1) * 0.5 + 0.5) * 0.5);
-    let a = ang * ang;
-    let ca = cos(a);
-    let sa = sin(a);
-    var dropUv = vec2<f32>(uv.x * ca + uv.y * sa, -uv.x * sa + uv.y * ca);
-    dropUv.x = dropUv.x + (-sin(t * 0.1)) * 0.5;
+        // Azimuth/ elevation around the canopy, in the same scale as the
+        // screen pattern so the drop sizes carry over.
+        let az = atan2(d.x, -d.z);
+        let el = asin(clamp(d.y, -1.0, 1.0));
+        dropUv = vec2<f32>(az, -el) * 1.45;
+
+        // The cockpit panel and combiner fill the lower view; rain lands on
+        // the canopy above it, never on the instruments.
+        canopy_fade = S(0.78, 0.55, in.uv.y);
+    } else {
+        // Centred and aspect-corrected screen space.
+        var uv = in.uv - vec2<f32>(0.5, 0.5);
+        uv.x = uv.x * aspect;
+
+        // The droplet pattern drifts and turns slowly, so it never sits static.
+        let ang = -((sin(t * 0.1) * 0.5 + 0.5) * 0.5);
+        let a = ang * ang;
+        let ca = cos(a);
+        let sa = sin(a);
+        dropUv = vec2<f32>(uv.x * ca + uv.y * sa, -uv.x * sa + uv.y * ca);
+        dropUv.x = dropUv.x + (-sin(t * 0.1)) * 0.5;
+    }
 
     // More water → more layers come up, from a thin mist to a downpour.
     // Condensation (low `rain_share`) only ever reaches the fine layers: it is
@@ -217,10 +273,15 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let d2 = GetStreaked(dropUv * 2.4, 25.0, m, t, shear * 2.4, scroll * 2.4);
 
     var offs = d0.offset * l0 + d1.offset * l1 + d2.offset * l2;
-    let lens = max(d0.mask * l0, max(d1.mask * l1, d2.mask * l2));
+    var lens = max(d0.mask * l0, max(d1.mask * l1, d2.mask * l2));
     let nrm = d0.nrm * (d0.mask * l0)
         + d1.nrm * (d1.mask * l1)
         + d2.nrm * (d2.mask * l2);
+
+    // Keep the cockpit's instrument panel dry: fade the whole effect out
+    // toward the bottom of the view (1 in the chase views).
+    offs = offs * canopy_fade;
+    lens = lens * canopy_fade;
 
     // Refract: displace the screen sample by the drop offset. `offs` is in
     // aspect-corrected pattern space, so undo the x stretch before sampling.

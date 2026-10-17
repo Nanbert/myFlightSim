@@ -20,6 +20,16 @@
 - **Modifications:** None. The model file is used as-is; its control-surface
   pivot nodes are driven at runtime by the simulation (no re-export or geometry edit).
 
+## 3D model — `assets/f22_cockpit.glb`
+
+- **Title:** F-22 Raptor - Fighter Jet - Free
+- **Author:** bohmerang (https://sketchfab.com/bohmerang)
+- **Source:** https://sketchfab.com/3d-models/f-22-raptor-fighter-jet-free-508de5c48845456bb033fb267ebe1d1e
+- **License:** [CC BY-NC-SA 4.0](http://creativecommons.org/licenses/by-nc-sa/4.0/)
+- **Modifications:** None. Shown only in the F-22's pilot-eye cockpit view; its
+  separate cockpit, canopy and HUD meshes supply the interior. The airframe is
+  used as-is (single welded mesh, no animation).
+
 ## 3D model — `assets/mi-24_hind.glb`
 
 - **Title:** Mi-24 Hind

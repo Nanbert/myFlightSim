@@ -1,4 +1,4 @@
-//! Screen-space moisture on the lens.
+//! Moisture on the glass: the lens in the chase views, the canopy in the cockpit.
 //!
 //! Water films the glass only when the air can deposit it: precipitation, or
 //! aerodynamic condensation — the same local pressure/temperature drop that
@@ -13,6 +13,11 @@
 //! raymarched scene. The pass reads [`Weather`] and [`AircraftState`] and rides
 //! on Bevy's `FullscreenMaterial`; the component is attached to the camera only
 //! while there is film, so a dry sky costs nothing.
+//!
+//! In the cockpit view the film belongs to the canopy, not the camera: the
+//! shader indexes the droplet field by direction in the airframe frame (using
+//! [`Ui`]'s head look), so the drops stay on the glass as the pilot looks
+//! around, and it masks them off the instrument panel.
 
 use bevy::core_pipeline::fullscreen_material::{FullscreenMaterial, FullscreenMaterialPlugin};
 use bevy::prelude::*;
@@ -23,6 +28,7 @@ use bevy::shader::ShaderRef;
 
 use crate::app_state::AppState;
 use crate::sim::AircraftState;
+use crate::view::Ui;
 use crate::weather::Weather;
 
 /// Per-frame parameters handed to `assets/shaders/rain_lens.wesl`. Four `f32`s
@@ -43,6 +49,15 @@ struct RainLens {
     /// Rain covers all three droplet layers; a condensation film stays fine and
     /// sparse.
     rain_share: f32,
+    /// 1 in the cockpit view: index the droplet field by the canopy direction
+    /// instead of the screen, so the water belongs to the glass around the
+    /// pilot instead of the camera lens.
+    canopy: f32,
+    /// Cockpit head-look (radians) relative to the airframe, used to turn the
+    /// screen ray into a canopy direction.
+    look_yaw: f32,
+    look_pitch: f32,
+    _pad: f32,
 }
 
 impl FullscreenMaterial for RainLens {
@@ -153,6 +168,7 @@ fn manage_lens(
     time: Res<Time>,
     state: Res<AircraftState>,
     app_state: Res<State<AppState>>,
+    ui: Res<Ui>,
     mut film: ResMut<Film>,
     cameras: Query<(Entity, Option<&RainLens>), With<Camera3d>>,
 ) {
@@ -191,6 +207,10 @@ fn manage_lens(
         phase: film.phase,
         flow,
         rain_share,
+        canopy: if ui.cockpit { 1.0 } else { 0.0 },
+        look_yaw: ui.look_yaw,
+        look_pitch: ui.look_pitch,
+        _pad: 0.0,
     });
 
     for (e, attached) in &cameras {
