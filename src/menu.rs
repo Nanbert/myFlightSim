@@ -15,6 +15,7 @@ use crate::app_state::AppState;
 use crate::config::{self, ConfigSink, GameConfig, Keymap};
 use crate::input::Bindings;
 use crate::autopilot::{Autopilot, Mcp};
+use crate::map::{self, MapId, PendingMission};
 use crate::sim::{RenderPose, Sim};
 use crate::view::spawn_model_child;
 use crate::weather::Weather;
@@ -40,9 +41,15 @@ pub const AIRCRAFT: [MenuAircraft; 4] = [
     MenuAircraft { id: "ah1s", label: "AH-1S", root_y: 1.8288, frame_dist: 22.0, frame_h: 2.4 },
     MenuAircraft { id: "737", label: "737", root_y: 1.2446, frame_dist: 80.0, frame_h: 6.0 },
 ];
-/// Top-row entries after the aircraft: global settings, then about.
-const EXTRA_TOP: [&str; 2] = ["SETTINGS", "ABOUT"];
+/// Top-row entries after the aircraft: the arcade missions, global settings,
+/// then about.
+const EXTRA_TOP: [&str; 3] = ["MISSIONS", "SETTINGS", "ABOUT"];
+const MISSIONS_TOP: usize = AIRCRAFT.len();
+const SETTINGS_TOP: usize = AIRCRAFT.len() + 1;
+const ABOUT_TOP: usize = AIRCRAFT.len() + 2;
 const TOP_COUNT: usize = AIRCRAFT.len() + EXTRA_TOP.len();
+/// The F-22's row, shown behind the MISSIONS entry.
+const F22_INDEX: usize = 1;
 /// Number of pooled sub-row slots (the widest sub-row: PLAY / INFO / SETTINGS).
 const SUB_SLOTS: usize = 3;
 /// World spacing between parked showcase models (m).
@@ -171,7 +178,11 @@ struct MenuSelection {
 
 impl MenuSelection {
     /// The showcased aircraft, or `None` for the SETTINGS/ABOUT entries.
+    /// MISSIONS shows the jet the missions fly.
     fn aircraft_index(&self) -> Option<usize> {
+        if self.top == MISSIONS_TOP {
+            return Some(F22_INDEX);
+        }
         (self.top < AIRCRAFT.len()).then_some(self.top)
     }
 
@@ -219,6 +230,7 @@ fn top_labels() -> [&'static str; TOP_COUNT] {
 /// SETTINGS opens its own page (Enter), ABOUT opens straight away.
 fn sub_items(top: usize) -> &'static [&'static str] {
     match top {
+        MISSIONS_TOP => &map::MAP_LABELS,
         t if t < AIRCRAFT.len() => &["PLAY", "INFO", "SETTINGS"],
         _ => &[],
     }
@@ -239,6 +251,7 @@ impl Plugin for MenuPlugin {
             .init_resource::<MenuCamLook>()
             .init_resource::<SettingsState>()
             .init_resource::<EditorState>()
+            .add_systems(Startup, auto_start_mission)
             .add_systems(
                 OnEnter(AppState::Menu),
                 (enter_menu, spawn_hangar, setup_menu_ui).chain(),
@@ -265,6 +278,18 @@ impl Plugin for MenuPlugin {
                     exit_to_menu.run_if(in_state(AppState::Flying)),
                 ),
             );
+    }
+}
+
+/// Development hook: `MAP=ARCHIPELAGO` / `MAP=ALPINE` boots straight into that
+/// mission, so a screenshot pass does not need to drive the menu.
+fn auto_start_mission(mut pending: ResMut<PendingMission>, mut next: ResMut<NextState<AppState>>) {
+    let Ok(label) = std::env::var("MAP") else {
+        return;
+    };
+    if let Some(map) = MapId::from_label(&label.to_ascii_uppercase()) {
+        pending.0 = Some(map);
+        next.set(AppState::Flying);
     }
 }
 
@@ -561,6 +586,7 @@ fn menu_input(
     mut settings: ResMut<SettingsState>,
     mut editor: ResMut<EditorState>,
     mut config: ResMut<GameConfig>,
+    mut pending: ResMut<PendingMission>,
     sink: Res<ConfigSink>,
 ) {
     let enter = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
@@ -692,9 +718,9 @@ fn menu_input(
     if enter {
         match sel.focus {
             Focus::Top => {
-                if sel.top == AIRCRAFT.len() {
+                if sel.top == SETTINGS_TOP {
                     sel.page = Some(Page::Global); // SETTINGS opens its page
-                } else if sel.top == AIRCRAFT.len() + 1 {
+                } else if sel.top == ABOUT_TOP {
                     sel.page = Some(Page::About); // ABOUT opens straight away
                 } else if !sub_items(sel.top).is_empty() {
                     sel.focus = Focus::Sub;
@@ -709,7 +735,13 @@ fn menu_input(
                     editor.capturing = false;
                     editor.msg.clear();
                 }
-                _ => {}
+                Some(label) => {
+                    if let Some(map) = MapId::from_label(label) {
+                        pending.0 = Some(map);
+                        next.set(AppState::Flying);
+                    }
+                }
+                None => {}
             },
         }
     }
@@ -787,17 +819,32 @@ fn start_flight(
     mut rp: ResMut<RenderPose>,
     sel: Res<MenuSelection>,
     config: Res<GameConfig>,
+    pending: Res<PendingMission>,
 ) {
-    let id = sel.aircraft_id();
-    if sim.name != id {
+    let mission = pending.0;
+    // Missions fly the arcade F-22, airborne; every other entry uses the
+    // selected aircraft and starts parked. Missions always rebuild on the
+    // Rust engine, where arcade dynamics exist.
+    let id = mission.map_or_else(|| sel.aircraft_id(), |_| "f22");
+    if mission.is_some() {
+        *sim = Sim::new_arcade(id);
+    } else if sim.name != id {
         *sim = Sim::new(id);
     }
-    sim.reset_ground();
-    // Realistic or arcade, per the saved per-aircraft setting. Only the F-22
-    // reads this; every other model ignores the property.
-    sim.model.set("fcs/arcade-enable", config.arcade(id) as i32 as f64);
+    // Arcade is the mission's baseline, and the per-aircraft setting the
+    // player saved decides for every other flight. Only the F-22 reads the
+    // property; every other model ignores it.
+    let arcade = mission.is_some() || config.arcade(id);
+    sim.model.set("fcs/arcade-enable", arcade as i32 as f64);
+    if let Some(map) = mission {
+        // Seat the IC with arcade dynamics already on, so the trim solver
+        // seats the arcade jet rather than the realistic one.
+        sim.reset_air(map.spawn_alt_ft(), map.spawn_kts());
+    } else {
+        sim.reset_ground();
+    }
     let mut controls = Bindings::for_aircraft(id, &config.keymap(id));
-    if config.arcade(id) {
+    if arcade {
         controls.enable_arcade(id);
     }
     *bindings = controls;

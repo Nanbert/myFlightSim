@@ -1,9 +1,10 @@
 # myFlightSim
 
-一个用 **Rust + Bevy** 写的飞行模拟器外壳，飞行力学默认由 **JSBSim**（6 自由度
-FDM）驱动。Bevy 负责渲染、相机、HUD 和输入；JSBSim 负责真正的气动与运动解算。
-默认模型是 `c172p`（Cessna 172P）。物理与画面之间由一个 `FlightModel` trait
-隔开，见「飞行模型后端」。
+一个用 **Rust + Bevy** 写的飞行模拟器外壳，飞行力学默认由项目自带的**纯 Rust
+FDM**（`crates/fdm`）驱动，设置 `FDM_BACKEND=jsbsim` 可切到 **JSBSim**。Bevy
+负责渲染、相机、HUD 和输入；FDM 负责真正的气动与运动解算。默认模型是
+`c172p`（Cessna 172P）。物理与画面之间由一个 `FlightModel` trait 隔开，见
+「飞行模型后端」。
 
 设计取向：**把 JSBSim 和机模已经提供的东西暴露出来就好**——能真实地飞起来
 就停手，不去追 FlightGear 那种成熟的整机模拟。因此本项目的控件表是数据驱动的
@@ -17,9 +18,10 @@ FDM）驱动。Bevy 负责渲染、相机、HUD 和输入；JSBSim 负责真正�
 （`position/h-sl-ft`、`attitude/psi-rad` …），后端负责推进每一步。因此
 `view`/`input`/HUD/自动驾驶完全不知道底下是谁在算。
 
-- 默认后端是 **JSBSim**（`jsbsim-sys`），即现在的成熟物理。
-- `FDM_BACKEND=rust` 切到 **纯 Rust 引擎**（`crates/fdm`）。它是为浏览器/wasm
-  准备的**替代实现**，目前是骨架（还没有物理，飞机停在原点）。
+- 默认后端是 **纯 Rust 引擎**（`crates/fdm`）：可配平、带街机模式，街机任务
+  强制使用它。
+- `FDM_BACKEND=jsbsim` 切到 **JSBSim**（`jsbsim-sys`），即原本的成熟物理；
+  它的 `trim` 是空操作，也不认识街机模式。
 
 属性名沿用 JSBSim 的拼写（完整契约见 `crates/flight-model/src/lib.rs`），
 所以 JSBSim 后端几乎不需要翻译。

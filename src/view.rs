@@ -620,10 +620,10 @@ pub(crate) fn reset_control_rig(mut rig: ResMut<ControlRig>) {
 fn setup_scene(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
-        // Far plane must clear the sky dome (radius 8000, see `sky.rs`) and the
-        // ground grid (half-extent 3000) so neither is clipped.
+        // Far plane must clear the sky dome (radius 60 km, see `sky.rs`) and
+        // the 96 km mission terrain, which is hazed out well before its edge.
         Projection::Perspective(PerspectiveProjection {
-            far: 20_000.0,
+            far: 80_000.0,
             ..default()
         }),
         // Keep the sky's authored colours (the default filmic tonemapper washes
@@ -1153,7 +1153,7 @@ fn toggle_ui(keys: Res<ButtonInput<KeyCode>>, sim: Res<Sim>, mut ui: ResMut<Ui>)
     }
 }
 
-/// Overcast weather dims the sun and ambient fill (the sky texture greys out on
+/// Overcast weather dims the sun and ambient fill (the sky shader greys out on
 /// its own, in `sky.rs`). Idempotent, so it just runs every frame.
 fn dim_lights(
     weather: Res<Weather>,
@@ -1242,6 +1242,7 @@ fn update_hud(
     sim: Res<Sim>,
     bindings: Res<Bindings>,
     ap: Res<Autopilot>,
+    map: Res<crate::map::ActiveMap>,
     mut q: Query<&mut Text, With<Hud>>,
 ) {
     let Ok(mut text) = q.single_mut() else {
@@ -1279,9 +1280,15 @@ fn update_hud(
         ""
     };
 
+    // Mission name, when flying a map.
+    let place = map
+        .0
+        .map(|m| format!("   [{}]", m.label()))
+        .unwrap_or_default();
+
     // Instrument readings — what a real panel shows (RPM, not "throttle %").
     let mut out = format!(
-        "myFlightSim — {}  {mode}{tvc}{gear}   WX: {}\n\
+        "myFlightSim — {}  {mode}{tvc}{gear}{place}   WX: {}\n\
          ALT {:>4.0} ft   IAS {:>3.0} kt   RPM {:>4.0}   FLAP {:>4.1}°   TRIM {:+.2}\n\
          HDG {:>3.0}°   PITCH {:>5.1}°   ROLL {:>5.1}°",
         sim.label,
@@ -1337,7 +1344,15 @@ fn update_hud(
     text.0 = out;
 }
 
-fn draw_grid(state: Res<AircraftState>, mut gizmos: Gizmos) {
+fn draw_grid(
+    state: Res<AircraftState>,
+    map: Res<crate::map::ActiveMap>,
+    mut gizmos: Gizmos,
+) {
+    // The mission terrain replaces the training grid.
+    if map.0.is_some() {
+        return;
+    }
     const STEP: f32 = 100.0;
     const HALF: f32 = 3000.0;
     const N: i32 = (HALF / STEP) as i32;

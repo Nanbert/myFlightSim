@@ -8,6 +8,7 @@ mod gauge;
 mod hud;
 mod input;
 mod lens;
+mod map;
 mod mcp_ui;
 mod menu;
 mod pfd;
@@ -24,7 +25,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "myFlightSim — JSBSim + Bevy".into(),
+                title: "myFlightSim — Rust + Bevy".into(),
                 // The instrument panel is laid out for a wide screen: three
                 // gauges against each edge with the attitude indicator centred.
                 // A half-width window would overlap the two trios, so start
@@ -54,6 +55,10 @@ fn main() {
             lens::LensPlugin,
             menu::MenuPlugin,
         ))
+        // After the menu: it builds terrain for whatever mission
+        // `start_flight` just launched. (A separate call: Bevy's plugin tuples
+        // top out at 15.)
+        .add_plugins(map::MapPlugin)
         .add_plugins(cockpit::CockpitPlugin)
         .run();
 }

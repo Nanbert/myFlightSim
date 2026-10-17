@@ -173,6 +173,7 @@ fn read_input(
     mut ap: ResMut<Autopilot>,
     mut mcp: ResMut<Mcp>,
     config: Res<GameConfig>,
+    map: Res<crate::map::ActiveMap>,
 ) {
     let dt = time.delta_secs_f64();
     for b in &mut bindings.list {
@@ -184,7 +185,10 @@ fn read_input(
     // toward cruise, where the burner dies. Space tops it up on demand. On the
     // ground it stays a plain lever, so the jet still taxis and lands. Roll is
     // ignored — a pure roll doesn't swing the flight path.
-    if config.arcade(&sim.name) && sim.model.get("gear/wow") < 0.5 {
+    // Missions force arcade dynamics, whether or not the player saved the
+    // F-22's per-aircraft switch.
+    let arcade = config.arcade(&sim.name) || map.0.is_some();
+    if arcade && sim.model.get("gear/wow") < 0.5 {
         let q = sim.model.get("velocities/q-rad_sec");
         let r = sim.model.get("velocities/r-rad_sec");
         let manoeuvre = manoeuvre_intensity(q, r);
@@ -242,7 +246,14 @@ fn read_input(
                 adopt_trim(&mut bindings, &sim);
             }
             ToggleAction::Cruise => {
-                sim.reset_cruise();
+                // In a mission "cruise" means respawn airborne over the map;
+                // the default cruise point is inside the terrain.
+                if let Some(map) = map.0 {
+                    sim.model.set("fcs/arcade-enable", 1.0);
+                    sim.reset_air(map.spawn_alt_ft(), map.spawn_kts());
+                } else {
+                    sim.reset_cruise();
+                }
                 ap.disengage();
                 adopt_trim(&mut bindings, &sim);
             }
@@ -253,11 +264,17 @@ fn read_input(
         }
     }
 
-    // Global (not per-aircraft): R parks on the runway with fresh controls.
+    // Global (not per-aircraft): R restarts airborne over a mission map, or
+    // parks on the runway otherwise.
     if keys.just_pressed(KeyCode::KeyR) {
-        sim.reset_ground();
+        if let Some(map) = map.0 {
+            sim.model.set("fcs/arcade-enable", 1.0);
+            sim.reset_air(map.spawn_alt_ft(), map.spawn_kts());
+        } else {
+            sim.reset_ground();
+        }
         let mut rebuilt = Bindings::for_aircraft(&sim.name, &config.keymap(&sim.name));
-        if config.arcade(&sim.name) {
+        if arcade {
             rebuilt.enable_arcade(&sim.name);
         }
         *bindings = rebuilt;

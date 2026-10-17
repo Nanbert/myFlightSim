@@ -4,9 +4,10 @@
 //!
 //! The model sits behind [`flight_model::FlightModel`], a named-property bus, so
 //! this file (and everything above it — `input`, `view`, the HUD, the autopilot)
-//! is identical whichever backend is loaded. `FDM_BACKEND=rust` selects the
-//! pure-Rust engine in `fdm` (it flies and can be trimmed); the default is the
-//! JSBSim model in `jsbsim-sys`, whose `trim` is a no-op.
+//! is identical whichever backend is loaded. The pure-Rust engine in `fdm` is
+//! the default (it flies, can be trimmed, and implements arcade mode);
+//! `FDM_BACKEND=jsbsim` selects the JSBSim model in `jsbsim-sys`, whose `trim`
+//! is a no-op.
 
 use bevy::prelude::*;
 use flight_model::FlightModel;
@@ -70,13 +71,24 @@ pub fn startup_aircraft() -> String {
 
 impl Sim {
     pub fn new(name: &str) -> Self {
-        // Backend selection. `FDM_BACKEND=rust` picks the pure-Rust engine
-        // (P0: skeleton, sits still); anything else uses JSBSim.
-        let (model, backend): (Box<dyn FlightModel>, &str) =
-            match std::env::var("FDM_BACKEND").as_deref() {
-                Ok("rust") => (Box::new(fdm::Fdm::new(name)), "Rust"),
-                _ => (Box::new(jsbsim_sys::Fdm::load(name, DT)), "JSBSim"),
-            };
+        // Backend selection. The pure-Rust engine is the default;
+        // `FDM_BACKEND=jsbsim` opts back into the C++ model.
+        let rust = std::env::var("FDM_BACKEND").as_deref() != Ok("jsbsim");
+        Self::build(name, rust)
+    }
+
+    /// Arcade missions always run the Rust engine: `fcs/arcade-enable` is
+    /// implemented there, while the JSBSim aircraft models ignore it.
+    pub fn new_arcade(name: &str) -> Self {
+        Self::build(name, true)
+    }
+
+    fn build(name: &str, rust: bool) -> Self {
+        let (model, backend): (Box<dyn FlightModel>, &str) = if rust {
+            (Box::new(fdm::Fdm::new(name)), "Rust")
+        } else {
+            (Box::new(jsbsim_sys::Fdm::load(name, DT)), "JSBSim")
+        };
         let label = format!("{backend} {name}");
         let mut sim = Sim {
             model,
@@ -301,6 +313,7 @@ fn advance_fdm(
     bindings: Res<crate::input::Bindings>,
     mcp: Res<Mcp>,
     mut ap: ResMut<Autopilot>,
+    map: Res<crate::map::ActiveMap>,
 ) {
     // Pilot bindings drive every property the loaded model exposes. This runs
     // unconditionally so flaps and brakes stay live even under the autopilot.
@@ -312,6 +325,12 @@ fn advance_fdm(
     // The autothrottle and the engaged modes write their own channels after
     // the bindings, so the automation wins the step.
     crate::autopilot::advance(&mut *sim.model, &mcp, &mut ap, DT);
+
+    // Mission assist last: it may add nose-up or bank after the pilot's
+    // commands, so terrain and the arena edge always win the step.
+    if let Some(map) = map.0 {
+        crate::map::assist(&mut sim, map);
+    }
 
     sim.model.step();
 }
