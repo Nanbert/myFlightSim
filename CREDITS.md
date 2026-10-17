@@ -51,3 +51,15 @@
 
 The same attribution for each model is carried inside the file itself
 (`asset.extras` in the glTF JSON).
+
+## Shader — `assets/shaders/water.wesl`
+
+- **Title:** Seascape
+- **Author:** Alexander Alekseev aka TDM (https://www.shadertoy.com/user/TDM)
+- **Source:** https://www.shadertoy.com/view/Ms2SD1
+- **License:** [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/)
+- **Modifications:** Ported from a raymarched full-screen scene to a flat,
+  world-scale water plane: the wave height field, choppy octaves, Fresnel
+  colour model and normalized specular lobe are reused, with distance-based
+  octave LOD, a world-scale-safe value-noise hash, the project's own sky
+  gradient/weather and aerial haze. Attribution required; non-commercial.

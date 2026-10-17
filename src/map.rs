@@ -32,6 +32,13 @@ pub const RETURN_RADIUS: f32 = 40_000.0;
 const HAZE: f32 = 0.000032;
 /// Terrain that must be cleared ahead of the jet, metres below the nose.
 const CLEARANCE: f32 = 700.0;
+/// Height the assist holds over open water, metres. Low enough to skim the
+/// swell, high enough to stay outside the near-field wave geometry; land keeps
+/// the full `CLEARANCE`.
+const SEA_CLEARANCE: f32 = 22.0;
+/// Hard floor above the sea surface, metres. The FDM stop catches a dive the
+/// assist could not recover in time, with margin for the wave crests.
+pub const SEA_FLOOR_M: f32 = 12.0;
 /// Where the terrain look-ahead samples sit, metres ahead along the ground
 /// track. At arcade cruise (~215 m/s) the far sample is ~12 s out, which gives
 /// the assist room to ease the nose up instead of snatching at the ridge.
@@ -202,6 +209,8 @@ struct WaterParams {
     deep: Vec4,
     /// Haze colour.
     fog: Vec4,
+    /// x = wave-LOD scale, y = swell gain, z = glitter gain, w = glitter exponent.
+    tune: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
@@ -290,6 +299,9 @@ fn enter_mission(
                 sun: Vec4::new(0.0, 1.0, 0.0, 0.0),
                 deep: Vec4::new(0.006, 0.028, 0.052, 1.0),
                 fog: Vec4::new(fog[0], fog[1], fog[2], HAZE),
+                // Fine waves survive ~1.7x farther out than the raw footprint
+                // LOD, so the sea keeps the detail of the near-surface renders.
+                tune: Vec4::new(0.6, 1.05, 1.1, 65.0),
             },
         });
         commands.spawn((
@@ -479,11 +491,21 @@ fn terrain_mesh(map: MapId) -> Mesh {
 /// gently at the clearance boundary and hard when the ground is about to win.
 pub fn avoid_pull(alt: f32, ground: f32, ahead: f32, vertical_speed_ms: f32) -> f32 {
     let sink = (-vertical_speed_ms).max(0.0) * 3.0;
-    let clearance = (alt - ground).min(alt - ahead) - sink;
-    if clearance >= CLEARANCE {
+    // Over water `ground` is the seabed, not a surface to clear; the sea plane
+    // is at zero. `ahead` still sees islands, so approaching land restores the
+    // full terrain clearance before the coast arrives.
+    let surface = ground.max(0.0);
+    let surface_ahead = ahead.max(0.0);
+    let clearance = (alt - surface).min(alt - surface_ahead) - sink;
+    let target = if surface > 0.0 || surface_ahead > 0.0 {
+        CLEARANCE
+    } else {
+        SEA_CLEARANCE
+    };
+    if clearance >= target {
         return 0.0;
     }
-    let t = ((CLEARANCE - clearance) / CLEARANCE).clamp(0.0, 1.0);
+    let t = ((target - clearance) / target).clamp(0.0, 1.0);
     t * t
 }
 
@@ -777,6 +799,10 @@ mod tests {
         // A ridge ahead pulls even with sea directly below.
         let ahead = avoid_pull(1_300.0, 0.0, 1_250.0, 0.0);
         assert!(ahead > 0.0);
+        // Open water clears against the sea surface, not the seabed: 25 m above
+        // the waves is free even with the bottom 55 m down, but 8 m is not.
+        assert_eq!(avoid_pull(25.0, -55.0, -50.0, 0.0), 0.0);
+        assert!(avoid_pull(8.0, -55.0, -50.0, 0.0) > 0.3);
     }
 
     #[test]

@@ -143,6 +143,10 @@ pub struct Fdm {
     // the gear-cycle rate. Fixed-gear aircraft stay at 1.
     gear_cmd: bool,
     gear_pos: f64,
+    // Hard altitude floor (ft above sea level) enforced while airborne, if set.
+    // Missions use it as a sea-surface stop: with the gear up the model has no
+    // belly contact, so nothing else prevents a dive through the water.
+    floor_ft: Option<f64>,
     // Last step's force/moment breakdown, for frame-by-frame comparison against
     // JSBSim (`forces/*`, `moments/*`).
     diag: Diag,
@@ -218,6 +222,7 @@ impl Fdm {
             arcade: false,
             gear_cmd: true,
             gear_pos: 1.0,
+            floor_ft: None,
             diag: Diag::default(),
             origin_lat: 0.0,
             origin_lon: 0.0,
@@ -454,6 +459,21 @@ impl Fdm {
         self.surf = surf;
         self.wow = ground.wow;
         self.state = next;
+
+        // Hard floor above sea level, a catch for a dive the mission assist
+        // could not recover. Skipped with the gear down so runway landings still
+        // settle onto the wheels; the descending NED rate is killed at the stop
+        // so a pinned dive does not keep integrating toward the sea.
+        if let Some(floor) = self.floor_ft {
+            if self.gear_pos < 0.99 && self.alt_ft() < floor {
+                self.state.pos[2] = -floor;
+                let mut v = self.state.body_to_ned(self.state.vel);
+                if v[2] > 0.0 {
+                    v[2] = 0.0;
+                    self.state.vel = self.state.ned_to_body(v);
+                }
+            }
+        }
     }
 
     /// Vertical speed (ft/s), positive up: `-z_dot` in NED.
@@ -1308,6 +1328,14 @@ impl FlightModel for Fdm {
             // of JSBSim's writable set, but harmless on the fixed-gear paths
             // (`step_gear` overwrites it next step).
             "gear/gear-pos-norm" => self.gear_pos = value.clamp(0.0, 1.0),
+            // Sea-surface stop (ft above sea level); zero or negative disables.
+            "environment/floor-ft" => {
+                self.floor_ft = if value.is_finite() && value > 0.0 {
+                    Some(value)
+                } else {
+                    None
+                };
+            }
             "fcs/left-brake-cmd-norm" => self.left_brake_cmd = value,
             "fcs/right-brake-cmd-norm" => self.right_brake_cmd = value,
             _ => {}
@@ -1520,6 +1548,25 @@ mod tests {
         assert!((3.0..6.0).contains(&h), "unexpected settled height: {h}");
         assert!(m.get("gear/wow") > 0.5, "should report weight-on-wheels");
         assert!(m.get("velocities/h-dot-fps").abs() < 1.0, "should be at rest");
+    }
+
+    #[test]
+    fn hard_floor_stops_a_gear_up_dive() {
+        let mut m = Fdm::new("f22");
+        m.set("gear/gear-cmd-norm", 0.0);
+        m.set("gear/gear-pos-norm", 0.0);
+        m.set("environment/floor-ft", 40.0);
+        // 5 ft above the sea, diving at 60 ft/s: one step would put it in the
+        // water, so the floor must catch it.
+        m.state.pos = [0.0, 0.0, -5.0];
+        m.state.vel = [400.0, 0.0, 60.0];
+        m.step();
+        assert_eq!(m.get("position/h-sl-ft"), 40.0);
+        assert!(
+            m.get("velocities/h-dot-fps").abs() < 1e-6,
+            "the stop must kill the descent: {}",
+            m.get("velocities/h-dot-fps")
+        );
     }
 
     #[test]
