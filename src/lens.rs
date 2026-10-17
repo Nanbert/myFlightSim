@@ -27,14 +27,22 @@ use bevy::render::RenderApp;
 use bevy::shader::ShaderRef;
 
 use crate::app_state::AppState;
-use crate::sim::AircraftState;
+use crate::sim::{AircraftState, Sim};
 use crate::view::Ui;
 use crate::weather::Weather;
 
-/// Per-frame parameters handed to `assets/shaders/rain_lens.wesl`. Four `f32`s
-/// fill one 16-byte uniform; the pads keep it aligned for WGSL's uniform layout
-/// rules.
-#[derive(Component, Clone, Copy, Default, ShaderType, ExtractComponent)]
+/// Window polygons carried to the shader: eight per aircraft is one slot per
+/// window the C172 and 737 show from the pilot seat.
+const GLASS_POLYS: usize = 8;
+/// Vertices per polygon slot (the measured outlines are simplified to twelve).
+const GLASS_VERTS: usize = 12;
+/// `vec4`s per polygon slot: two vertices each.
+const GLASS_VECS: usize = GLASS_VERTS / 2;
+
+/// Per-frame parameters handed to `assets/shaders/rain_lens.wesl`. The scalar
+/// group is 32 bytes (two 16-byte rows), which aligns the `vec4` array that
+/// follows it for WGSL's uniform layout rules.
+#[derive(Component, Clone, Copy, ShaderType, ExtractComponent)]
 #[extract_app(RenderApp)]
 struct RainLens {
     /// Film coverage, 0 (dry) … 1 (downpour).
@@ -57,7 +65,278 @@ struct RainLens {
     /// screen ray into a canopy direction.
     look_yaw: f32,
     look_pitch: f32,
-    _pad: f32,
+    /// 1 when the per-aircraft window outlines gate the film, 0 to keep the
+    /// F-22's plain screen-space fade.
+    glass: f32,
+    /// Vertex count of each window slot, four counts per `vec4`.
+    glass_counts: [Vec4; 2],
+    /// Window outlines in airframe azimuth/elevation (radians): twelve vertices
+    /// per slot, two per `vec4`.
+    glass_verts: [Vec4; GLASS_POLYS * GLASS_VECS],
+}
+
+impl Default for RainLens {
+    fn default() -> Self {
+        Self {
+            intensity: 0.0,
+            phase: 0.0,
+            flow: 0.0,
+            rain_share: 0.0,
+            canopy: 0.0,
+            look_yaw: 0.0,
+            look_pitch: 0.0,
+            glass: 0.0,
+            glass_counts: [Vec4::ZERO; 2],
+            glass_verts: [Vec4::ZERO; GLASS_POLYS * GLASS_VECS],
+        }
+    }
+}
+
+/// A window outline in airframe azimuth/elevation (degrees): positive azimuth
+/// to the right, positive elevation up.
+type Window = &'static [(f32, f32)];
+
+/// Cessna 172 windows, measured from the pilot eye with Blender raycasts that
+/// count hits on the model's exterior glass meshes. Seven panes: left door,
+/// windshield, right door, and the rear quarter windows.
+const C172_WINDOWS: &[Window] = &[
+    &[
+        (-122.5, -34.25),
+        (-104.5, -34.25),
+        (-86.5, -34.25),
+        (-68.5, -28.25),
+        (-50.5, -23.75),
+        (-32.5, -20.75),
+        (-32.5, 10.75),
+        (-50.5, 12.25),
+        (-68.5, 12.25),
+        (-86.5, 12.25),
+        (-104.5, 10.75),
+        (-122.5, 9.25),
+    ],
+    &[
+        (-30.5, -11.75),
+        (-14.1, -8.75),
+        (2.3, 3.25),
+        (18.7, 3.25),
+        (35.1, -8.75),
+        (51.5, -8.75),
+        (51.5, 21.25),
+        (35.1, 27.25),
+        (18.7, 30.25),
+        (2.3, 30.25),
+        (-14.1, 25.75),
+        (-30.5, 27.25),
+    ],
+    &[
+        (54.5, -13.25),
+        (64.9, -16.25),
+        (75.3, -16.25),
+        (85.7, -10.25),
+        (96.1, -19.25),
+        (106.5, -19.25),
+        (106.5, 4.75),
+        (96.1, 4.75),
+        (85.7, 6.25),
+        (75.3, 6.25),
+        (64.9, 6.25),
+        (54.5, 3.25),
+    ],
+    &[
+        (-162.5, -14.75),
+        (-156.7, -17.75),
+        (-150.9, -22.25),
+        (-145.1, -25.25),
+        (-139.3, -26.75),
+        (-133.5, -28.25),
+        (-133.5, 3.25),
+        (-139.3, 3.25),
+        (-145.1, 1.75),
+        (-150.9, 1.75),
+        (-156.7, 0.25),
+        (-162.5, -1.25),
+    ],
+    &[
+        (113.5, -17.75),
+        (119.9, -17.75),
+        (126.3, -17.75),
+        (132.7, -16.25),
+        (139.1, -14.75),
+        (145.5, -11.75),
+        (145.5, -2.75),
+        (139.1, -1.25),
+        (132.7, 0.25),
+        (126.3, 1.75),
+        (119.9, 1.75),
+        (113.5, 1.75),
+    ],
+    &[
+        (150.5, -8.75),
+        (154.5, -7.25),
+        (158.5, -5.75),
+        (162.5, -5.75),
+        (166.5, -4.25),
+        (170.5, -4.25),
+        (170.5, 1.75),
+        (166.5, 3.25),
+        (162.5, 3.25),
+        (158.5, 3.25),
+        (154.5, 1.75),
+        (150.5, 0.25),
+    ],
+    &[
+        (172.5, -4.25),
+        (176.5, -4.25),
+        (180.5, -5.75),
+        (184.5, -5.75),
+        (188.5, -7.25),
+        (192.5, -8.75),
+        (192.5, -1.25),
+        (188.5, 1.75),
+        (184.5, 3.25),
+        (180.5, 3.25),
+        (176.5, 3.25),
+        (172.5, 3.25),
+    ],
+];
+
+/// 737 flight-deck windows, measured the same way but by counting rays that
+/// escape the interior (the model's windows are open geometry, not glass).
+/// Six panes: a sliding window on each side and two forward panes on each
+/// pilot's side.
+const B737_WINDOWS: &[Window] = &[
+    &[
+        (-101.5, 10.75),
+        (-91.3, 6.25),
+        (-81.1, 3.25),
+        (-70.9, 1.75),
+        (-60.7, -1.25),
+        (-50.5, -2.75),
+        (-50.5, 31.75),
+        (-60.7, 31.75),
+        (-70.9, 31.75),
+        (-81.1, 31.75),
+        (-91.3, 30.25),
+        (-101.5, 28.75),
+    ],
+    &[
+        (-41.5, -2.75),
+        (-35.1, -2.75),
+        (-28.7, -2.75),
+        (-22.3, -1.25),
+        (-15.9, 0.25),
+        (-9.5, 1.75),
+        (-9.5, 22.75),
+        (-15.9, 24.25),
+        (-22.3, 25.75),
+        (-28.7, 27.25),
+        (-35.1, 28.75),
+        (-41.5, 28.75),
+    ],
+    &[
+        (-3.5, 3.25),
+        (2.3, 1.75),
+        (8.1, 1.75),
+        (13.9, 3.25),
+        (19.7, 3.25),
+        (25.5, 9.25),
+        (25.5, 16.75),
+        (19.7, 16.75),
+        (13.9, 18.25),
+        (8.1, 19.75),
+        (2.3, 19.75),
+        (-3.5, 21.25),
+    ],
+    &[
+        (23.5, 3.25),
+        (29.7, 3.25),
+        (35.9, 3.25),
+        (42.1, 1.75),
+        (48.3, 1.75),
+        (54.5, 9.25),
+        (54.5, 12.25),
+        (48.3, 13.75),
+        (42.1, 13.75),
+        (35.9, 15.25),
+        (29.7, 15.25),
+        (23.5, 7.75),
+    ],
+    &[
+        (51.5, 1.75),
+        (55.9, 0.25),
+        (60.3, -1.25),
+        (64.7, -1.25),
+        (69.1, -1.25),
+        (73.5, 4.75),
+        (73.5, 10.75),
+        (69.1, 10.75),
+        (64.7, 12.25),
+        (60.3, 12.25),
+        (55.9, 9.25),
+        (51.5, 4.75),
+    ],
+    &[
+        (74.5, -1.25),
+        (77.5, 0.25),
+        (80.5, 0.25),
+        (83.5, 1.75),
+        (86.5, 1.75),
+        (89.5, 3.25),
+        (89.5, 9.25),
+        (86.5, 10.75),
+        (83.5, 10.75),
+        (80.5, 10.75),
+        (77.5, 10.75),
+        (74.5, 3.25),
+    ],
+];
+
+/// Airframe-frame direction for an azimuth/elevation pair, matching the
+/// shader's `atan2(d.x, -d.z)` / `asin(d.y)` convention.
+#[cfg(test)]
+fn body_dir(az: f32, el: f32) -> Vec3 {
+    Vec3::new(az.sin() * el.cos(), el.sin(), -az.cos() * el.cos())
+}
+
+/// The window mask for `name`, packed for the shader. The F-22 keeps the
+/// screen-space fade: it has no measured windows in this pass.
+fn glass_mask(name: &str) -> RainLens {
+    let windows = match name {
+        "737" | "b737" => B737_WINDOWS,
+        "f22" => return RainLens::default(),
+        _ => C172_WINDOWS,
+    };
+    let mut lens = RainLens::default();
+    for (slot, window) in windows.iter().take(GLASS_POLYS).enumerate() {
+        let n = window.len().min(GLASS_VERTS);
+        if n < 3 {
+            continue;
+        }
+        let first = slot * GLASS_VECS;
+        for i in 0..GLASS_VERTS {
+            // Short outlines pad by repeating their last vertex; the shader
+            // only walks the first `n`.
+            let (az, el) = window[i.min(n - 1)];
+            let point = Vec2::new(az.to_radians(), el.to_radians());
+            let packed = &mut lens.glass_verts[first + i / 2];
+            if i % 2 == 0 {
+                packed.x = point.x;
+                packed.y = point.y;
+            } else {
+                packed.z = point.x;
+                packed.w = point.y;
+            }
+        }
+        let row = slot / 4;
+        match slot % 4 {
+            0 => lens.glass_counts[row].x = n as f32,
+            1 => lens.glass_counts[row].y = n as f32,
+            2 => lens.glass_counts[row].z = n as f32,
+            _ => lens.glass_counts[row].w = n as f32,
+        }
+        lens.glass = 1.0;
+    }
+    lens
 }
 
 impl FullscreenMaterial for RainLens {
@@ -168,6 +447,7 @@ fn manage_lens(
     time: Res<Time>,
     state: Res<AircraftState>,
     app_state: Res<State<AppState>>,
+    sim: Res<Sim>,
     ui: Res<Ui>,
     mut film: ResMut<Film>,
     cameras: Query<(Entity, Option<&RainLens>), With<Camera3d>>,
@@ -202,6 +482,7 @@ fn manage_lens(
     film.wet = film_step(film.wet, source, flow, dt);
     film.phase += dt * (PHASE_REST + PHASE_FLOW * flow);
 
+    let glass = glass_mask(&sim.name);
     let lens = (film.wet > 0.001).then_some(RainLens {
         intensity: film.wet,
         phase: film.phase,
@@ -210,7 +491,9 @@ fn manage_lens(
         canopy: if ui.cockpit { 1.0 } else { 0.0 },
         look_yaw: ui.look_yaw,
         look_pitch: ui.look_pitch,
-        _pad: 0.0,
+        glass: glass.glass,
+        glass_counts: glass.glass_counts,
+        glass_verts: glass.glass_verts,
     });
 
     for (e, attached) in &cameras {
@@ -229,6 +512,104 @@ fn manage_lens(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn vertex(lens: &RainLens, slot: usize, i: usize) -> Vec2 {
+        let v = lens.glass_verts[slot * GLASS_VECS + i / 2];
+        if i % 2 == 0 {
+            Vec2::new(v.x, v.y)
+        } else {
+            Vec2::new(v.z, v.w)
+        }
+    }
+
+    fn slot_len(lens: &RainLens, slot: usize) -> usize {
+        let row = lens.glass_counts[slot / 4];
+        let n = match slot % 4 {
+            0 => row.x,
+            1 => row.y,
+            2 => row.z,
+            _ => row.w,
+        };
+        n as usize
+    }
+
+    /// Signed distance to one window outline in az/el space, positive inside.
+    fn poly_margin(lens: &RainLens, p: Vec2, slot: usize) -> f32 {
+        let n = slot_len(lens, slot);
+        if n < 3 {
+            return -1.0;
+        }
+        let mut inside = false;
+        let mut dist = f32::MAX;
+        for i in 0..n {
+            let a = vertex(lens, slot, i);
+            let b = vertex(lens, slot, (i + 1) % n);
+            if (a.y > p.y) != (b.y > p.y) {
+                let t = (p.y - a.y) / (b.y - a.y);
+                if p.x < a.x + t * (b.x - a.x) {
+                    inside = !inside;
+                }
+            }
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.length_squared().max(1e-9)).clamp(0.0, 1.0);
+            dist = dist.min((p - a - ab * t).length());
+        }
+        if inside {
+            dist
+        } else {
+            -dist
+        }
+    }
+
+    /// Margin to the nearest edge of the union of window outlines: positive
+    /// when `d` looks through glass.
+    fn window_margin(lens: &RainLens, d: Vec3) -> f32 {
+        let p = Vec2::new(d.x.atan2(-d.z), d.y.clamp(-1.0, 1.0).asin());
+        (0..GLASS_POLYS)
+            .map(|slot| poly_margin(lens, p, slot))
+            .fold(-1.0_f32, f32::max)
+    }
+
+    #[test]
+    fn c172_windows_cover_the_windshield_but_not_the_panel() {
+        let lens = glass_mask("c172p");
+        assert_eq!(lens.glass, 1.0, "the C172 must use the window mask");
+        // Ahead and slightly up is windshield.
+        let ahead = body_dir(0.0, 10.0_f32.to_radians());
+        assert!(
+            window_margin(&lens, ahead) > 0.05,
+            "the windshield should cover the forward view"
+        );
+        // The glareshield's crown looks out below the windshield's dipped
+        // centre edge; the panel and floor are not glass.
+        assert!(window_margin(&lens, Vec3::NEG_Z) < 0.0);
+        assert!(window_margin(&lens, Vec3::NEG_Y) < 0.0);
+        assert!(window_margin(&lens, body_dir(0.0, -1.2)) < 0.0);
+        // Looking over the left shoulder finds the left door window.
+        assert!(window_margin(&lens, body_dir(-1.4, 0.0)) > 0.0);
+    }
+
+    #[test]
+    fn b737_windows_cover_the_windshield_but_not_the_panel() {
+        let lens = glass_mask("737");
+        assert_eq!(lens.glass, 1.0, "the 737 must use the window mask");
+        // Ahead and a little up is windshield.
+        let ahead = body_dir(0.0, 10.0_f32.to_radians());
+        assert!(window_margin(&lens, ahead) > 0.0, "the forward pane is missing");
+        // The sliding windows are off each shoulder.
+        let left = body_dir(-70.0_f32.to_radians(), 10.0_f32.to_radians());
+        assert!(window_margin(&lens, left) > 0.0, "the left window is missing");
+        let right = body_dir(80.0_f32.to_radians(), 5.0_f32.to_radians());
+        assert!(window_margin(&lens, right) > 0.0, "the right window is missing");
+        // The MCP and the rest of the panel are below the windows.
+        let panel = body_dir(0.0, -17.0_f32.to_radians());
+        assert!(window_margin(&lens, panel) < 0.0);
+    }
+
+    #[test]
+    fn only_the_measured_cockpits_use_the_window_mask() {
+        assert_eq!(glass_mask("f22").glass, 0.0);
+    }
 
     #[test]
     fn flow_ramps_with_airspeed() {

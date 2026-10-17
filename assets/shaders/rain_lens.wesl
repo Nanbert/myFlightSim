@@ -46,18 +46,65 @@ struct RainLens {
     // Cockpit head-look relative to the airframe (radians).
     look_yaw: f32,
     look_pitch: f32,
-    _pad: f32,
+    // 1 when the cockpit's real window outlines gate the film (C172, 737), 0
+    // for the plain screen-space fade (F-22).
+    glass: f32,
+    // Vertex count of each window slot, four slots per `vec4`.
+    glass_counts: array<vec4<f32>, 2>,
+    // Window outlines in airframe azimuth/elevation (radians): twelve vertices
+    // per slot, two per `vec4`.
+    glass_verts: array<vec4<f32>, 48>,
 };
 
 @group(0) @binding(0) var screenTexture: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 @group(0) @binding(2) var<uniform> settings: RainLens;
 
+const GLASS_VERTS: u32 = 12u;
+const GLASS_SLOTS: u32 = 8u;
+const GLASS_VECS: u32 = 6u;
+
+fn glass_vertex(first: u32, i: u32) -> vec2<f32> {
+    let v = settings.glass_verts[first + i / 2u];
+    return select(v.xy, v.zw, (i & 1u) == 1u);
+}
+
+fn seg_dist(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let ab = b - a;
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-9), 0.0, 1.0);
+    return length(p - a - ab * t);
+}
+
+// Signed angular distance (radians) to one window outline: positive inside.
+// The even-odd crossing test allows concave outlines — the C172's windshield
+// dips at its lower corners, and its convex hull would swallow the panel.
+fn glass_margin(p: vec2<f32>, slot: u32) -> f32 {
+    let first = slot * GLASS_VECS;
+    let n = u32(settings.glass_counts[slot / 4u][slot % 4u] + 0.5);
+    var inside = false;
+    var dist = 1e6;
+    for (var i = 0u; i < n; i = i + 1u) {
+        let a = glass_vertex(first, i);
+        let b = glass_vertex(first, (i + 1u) % n);
+        if ((a.y > p.y) != (b.y > p.y)) {
+            let t = (p.y - a.y) / (b.y - a.y);
+            if (p.x < a.x + t * (b.x - a.x)) {
+                inside = !inside;
+            }
+        }
+        dist = min(dist, seg_dist(p, a, b));
+    }
+    if inside {
+        return dist;
+    }
+    return -dist;
+}
+
 // --- tuning ---
-const REFRACT: f32 = 2.0;     // drop lens strength (screen-UV offset scale)
-const RIM_GLINT: f32 = 0.15;  // brightness of the lit (lower) rim of a drop
-const RIM_DARK: f32 = 0.05;   // how dark the shadowed (upper) rim goes
-const RIM_BODY: f32 = 0.03;   // faint sheen filling the body of a drop
+const REFRACT: f32 = 0.8;     // drop lens strength (screen-UV offset scale)
+const RIM_GLINT: f32 = 0.03;  // brightness of the lit (lower) rim of a drop
+const RIM_DARK: f32 = 0.008;  // how dark the shadowed (upper) rim goes
+const RIM_BODY: f32 = 0.003;  // faint sheen filling the body of a drop
 const VIGNETTE: f32 = 0.15;   // corner darkening
 const TAU: f32 = 6.2831853;
 
@@ -110,7 +157,7 @@ fn GetDrops(uv_in: vec2<f32>, seed: f32, m: f32, time: f32, scroll: f32) -> Drop
     var t = time + m * 30.0;
     var uv = uv_in;
     uv.y = uv.y + t * scroll;
-    uv = uv * vec2<f32>(13.0, 3.5);
+    uv = uv * vec2<f32>(20.0, 5.4);
 
     let id = floor(uv);
     let n = N31(id.x + (id.y + seed) * 546.35242);
@@ -234,9 +281,23 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         let el = asin(clamp(d.y, -1.0, 1.0));
         dropUv = vec2<f32>(az, -el) * 1.45;
 
-        // The cockpit panel and combiner fill the lower view; rain lands on
-        // the canopy above it, never on the instruments.
-        canopy_fade = S(0.78, 0.55, in.uv.y);
+        if settings.glass > 0.5 {
+            // Real window shapes, measured from the cockpit models: water
+            // only where the view ray passes through glass. The margin is a
+            // sine of the angle to the nearest window edge, so the fade is a
+            // narrow band around it (about half a degree).
+            var margin = -1.0;
+            for (var k = 0u; k < GLASS_SLOTS; k = k + 1u) {
+                if settings.glass_counts[k / 4u][k % 4u] >= 3.0 {
+                    margin = max(margin, glass_margin(vec2<f32>(az, el), k));
+                }
+            }
+            canopy_fade = S(-0.012, 0.010, margin);
+        } else {
+            // The F-22 has no measured windows: fade the film out toward the
+            // bottom of the view instead, keeping the panel dry.
+            canopy_fade = S(0.78, 0.55, in.uv.y);
+        }
     } else {
         // Centred and aspect-corrected screen space.
         var uv = in.uv - vec2<f32>(0.5, 0.5);
@@ -262,7 +323,7 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // reason.) These are just weights, not extra geometry: the pass costs the
     // same however many droplets are visible.
     let thin = S(0.0, 1.0, settings.flow);
-    let l0 = S(0.0, 0.35, settings.intensity) * max(1.0 - 1.4 * thin, 0.0);
+    let l0 = S(0.0, 0.35, settings.intensity) * max(1.0 - 1.4 * thin, 0.0) * 0.60;
     let l1 = S(0.0, 0.6, settings.intensity) * (0.35 + 0.65 * settings.rain_share)
         * max(1.0 - 0.75 * thin, 0.0);
     let l2 = S(0.0, 1.0, settings.intensity) * (0.15 + 0.85 * settings.rain_share)
