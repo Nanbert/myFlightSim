@@ -9,7 +9,7 @@ use bevy::post_process::motion_blur::MotionBlur;
 use bevy::prelude::*;
 use bevy::text::FontSize;
 use bevy::window::{CursorGrabMode, CursorOptions};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::app_state::AppState;
 use crate::input::Bindings;
@@ -241,6 +241,12 @@ const F22_GEAR: &[GearPart] = &[
 #[derive(Component)]
 pub(crate) struct AircraftRoot;
 
+/// Marks a model whose glTF materials should be matted once its scene spawns.
+/// The F-22 ships glossy, partly metallic paint that glares under the sun; see
+/// `tame_airframe_materials`.
+#[derive(Component)]
+struct MatteAirframe;
+
 #[derive(Component)]
 struct Hud;
 
@@ -308,6 +314,8 @@ impl Plugin for ViewPlugin {
                     draw_grid,
                     dim_lights,
                     hide_scene_junk,
+                    // Ungated: the menu showcase flies the same materials.
+                    tame_airframe_materials,
                     sync_hud_visibility,
                     // Ungated: it must also run in the menu to release the
                     // cursor when a flight ends.
@@ -326,7 +334,7 @@ pub(crate) fn spawn_model_child(
     id: &str,
 ) {
     let spec = model_spec(id);
-    commands.spawn((
+    let mut model = commands.spawn((
         WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(spec.file))),
         Transform {
             translation: Vec3::new(0.0, -spec.drop, 0.0),
@@ -335,6 +343,57 @@ pub(crate) fn spawn_model_child(
         },
         ChildOf(parent),
     ));
+    if id == "f22" {
+        model.insert(MatteAirframe);
+    }
+}
+
+/// Replace the F-22's glossy paint with a matte finish once the glTF scene has
+/// spawned. The materials ship at roughness ~0.3 and partly metallic; under the
+/// 8000-lux sun that throws a hard specular glare across the whole canopy area,
+/// and bloom turns it into a white smear.
+///
+/// The scalars alone are not enough: glTF's metallic/roughness factors are
+/// *multipliers* on the material's texture, so a glossy texture survives them.
+/// Dropping the texture lets the matte scalars take full effect. Glass is left
+/// alone — the canopy should still read as glass.
+fn tame_airframe_materials(
+    mut commands: Commands,
+    roots: Query<Entity, With<MatteAirframe>>,
+    children: Query<&Children>,
+    mesh_materials: Query<&MeshMaterial3d<StandardMaterial>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut matted: Local<HashSet<AssetId<StandardMaterial>>>,
+) {
+    for root in &roots {
+        let mut stack = vec![root];
+        let mut found = false;
+        while let Some(e) = stack.pop() {
+            if let Ok(kids) = children.get(e) {
+                stack.extend(kids.iter());
+            }
+            let Ok(handle) = mesh_materials.get(e) else {
+                continue;
+            };
+            found = true;
+            if !matted.insert(handle.0.id()) {
+                continue;
+            }
+            let Some(mut mat) = materials.get_mut(&handle.0) else {
+                continue;
+            };
+            if mat.alpha_mode != AlphaMode::Opaque {
+                continue;
+            }
+            mat.metallic = 0.05;
+            mat.perceptual_roughness = 0.65;
+            mat.metallic_roughness_texture = None;
+        }
+        // The scene spawns atomically, so one mesh means all of them are here.
+        if found {
+            commands.entity(root).remove::<MatteAirframe>();
+        }
+    }
 }
 
 /// Spawn the flown aircraft: one `AircraftRoot` (driven by `RenderPose`) with
@@ -392,10 +451,12 @@ fn setup_scene(mut commands: Commands) {
         // bloom pass (without it the flame clips to flat white before it can
         // spread). The prefilter threshold sits above 1 so only the flame's
         // >1 hot core glows — the sky and the sunlit airframe stay untouched.
+        // The F-22's paint is matted at runtime (see `tame_airframe_materials`),
+        // so the remaining intensity is a gentle halo, not a screen wash.
         Hdr,
         Bloom {
-            intensity: 0.6,
-            low_frequency_boost: 0.5,
+            intensity: 0.5,
+            low_frequency_boost: 0.35,
             high_pass_frequency: 1.0,
             prefilter: BloomPrefilter {
                 threshold: 1.5,
