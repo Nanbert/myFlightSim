@@ -32,13 +32,12 @@ pub const RETURN_RADIUS: f32 = 40_000.0;
 const HAZE: f32 = 0.000032;
 /// Terrain that must be cleared ahead of the jet, metres below the nose.
 const CLEARANCE: f32 = 700.0;
-/// Height the assist holds over open water, metres. Low enough to skim the
-/// swell, high enough to stay outside the near-field wave geometry; land keeps
-/// the full `CLEARANCE`.
-const SEA_CLEARANCE: f32 = 22.0;
+/// Height the assist holds over open water, metres: the mission minimum over
+/// the sea. Land keeps the full `CLEARANCE`.
+const SEA_CLEARANCE: f32 = 500.0;
 /// Hard floor above the sea surface, metres. The FDM stop catches a dive the
-/// assist could not recover in time, with margin for the wave crests.
-pub const SEA_FLOOR_M: f32 = 12.0;
+/// assist could not recover in time.
+pub const SEA_FLOOR_M: f32 = 500.0;
 /// Where the terrain look-ahead samples sit, metres ahead along the ground
 /// track. At arcade cruise (~215 m/s) the far sample is ~12 s out, which gives
 /// the assist room to ease the nose up instead of snatching at the ridge.
@@ -799,10 +798,11 @@ mod tests {
         // A ridge ahead pulls even with sea directly below.
         let ahead = avoid_pull(1_300.0, 0.0, 1_250.0, 0.0);
         assert!(ahead > 0.0);
-        // Open water clears against the sea surface, not the seabed: 25 m above
-        // the waves is free even with the bottom 55 m down, but 8 m is not.
-        assert_eq!(avoid_pull(25.0, -55.0, -50.0, 0.0), 0.0);
-        assert!(avoid_pull(8.0, -55.0, -50.0, 0.0) > 0.3);
+        // Open water clears against the sea surface, not the seabed: 525 m
+        // above the waves is free even with the bottom 55 m down, but 300 m is
+        // already below the 500 m minimum and pulls.
+        assert_eq!(avoid_pull(525.0, -55.0, -50.0, 0.0), 0.0);
+        assert!(avoid_pull(300.0, -55.0, -50.0, 0.0) > 0.1);
     }
 
     #[test]

@@ -42,6 +42,15 @@ const SEA_SPEED: f32 = 7.0;
 const SEA_WATER_COLOR: vec3<f32> = vec3<f32>(0.195, 0.253, 0.107);
 const OCTAVES: i32 = 5;
 
+// The wave field is drawn at true scale at this eye height. Above it every
+// octave's wavelength, height and travel speed scale by the same factor, so the
+// sea keeps the reference look instead of flattening into haze. Physically the
+// swell would be invisible from 500 m, but the mission minimum is 500 m and the
+// brief is that altitude's sea should read like the reference (a ~10 m camera),
+// so this is deliberately non-physical. The cap keeps the far sea from turning
+// into continental-scale ridges if the jet climbs.
+const WAVE_REF_HEIGHT: f32 = 10.0;
+const WAVE_MAX_SCALE: f32 = 60.0;
 // World-space size of one pixel on the sea at the fragment's distance.
 const PIXEL: f32 = 0.0011;
 // Rays hitting the sea inside this range are solved against the height field;
@@ -82,10 +91,16 @@ fn sea_octave(uv: vec2<f32>, choppy: f32) -> f32 {
     return pow(1.0 - pow(m.x * m.y, 0.65), choppy);
 }
 
-// Wave height at world xz, metres. `foot` is the world-space size of one pixel
-// (metres); octaves whose wavelength shrinks below a few pixels fade out so the
-// far/grazing sea cannot alias into moire.
-fn sea_height(xz: vec2<f32>, t: f32, foot: f32) -> f32 {
+// Stretch applied to the whole wave field, 1 at the reference eye height and
+// proportional to altitude above it.
+fn wave_scale() -> f32 {
+    return clamp(u.camera.y / WAVE_REF_HEIGHT, 1.0, WAVE_MAX_SCALE);
+}
+
+// Reference wave height at reference-scale xz, metres. `foot` is the size of one
+// pixel in those same units; octaves whose wavelength shrinks below a few pixels
+// fade out so the far/grazing sea cannot alias into moire.
+fn sea_height_ref(xz: vec2<f32>, t: f32, foot: f32) -> f32 {
     var uv = vec2<f32>(xz.x * 0.75, xz.y);
 
     var freq = SEA_FREQ;
@@ -120,6 +135,15 @@ fn sea_height(xz: vec2<f32>, t: f32, foot: f32) -> f32 {
     return h;
 }
 
+// World-scale wave height. Scaling both the sample position and the result
+// keeps the slope field identical, so the sea's shading is preserved at any
+// altitude; leaving time unscaled also stretches the travel speed by the same
+// factor, which is what makes the motion look unchanged rather than slow.
+fn sea_height(xz: vec2<f32>, t: f32, foot: f32) -> f32 {
+    let s = wave_scale();
+    return s * sea_height_ref(xz / s, t, foot / s);
+}
+
 struct Surface {
     normal: vec3<f32>,
     height: f32,
@@ -127,8 +151,9 @@ struct Surface {
 
 fn sea_surface(xz: vec2<f32>, t: f32, foot: f32) -> Surface {
     // Span the difference over at least a pixel so the slope itself does not
-    // alias at grazing angles.
-    let eps = max(0.12, foot * 1.5);
+    // alias at grazing angles. The floor is in reference-scale metres, so it
+    // grows with the field.
+    let eps = max(0.12 * wave_scale(), foot * 1.5);
     let h0 = sea_height(xz, t, foot);
     let hx = sea_height(xz + vec2<f32>(eps, 0.0), t, foot);
     let hz = sea_height(xz + vec2<f32>(0.0, eps), t, foot);
@@ -167,7 +192,7 @@ fn march_sea(rd: vec3<f32>, plane_dist: f32, time: f32) -> vec3<f32> {
     let s0 = max(ro.y, 0.0) / fall;
     // `sea_octave` spans [0, 1] and each octave sums two of them, so 3.2x the
     // base swell bounds the full five-octave field with margin.
-    let hmax = SEA_HEIGHT * max(u.tune.y, 0.0) * 3.2;
+    let hmax = SEA_HEIGHT * max(u.tune.y, 0.0) * 3.2 * wave_scale();
     var lo = max(s0 - hmax / fall, 0.0);
     var hi = s0;
     for (var i: i32 = 0; i < MARCH_STEPS; i = i + 1) {
@@ -248,9 +273,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let refracted = u.deep.rgb + diffuse(n, sun, 80.0) * SEA_WATER_COLOR * 0.12;
     var col = mix(refracted, reflected, fresnel);
 
-    // Crests catch a little upwelling light; troughs darken.
+    // Crests catch a little upwelling light; troughs darken. Height is divided
+    // by the wave scale so the contrast stays constant as the field grows.
     let atten = exp(-dist * 0.00005);
-    col += SEA_WATER_COLOR * (surface.height - SEA_HEIGHT * u.tune.y) * 0.18 * atten;
+    col += SEA_WATER_COLOR * (surface.height / wave_scale() - SEA_HEIGHT * u.tune.y) * 0.18 * atten;
 
     let sun_col = vec3<f32>(1.0, 0.95, 0.86) * (1.0 - 0.55 * rain);
     let glitter = specular(n, sun, v, max(u.tune.w, 1.0)) * max(u.tune.z, 0.0);

@@ -1,11 +1,11 @@
 //! Renders `assets/shaders/water.wesl` from the heights a mission flies at, for
 //! choosing the wave/light tuning by eye.
 //!
-//! Four tunings × three altitudes -> `/tmp/sea_<variant>_<alt>m.png`.
+//! Four tunings × four altitudes -> `/tmp/sea_<variant>_<alt>m.png`.
 //! Run: `cargo run --example water_shot`
 //!
-//! `MOTION=1` instead renders 60-frame clips at 10 m and 20 m for judging the
-//! wave animation -> `/tmp/sea_motion/<alt>m_<frame>.png`.
+//! `MOTION=1` instead renders 60-frame clips at 10 m and the 500 m mission
+//! minimum for judging the wave animation -> `/tmp/sea_motion/<alt>m_<frame>.png`.
 
 use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -76,17 +76,22 @@ const VARIANTS: [Variant; 4] = [
     },
 ];
 
-/// (eye height m, look-direction y): skimming the sea, low pass, mission spawn.
-/// The look angle is the same at every height, so the framing is self-similar
-/// and only the resolved wave detail changes.
-const ALTS: [(f32, f32); 3] = [(10.0, -0.12), (80.0, -0.12), (1_200.0, -0.12)];
+/// (eye height m, look-direction y): skimming the sea, low pass, mission
+/// minimum, mission spawn. The look angle is the same at every height, so the
+/// framing is self-similar and only the resolved wave detail changes.
+const ALTS: [(f32, f32); 4] = [
+    (10.0, -0.12),
+    (80.0, -0.12),
+    (500.0, -0.12),
+    (1_200.0, -0.12),
+];
 
 const START: u32 = 60;
 const SHOT_FRAMES: u32 = 12;
 const SHOTS: u32 = (VARIANTS.len() * ALTS.len()) as u32;
 
 const MOTION_START: u32 = 40;
-const MOTION_ALTS: [f32; 2] = [10.0, 20.0];
+const MOTION_ALTS: [f32; 2] = [10.0, 500.0];
 const MOTION_FRAMES: u32 = 60;
 /// Same 0.12 s of simulated time per saved frame: 7 s of rolling swell.
 const MOTION_DT: f32 = 0.12;
