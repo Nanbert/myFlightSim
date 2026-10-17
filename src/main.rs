@@ -1,6 +1,7 @@
 mod aircraft_profile;
 mod app_state;
 mod autopilot;
+mod cockpit;
 mod config;
 mod fx;
 mod gauge;
@@ -53,5 +54,6 @@ fn main() {
             lens::LensPlugin,
             menu::MenuPlugin,
         ))
+        .add_plugins(cockpit::CockpitPlugin)
         .run();
 }

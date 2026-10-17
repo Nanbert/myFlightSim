@@ -244,7 +244,8 @@ impl Plugin for MenuPlugin {
                 (enter_menu, spawn_hangar, setup_menu_ui).chain(),
             )
             // `start_flight` must run before the mesh spawns, so the root picks
-            // up the newly selected model.
+            // up the newly selected model. The set also lets other plugins'
+            // spawners run after `Sim` reflects the selected aircraft.
             .add_systems(
                 OnEnter(AppState::Flying),
                 (
@@ -252,7 +253,8 @@ impl Plugin for MenuPlugin {
                     crate::view::spawn_flight_aircraft,
                     crate::view::reset_control_rig,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(crate::sim::StartFlight),
             )
             .add_systems(
                 Update,

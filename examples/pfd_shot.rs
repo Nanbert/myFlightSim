@@ -18,6 +18,8 @@ mod mcp_ui;
 mod pfd;
 #[path = "../src/sim.rs"]
 mod sim;
+#[path = "../src/view.rs"]
+mod view;
 #[path = "../src/weather.rs"]
 mod weather;
 
@@ -80,6 +82,7 @@ fn main() {
         .insert_resource(state)
         .insert_resource(ap)
         .insert_resource(mcp)
+        .init_resource::<view::Ui>()
         .add_plugins(pfd::PfdPlugin)
         .insert_state(app_state::AppState::Flying)
         .init_resource::<Frame>()

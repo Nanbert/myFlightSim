@@ -8,18 +8,29 @@
 
 use bevy::input::mouse::MouseWheel;
 use bevy::picking::hover::Hovered;
+use bevy::picking::Pickable;
 use bevy::prelude::*;
 use bevy::ui::Pressed;
 use bevy::ui_widgets::{Activate, Button};
+use bevy::window::PrimaryWindow;
 
 use crate::aircraft_profile::{self, ToggleAction};
 use crate::app_state::AppState;
 use crate::autopilot::{AtMode, Autopilot, LatMode, Mcp, McpWindow, SpeedUnit, VertMode};
 use crate::sim::Sim;
+use crate::view::Ui;
 
 /// Panel size on screen. The texture is 2470×449, i.e. the same 5.5:1 ratio.
 pub(crate) const PANEL_W: f32 = 1100.0;
 const PANEL_H: f32 = 200.0;
+
+/// The chase-view strip sits this far off the bottom edge, and is the FMA bar
+/// plus a gap plus the photo tall. Focus mode lifts its centre to mid-screen.
+const STRIP_BOTTOM: f32 = 12.0;
+const STRIP_H: f32 = 22.0 + 4.0 + PANEL_H;
+
+/// Red used for the focus outline on the panel and its hotspots.
+const FOCUS_RED: Color = Color::srgba(1.0, 0.30, 0.20, 1.0);
 
 /// Region of the source photo baked into `assets/ui/737_mcp.jpg`.
 const CROP_X: f32 = 745.0;
@@ -98,6 +109,37 @@ enum LedPart {
 #[derive(Component)]
 struct FmaLabel;
 
+/// The 2D photo panel — the chase-view strip, and the focused overlay in the
+/// cockpit.
+#[derive(Component)]
+struct McpPanel;
+
+/// Every clickable hotspot, so focus mode can outline them in red.
+#[derive(Component)]
+struct McpHotspot;
+
+/// Hover text for one hotspot.
+#[derive(Component, Clone, Copy)]
+struct McpHelp {
+    title: &'static str,
+    body: &'static str,
+}
+
+/// Full-screen dim layer behind the focused panel; clicking it closes focus.
+#[derive(Component)]
+struct FocusDim;
+
+/// "MCP focus" hint shown above the floating panel.
+#[derive(Component)]
+struct FocusHint;
+
+/// The hover tooltip panel (child text carries `TooltipText`).
+#[derive(Component)]
+struct HotspotTooltip;
+
+#[derive(Component)]
+struct TooltipText;
+
 /// Which arrow is currently held, for click-and-hold repeating.
 #[derive(Resource, Default)]
 struct ArrowHold {
@@ -105,16 +147,37 @@ struct ArrowHold {
     held_s: f64,
 }
 
+/// Eased 0..1 focus transition: 0 = bottom photo strip, 1 = floating over a
+/// dimmed cockpit.
+#[derive(Resource, Default)]
+struct FocusAnim {
+    e: f32,
+}
+
 pub struct McpUiPlugin;
 
 impl Plugin for McpUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ArrowHold>()
+            .init_resource::<FocusAnim>()
             .add_observer(on_mcp_activate)
-            .add_systems(OnEnter(AppState::Flying), spawn_panel)
+            .add_observer(on_focus_dim)
+            .add_systems(
+                OnEnter(AppState::Flying),
+                spawn_panel.after(crate::sim::StartFlight),
+            )
             .add_systems(
                 Update,
-                (press_arrows, scroll_windows, sync_panel)
+                (
+                    press_arrows,
+                    scroll_windows,
+                    focus_input,
+                    focus_anim,
+                    focus_hotspots,
+                    focus_tooltip,
+                    sync_panel,
+                    cockpit_visibility,
+                )
                     .chain()
                     .run_if(in_state(AppState::Flying)),
             );
@@ -175,6 +238,7 @@ fn spawn_panel(mut commands: Commands, sim: Res<Sim>, assets: Res<AssetServer>) 
 
     commands
         .spawn((
+            McpPanel,
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Percent(50.0),
@@ -185,6 +249,14 @@ fn spawn_panel(mut commands: Commands, sim: Res<Sim>, assets: Res<AssetServer>) 
                 row_gap: Val::Px(4.0),
                 ..default()
             },
+            UiTransform::IDENTITY,
+            BoxShadow::new(
+                Color::srgba(0.0, 0.0, 0.0, 0.65),
+                Val::Px(0.0),
+                Val::Px(6.0),
+                Val::Px(0.0),
+                Val::Px(18.0),
+            ),
             GlobalZIndex(15),
             DespawnOnExit(AppState::Flying),
         ))
@@ -231,6 +303,83 @@ fn spawn_panel(mut commands: Commands, sim: Res<Sim>, assets: Res<AssetServer>) 
                 }
                 spawn_hotspots(panel);
             });
+        });
+
+    // Focus furniture. These are siblings of the panel so the panel's focus
+    // scale does not stretch them.
+    commands.spawn((
+        FocusDim,
+        Button,
+        Hovered(false),
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            display: Display::None,
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        GlobalZIndex(30),
+        DespawnOnExit(AppState::Flying),
+    ));
+
+    commands
+        .spawn((
+            FocusHint,
+            Pickable::IGNORE,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(20.0),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                display: Display::None,
+                ..default()
+            },
+            GlobalZIndex(32),
+            DespawnOnExit(AppState::Flying),
+        ))
+        .with_children(|hint| {
+            hint.spawn((
+                Pickable::IGNORE,
+                Text::new("MCP FOCUS  -  ESC or click outside to close"),
+                TextFont {
+                    font_size: FontSize::Px(15.0),
+                    ..default()
+                },
+                TextColor(Color::srgba(1.0, 0.55, 0.45, 0.95)),
+            ));
+        });
+
+    commands
+        .spawn((
+            HotspotTooltip,
+            Pickable::IGNORE,
+            Node {
+                position_type: PositionType::Absolute,
+                padding: UiRect::all(Val::Px(7.0)),
+                border: UiRect::all(Val::Px(1.5)),
+                border_radius: BorderRadius::all(Val::Px(3.0)),
+                max_width: Val::Px(340.0),
+                display: Display::None,
+                ..default()
+            },
+            BorderColor::all(FOCUS_RED),
+            BackgroundColor(Color::srgba(0.03, 0.02, 0.02, 0.92)),
+            GlobalZIndex(33),
+            DespawnOnExit(AppState::Flying),
+        ))
+        .with_children(|tip| {
+            tip.spawn((
+                TooltipText,
+                Pickable::IGNORE,
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(14.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(1.0, 0.92, 0.88)),
+                TextLayout::new(Justify::Left, LineBreak::WordBoundary),
+            ));
         });
 }
 
@@ -384,13 +533,91 @@ fn spawn_hotspots(panel: &mut ChildSpawnerCommands) {
         panel.spawn((
             Button,
             Hovered(false),
+            McpHotspot,
             McpArrow {
                 window: McpWindow::VerticalSpeed,
                 dir,
             },
+            knob_help(McpWindow::VerticalSpeed),
             absolute(x, top, w, height, 4.0),
             BackgroundColor(Color::NONE),
+            BorderColor::all(Color::NONE),
         ));
+    }
+}
+
+fn press_help(press: McpPress) -> McpHelp {
+    match press {
+        McpPress::AtArm => McpHelp {
+            title: "A/T ARM",
+            body: "Arm the auto-throttle. Push again to disarm.",
+        },
+        McpPress::Cmd => McpHelp {
+            title: "CMD A",
+            body: "Engage the autopilot in HDG SEL and ALT HOLD. Click again to disengage.",
+        },
+        McpPress::HdgSel => McpHelp {
+            title: "HDG SEL",
+            body: "Steer to the heading in the heading window.",
+        },
+        McpPress::AltHold => McpHelp {
+            title: "ALT HOLD",
+            body: "Hold the altitude in the altitude window.",
+        },
+        McpPress::Vs => McpHelp {
+            title: "V/S",
+            body: "Climb or descend at the rate in the V/S window.",
+        },
+        McpPress::LvlChg => McpHelp {
+            title: "LVL CHG",
+            body: "Level change: full climb or descent at the speed window's speed.",
+        },
+        McpPress::SpeedUnit => McpHelp {
+            title: "SPEED WINDOW",
+            body: "Click: switch KIAS / MACH. Scroll: coarse speed step. Knob halves: 1 kt.",
+        },
+    }
+}
+
+fn window_help(window: McpWindow) -> McpHelp {
+    match window {
+        McpWindow::Speed => McpHelp {
+            title: "SPEED WINDOW",
+            body: "Click: switch KIAS / MACH. Scroll: coarse step. Knob halves: 1 kt.",
+        },
+        McpWindow::Heading => McpHelp {
+            title: "HEADING WINDOW",
+            body: "Scroll: 5 deg coarse step. Knob halves: 1 deg fine step.",
+        },
+        McpWindow::Altitude => McpHelp {
+            title: "ALTITUDE WINDOW",
+            body: "Scroll: 1000 ft coarse step. Knob halves: 100 ft fine step.",
+        },
+        McpWindow::VerticalSpeed => McpHelp {
+            title: "V/S WINDOW",
+            body: "Scroll or use the wheel: 100 ft/min per step.",
+        },
+    }
+}
+
+fn knob_help(window: McpWindow) -> McpHelp {
+    match window {
+        McpWindow::Speed => McpHelp {
+            title: "SPEED KNOB",
+            body: "Left half down, right half up. 1 kt per fine step.",
+        },
+        McpWindow::Heading => McpHelp {
+            title: "HEADING KNOB",
+            body: "Left half down, right half up. 1 deg per fine step.",
+        },
+        McpWindow::Altitude => McpHelp {
+            title: "ALTITUDE KNOB",
+            body: "Left half down, right half up. 100 ft per fine step.",
+        },
+        McpWindow::VerticalSpeed => McpHelp {
+            title: "V/S WHEEL",
+            body: "Upper half climbs, lower half descends. 100 ft/min per step.",
+        },
     }
 }
 
@@ -404,9 +631,12 @@ fn spawn_press(
     panel.spawn((
         Button,
         Hovered(false),
+        McpHotspot,
         press,
+        press_help(press),
         absolute(x, y, w, h, radius),
         BackgroundColor(Color::NONE),
+        BorderColor::all(Color::NONE),
     ));
 }
 
@@ -415,9 +645,12 @@ fn spawn_window_box(panel: &mut ChildSpawnerCommands, area: Area, window: McpWin
     let mut e = panel.spawn((
         Button,
         Hovered(false),
+        McpHotspot,
         McpWindowBox(window),
+        window_help(window),
         absolute(x, y, w, h, 3.0),
         BackgroundColor(Color::NONE),
+        BorderColor::all(Color::NONE),
     ));
     if window == McpWindow::Speed {
         e.insert(McpPress::SpeedUnit);
@@ -431,9 +664,12 @@ fn spawn_knob(panel: &mut ChildSpawnerCommands, window: McpWindow, area: Area) {
         panel.spawn((
             Button,
             Hovered(false),
+            McpHotspot,
             McpArrow { window, dir },
+            knob_help(window),
             absolute(left, y, w * 0.5, h, 6.0),
             BackgroundColor(Color::NONE),
+            BorderColor::all(Color::NONE),
         ));
     }
 }
@@ -445,6 +681,7 @@ fn absolute(left: f32, top: f32, width: f32, height: f32, radius: f32) -> Node {
         top: Val::Px(top),
         width: Val::Px(width),
         height: Val::Px(height),
+        border: UiRect::all(Val::Px(1.5)),
         border_radius: BorderRadius::all(Val::Px(radius)),
         ..default()
     }
@@ -524,6 +761,153 @@ fn scroll_windows(
     }
 }
 
+/// Esc leaves focus; the panel eases back down to the strip.
+fn focus_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    ui: Option<ResMut<Ui>>,
+    mut hold: ResMut<ArrowHold>,
+) {
+    let Some(mut ui) = ui else {
+        return;
+    };
+    if ui.mcp_focus && keys.just_pressed(KeyCode::Escape) {
+        ui.mcp_focus = false;
+        hold.entity = None;
+    }
+}
+
+/// Clicking the dimmed backdrop closes focus.
+fn on_focus_dim(
+    activate: On<Activate>,
+    dims: Query<(), With<FocusDim>>,
+    ui: Option<ResMut<Ui>>,
+) {
+    if dims.get(activate.entity).is_err() {
+        return;
+    }
+    if let Some(mut ui) = ui {
+        ui.mcp_focus = false;
+    }
+}
+
+/// Ease the panel between the bottom strip and a raised, scaled "book" over a
+/// dimmed cockpit. The dark layer and hint appear with it.
+fn focus_anim(
+    time: Res<Time>,
+    ui: Option<Res<Ui>>,
+    mut anim: ResMut<FocusAnim>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut panel: Query<(&mut UiTransform, &mut GlobalZIndex), With<McpPanel>>,
+    mut dim: Query<(&mut Node, &mut BackgroundColor), (With<FocusDim>, Without<McpPanel>)>,
+    mut hint: Query<&mut Node, (With<FocusHint>, Without<McpPanel>, Without<FocusDim>)>,
+) {
+    let cockpit = ui.as_deref().is_some_and(|ui| ui.cockpit);
+    let target = cockpit && ui.as_deref().is_some_and(|ui| ui.mcp_focus);
+    let want: f32 = if target { 1.0 } else { 0.0 };
+    if cockpit {
+        anim.e += (want - anim.e) * (1.0 - (-8.0 * time.delta_secs()).exp());
+        if (want - anim.e).abs() < 0.002 {
+            anim.e = want;
+        }
+    } else {
+        // Leaving the cockpit: the strip is already the chase-view pose.
+        anim.e = 0.0;
+    }
+    let e = anim.e;
+
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let lift = (window.height() * 0.5 - (STRIP_BOTTOM + STRIP_H * 0.5)).max(0.0) * e;
+    let fit = (window.width() * 0.92 / PANEL_W).clamp(0.8, 1.6);
+    let scale = 1.0 + (fit - 1.0) * e;
+
+    for (mut tf, mut z) in &mut panel {
+        tf.translation = Val2::new(Val::Px(0.0), Val::Px(-lift));
+        tf.scale = Vec2::splat(scale);
+        let z_want = if e > 0.001 { 31 } else { 15 };
+        if z.0 != z_want {
+            z.0 = z_want;
+        }
+    }
+
+    let show = if e > 0.001 {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for (mut node, mut bg) in &mut dim {
+        if node.display != show {
+            node.display = show;
+        }
+        bg.0 = Color::srgba(0.0, 0.0, 0.0, 0.72 * e);
+    }
+
+    let hint_show = if e > 0.3 {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for mut node in &mut hint {
+        if node.display != hint_show {
+            node.display = hint_show;
+        }
+    }
+}
+
+/// Outline every clickable control in red while the panel is focused.
+fn focus_hotspots(anim: Res<FocusAnim>, mut q: Query<&mut BorderColor, With<McpHotspot>>) {
+    let alpha = (anim.e * 0.9).clamp(0.0, 1.0);
+    let color = Color::srgba(1.0, 0.30, 0.20, alpha);
+    for mut border in &mut q {
+        *border = BorderColor::all(color);
+    }
+}
+
+/// Hovering a focused hotspot shows its name and what it does.
+fn focus_tooltip(
+    ui: Option<Res<Ui>>,
+    anim: Res<FocusAnim>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    helped: Query<(&Hovered, &McpHelp)>,
+    mut tooltip: Query<&mut Node, With<HotspotTooltip>>,
+    mut texts: Query<&mut Text, With<TooltipText>>,
+) {
+    let focused = ui.as_deref().is_some_and(|ui| ui.mcp_focus) && anim.e > 0.9;
+    let help = if focused {
+        helped
+            .iter()
+            .find(|(hover, _)| hover.0)
+            .map(|(_, help)| *help)
+    } else {
+        None
+    };
+    let placed = windows.single().ok().and_then(|window| {
+        window
+            .cursor_position()
+            .map(|cursor| (cursor, window.size()))
+    });
+
+    let (Some((cursor, size)), Some(help)) = (placed, help) else {
+        for mut node in &mut tooltip {
+            node.display = Display::None;
+        }
+        return;
+    };
+
+    for mut node in &mut tooltip {
+        node.display = Display::Flex;
+        node.left = Val::Px((cursor.x + 18.0).min((size.x - 360.0).max(8.0)));
+        node.top = Val::Px((cursor.y + 22.0).min((size.y - 140.0).max(8.0)));
+    }
+    let want = format!("{}\n{}", help.title, help.body);
+    for mut text in &mut texts {
+        if text.0 != want {
+            text.0 = want.clone();
+        }
+    }
+}
+
 fn sync_panel(
     ap: Res<Autopilot>,
     mcp: Res<Mcp>,
@@ -594,6 +978,29 @@ fn sync_panel(
 
     for (hover, pressed, mut bg) in &mut arrows {
         bg.0 = glow(false, hover.0, pressed);
+    }
+}
+
+/// The photo panel is a chase-view instrument; in the cockpit it only lifts
+/// into view while focused (or while easing back down).
+fn cockpit_visibility(
+    ui: Option<Res<Ui>>,
+    anim: Res<FocusAnim>,
+    mut q: Query<&mut Node, With<McpPanel>>,
+) {
+    // `Ui` is absent in tests that mount the panel on its own.
+    let ui = ui.as_deref();
+    let cockpit = ui.is_some_and(|ui| ui.cockpit);
+    let focused = ui.is_some_and(|ui| ui.mcp_focus);
+    let display = if cockpit && !focused && anim.e <= 0.001 {
+        Display::None
+    } else {
+        Display::Flex
+    };
+    for mut node in &mut q {
+        if node.display != display {
+            node.display = display;
+        }
     }
 }
 
@@ -670,6 +1077,7 @@ mod tests {
         ))
         .init_asset::<Image>()
         .add_message::<MouseWheel>()
+        .init_resource::<ButtonInput<KeyCode>>()
         .insert_resource(Time::<()>::default())
         .insert_resource(Sim::new("737"))
         .init_resource::<Autopilot>()
@@ -738,6 +1146,69 @@ mod tests {
         let after_release = app.world().resource::<Mcp>().hdg_deg;
         app.update();
         assert_eq!(app.world().resource::<Mcp>().hdg_deg, after_release);
+    }
+
+    /// A focused panel must actually lift to mid-screen, scale up and sit above
+    /// the dim layer — the "book" pose — and the dim must be visible.
+    #[test]
+    fn focus_raises_the_panel_over_a_dim_layer() {
+        let mut app = test_app();
+        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        app.insert_resource(Ui {
+            cockpit: true,
+            mcp_focus: true,
+            ..default()
+        });
+
+        for _ in 0..120 {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_millis(16));
+            app.update();
+        }
+
+        let panel = find(&mut app, |_: &McpPanel| true);
+        let entity = app.world().entity(panel);
+        let scale = entity.get::<UiTransform>().unwrap().scale.x;
+        assert!(scale > 1.0, "panel did not grow: {scale}");
+        let Val::Px(lift) = entity.get::<UiTransform>().unwrap().translation.y else {
+            panic!("unexpected lift");
+        };
+        assert!(lift < -100.0, "panel did not rise: {lift}");
+        assert_eq!(entity.get::<GlobalZIndex>().unwrap().0, 31);
+
+        let dim = find(&mut app, |_: &FocusDim| true);
+        let dim = app.world().entity(dim);
+        assert_eq!(dim.get::<Node>().unwrap().display, Display::Flex);
+        assert_eq!(app.world().resource::<FocusAnim>().e, 1.0);
+    }
+
+    #[test]
+    fn escape_leaves_focus() {
+        let mut app = test_app();
+        app.insert_resource(Ui {
+            cockpit: true,
+            mcp_focus: true,
+            ..default()
+        });
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        assert!(!app.world().resource::<Ui>().mcp_focus);
+    }
+
+    #[test]
+    fn clicking_the_dim_layer_leaves_focus() {
+        let mut app = test_app();
+        app.insert_resource(Ui {
+            cockpit: true,
+            mcp_focus: true,
+            ..default()
+        });
+        let dim = find(&mut app, |_: &FocusDim| true);
+        app.world_mut().trigger(Activate { entity: dim });
+        assert!(!app.world().resource::<Ui>().mcp_focus);
     }
 
     #[test]

@@ -160,6 +160,22 @@ fn cockpit_spec(name: &str) -> Option<ModelSpec> {
             eye_yaw: -2.1_f32.to_radians(),
             eye_pitch: -3.9_f32.to_radians(),
         }),
+        // Boeing 737NG flight deck (sketchfab). Authored nose +Z / up +Y, so
+        // the same 180° yaw as the C172. The eye is the captain's, dialled in
+        // with `examples/cockpit_eye_calib.rs`: the seat is forward enough that
+        // the panel fills the view, with a slight right/level head-turn framing
+        // the PFD and MCP together.
+        // `drop` lowers the section so the eye sits ~2.9 m above the runway.
+        "737" | "b737" => Some(ModelSpec {
+            file: "b737_cockpit.glb",
+            scale: 1.0,
+            drop: 0.4,
+            offset: [0.0; 3],
+            yaw: std::f32::consts::PI,
+            eye: Some([0.2801, 2.06, 0.9355]),
+            eye_yaw: -11.76_f32.to_radians(),
+            eye_pitch: -2.92_f32.to_radians(),
+        }),
         _ => {
             let spec = model_spec(name);
             spec.eye.map(|_| spec)
@@ -313,6 +329,12 @@ struct ExteriorModel;
 #[derive(Component)]
 pub(crate) struct CockpitModel;
 
+/// The 737 cockpit's captain-side yoke sits at eye level and covers most of
+/// the panel from the modelled eye. The sim doesn't draw or animate it (there
+/// is no control-wheel input), so hide that glTF node once the scene loads.
+#[derive(Component)]
+struct Hide737Yoke;
+
 #[derive(Component)]
 struct Hud;
 
@@ -328,6 +350,22 @@ pub(crate) struct Ui {
     /// the camera's *orientation* follows it — the pilot's eye stays put.
     pub(crate) look_yaw: f32,
     pub(crate) look_pitch: f32,
+    /// Cockpit only: the 2D MCP panel is floating over a dimmed scene, with
+    /// the mouse released for direct clicks. Free-look and the crosshair are
+    /// suspended while this is set.
+    pub(crate) mcp_focus: bool,
+}
+
+/// Live overrides for dialling in the cockpit view, driven by
+/// `examples/cockpit_eye_calib.rs`. `None` uses the model spec, so the game
+/// behaves exactly as before unless a calibration demo writes to it.
+#[derive(Resource, Default)]
+pub struct CockpitTune {
+    /// Pilot eye in the cockpit model's own frame, same convention as
+    /// `ModelSpec::eye`.
+    pub eye: Option<[f32; 3]>,
+    /// Vertical field of view for the cockpit lens, radians.
+    pub fov: Option<f32>,
 }
 
 /// Bind-pose transforms of the control surfaces, captured once the glTF scene
@@ -360,6 +398,7 @@ impl Plugin for ViewPlugin {
         app.init_resource::<Ui>()
             .init_resource::<ControlRig>()
             .init_resource::<Chase>()
+            .init_resource::<CockpitTune>()
             .add_systems(Startup, (setup_scene, setup_hud))
             .add_systems(OnExit(AppState::Flying), reset_camera_feel)
             .add_systems(
@@ -375,6 +414,7 @@ impl Plugin for ViewPlugin {
                     update_hud.run_if(in_state(AppState::Flying)),
                     toggle_ui.run_if(in_state(AppState::Flying)),
                     sync_view_models.run_if(in_state(AppState::Flying)),
+                    hide_737_yoke.run_if(in_state(AppState::Flying)),
                     capture_rig.run_if(in_state(AppState::Flying)),
                     drive_surfaces.run_if(in_state(AppState::Flying)),
                     drive_gear.run_if(in_state(AppState::Flying)),
@@ -486,8 +526,10 @@ pub(crate) fn spawn_flight_aircraft(
     sim: Res<Sim>,
     mut ui: ResMut<Ui>,
 ) {
-    // A fresh flight opens with the cockpit head-look at its rest pose.
+    // A fresh flight opens with the cockpit head-look at its rest pose, and no
+    // MCP focus left over from a previous cockpit visit.
     (ui.look_yaw, ui.look_pitch) = rest_look(&sim.name);
+    ui.mcp_focus = false;
     let root = commands
         .spawn((
             AircraftRoot,
@@ -505,6 +547,9 @@ pub(crate) fn spawn_flight_aircraft(
             let cockpit =
                 spawn_model(&mut commands, &assets, root, &spec, Visibility::Hidden);
             commands.entity(cockpit).insert(CockpitModel);
+            if sim.name == "737" {
+                commands.entity(cockpit).insert(Hide737Yoke);
+            }
         }
     }
 }
@@ -531,6 +576,35 @@ fn sync_view_models(
         } else {
             Visibility::Hidden
         };
+    }
+}
+
+/// Hide the 737 cockpit's captain yoke once its glTF subtree has spawned.
+/// The glTF scene loads asynchronously as a child of the marker entity, so
+/// this walks the subtree each frame and clears the marker when it lands.
+fn hide_737_yoke(
+    mut commands: Commands,
+    roots: Query<(Entity, &Children), With<Hide737Yoke>>,
+    mut nodes: Query<(&Name, &mut Visibility)>,
+    children: Query<&Children>,
+) {
+    for (root, kids) in &roots {
+        let mut stack: Vec<Entity> = kids.iter().collect();
+        let mut found = false;
+        while let Some(e) = stack.pop() {
+            if let Ok((name, mut visibility)) = nodes.get_mut(e) {
+                if name.as_str() == "Cube.488" {
+                    *visibility = Visibility::Hidden;
+                    found = true;
+                }
+            }
+            if let Ok(kids) = children.get(e) {
+                stack.extend(kids.iter());
+            }
+        }
+        if found {
+            commands.entity(root).remove::<Hide737Yoke>();
+        }
     }
 }
 
@@ -819,7 +893,7 @@ const LOOK_PITCH_LIMIT: f32 = 80.0_f32.to_radians();
 /// body's up axis, then pitch about its lateral axis. Zero = straight ahead.
 /// Composed *after* the airframe attitude (see `follow_camera`), so a head-turn
 /// reads relative to the cockpit and rolls with the plane.
-fn look_rotation(ui: &Ui) -> Quat {
+pub(crate) fn look_rotation(ui: &Ui) -> Quat {
     Quat::from_rotation_y(ui.look_yaw) * Quat::from_rotation_x(ui.look_pitch)
 }
 
@@ -837,7 +911,7 @@ fn apply_look_delta(ui: &mut Ui, delta: Vec2) {
 /// airframe. Position is untouched (that stays on `follow_camera`'s eye), so
 /// this only changes where you're looking. Inert unless in the cockpit view.
 fn cockpit_look(motion: Res<AccumulatedMouseMotion>, mut ui: ResMut<Ui>) {
-    if !ui.cockpit {
+    if !ui.cockpit || ui.mcp_focus {
         return;
     }
     let d = motion.delta;
@@ -848,20 +922,22 @@ fn cockpit_look(motion: Res<AccumulatedMouseMotion>, mut ui: ResMut<Ui>) {
 
 /// Keep the mouse cursor out of the way in the cockpit view: hidden and locked
 /// to the window so free-look gets unbounded motion. Released everywhere else
-/// (menu, chase view, or an unfocused window, where a lock would strand it).
+/// (menu, chase view, focused MCP, or an unfocused window, where a lock would
+/// strand it).
 fn cockpit_cursor(
     state: Res<State<AppState>>,
     ui: Res<Ui>,
     mut windows: Query<(&mut CursorOptions, &Window)>,
 ) {
     let cockpit = *state.get() == AppState::Flying && ui.cockpit;
+    let free_look = cockpit && !ui.mcp_focus;
     for (mut cursor, window) in &mut windows {
-        let grab = if cockpit && window.focused {
+        let grab = if free_look && window.focused {
             CursorGrabMode::Locked
         } else {
             CursorGrabMode::None
         };
-        let visible = !cockpit;
+        let visible = !free_look;
         if cursor.grab_mode != grab || cursor.visible != visible {
             cursor.grab_mode = grab;
             cursor.visible = visible;
@@ -873,8 +949,8 @@ fn cockpit_cursor(
 /// same scale/yaw/drop transform `spawn_model_child` applies, giving the offset
 /// in the `AircraftRoot` body frame (so the camera inherits the airframe's full
 /// attitude and rolls with the plane).
-fn cockpit_eye(spec: &ModelSpec) -> Option<Vec3> {
-    spec.eye.map(|e| {
+fn cockpit_eye(spec: &ModelSpec, eye: Option<[f32; 3]>) -> Option<Vec3> {
+    eye.or(spec.eye).map(|e| {
         Vec3::from_array(spec.offset)
             + Quat::from_rotation_y(spec.yaw) * (Vec3::from_array(e) * spec.scale)
             + Vec3::new(0.0, -spec.drop, 0.0)
@@ -887,12 +963,25 @@ fn rest_look(name: &str) -> (f32, f32) {
     cockpit_spec(name).map_or((0.0, 0.0), |spec| (spec.eye_yaw, spec.eye_pitch))
 }
 
+/// Pilot eye in the cockpit model's own frame, honouring the calibration
+/// override. Used by cockpit picking code that works in model space.
+pub(crate) fn cockpit_eye_model(name: &str, tune: &CockpitTune) -> Option<[f32; 3]> {
+    cockpit_spec(name).and_then(|spec| tune.eye.or(spec.eye))
+}
+
+/// The cockpit model's mounted yaw (model frame -> body frame). Picking code
+/// needs it to express the camera's body-frame look in model space.
+pub(crate) fn cockpit_model_yaw(name: &str) -> Option<f32> {
+    cockpit_spec(name).map(|spec| spec.yaw)
+}
+
 pub(crate) fn follow_camera(
     time: Res<Time>,
     fixed: Res<Time<Fixed>>,
     rp: Res<RenderPose>,
     sim: Res<Sim>,
     ui: Res<Ui>,
+    tune: Res<CockpitTune>,
     mut chase: ResMut<Chase>,
     mut q: Query<&mut Transform, With<Camera3d>>,
 ) {
@@ -910,7 +999,9 @@ pub(crate) fn follow_camera(
     // airframe's interpolated attitude, so the panel and horizon move with the
     // plane. Falls through to the chase view when the model has no interior.
     if ui.cockpit {
-        if let Some(eye) = cockpit_spec(&sim.name).and_then(|spec| cockpit_eye(&spec)) {
+        if let Some(eye) =
+            cockpit_spec(&sim.name).and_then(|spec| cockpit_eye(&spec, tune.eye))
+        {
             t.translation = pos + rot * eye;
             // Head-look turns the view *relative to the airframe*; the eye
             // offset above is unrotated by it, so the camera position is fixed.
@@ -994,6 +1085,7 @@ fn camera_feel(
     time: Res<Time>,
     state: Res<AircraftState>,
     ui: Res<Ui>,
+    tune: Res<CockpitTune>,
     mut q: Query<
         (&mut Transform, &mut Projection, Option<&mut MotionBlur>),
         With<Camera3d>,
@@ -1004,9 +1096,9 @@ fn camera_feel(
     };
     if ui.cockpit {
         // Leave the lens at its rest setting; `reset_camera_feel` does the same
-        // on exiting a flight.
+        // on exiting a flight. The calibration demo can override the rest FOV.
         if let Projection::Perspective(p) = &mut *projection {
-            p.fov = std::f32::consts::FRAC_PI_4;
+            p.fov = tune.fov.unwrap_or(std::f32::consts::FRAC_PI_4);
         }
         if let Some(mut blur) = blur {
             blur.shutter_angle = 0.0;
@@ -1050,6 +1142,7 @@ fn toggle_ui(keys: Res<ButtonInput<KeyCode>>, sim: Res<Sim>, mut ui: ResMut<Ui>)
         ui.show_inputs = !ui.show_inputs;
     }
     if keys.just_pressed(KeyCode::KeyC) {
+        ui.mcp_focus = false;
         ui.cockpit = !ui.cockpit;
         // Every entry into the cockpit starts looking at its rest pose.
         (ui.look_yaw, ui.look_pitch) = rest_look(&sim.name);

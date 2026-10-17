@@ -22,6 +22,7 @@ use crate::app_state::AppState;
 use crate::autopilot::{AtMode, Autopilot, LatMode, Mcp, SpeedUnit, VertMode};
 use crate::mcp_ui::PANEL_W;
 use crate::sim::{AircraftState, Sim};
+use crate::view::{CockpitModel, Ui};
 
 /// Nominal display size in logical px. The screen is portrait, like the 737's.
 const PFD_W: f32 = 400.0;
@@ -66,33 +67,95 @@ impl UiMaterial for PfdMaterial {
     }
 }
 
+/// The same symbology, on a quad lying over one of the cockpit model's display
+/// units. Unlike the UI overlay it is unlit, so the shader's colours land as
+/// written, and it is parented to the cockpit model (hidden with it outside
+/// the cockpit view).
+#[derive(Asset, TypePath, AsBindGroup, Clone, Default)]
+struct Pfd3dMaterial {
+    #[uniform(0)]
+    params: PfdParams,
+}
+
+impl Material for Pfd3dMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/pfd3d.wesl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Opaque
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+}
+
 #[derive(Resource)]
 struct PfdMaterialHandle(Handle<PfdMaterial>);
+
+#[derive(Resource)]
+struct Pfd3dMaterialHandle(Handle<Pfd3dMaterial>);
 
 /// Marks one of the two displays.
 #[derive(Component)]
 struct Pfd;
 
+/// Marks one of the in-cockpit display quads.
+#[derive(Component)]
+struct Pfd3d;
+
+/// The two inboard display units (captain's and first officer's PFDs), in the
+/// cockpit model's frame (+X left, +Y up, nose +Z), measured from the glTF.
+/// The black screen islands are ~0.101 square; the quad sits a couple of
+/// millimetres in front of them, facing aft toward the pilots.
+const PFD3D_CENTRES: [[f32; 3]; 2] = [
+    [0.1983, 1.8782, 1.455],
+    [-0.1549, 1.8782, 1.455],
+];
+const PFD3D_W: f32 = 0.098;
+const PFD3D_H: f32 = 0.105;
+
 pub struct PfdPlugin;
 
 impl Plugin for PfdPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(UiMaterialPlugin::<PfdMaterial>::default())
-            .add_systems(OnEnter(AppState::Flying), spawn)
-            .add_systems(
-                Update,
-                (fit_to_window, update_params).run_if(in_state(AppState::Flying)),
-            );
+        app.add_plugins((
+            UiMaterialPlugin::<PfdMaterial>::default(),
+            MaterialPlugin::<Pfd3dMaterial>::default(),
+        ))
+        .add_systems(
+            OnEnter(AppState::Flying),
+            spawn.after(crate::sim::StartFlight),
+        )
+        .add_systems(
+            Update,
+            (fit_to_window, cockpit_visibility, spawn_3d, update_params)
+                .chain()
+                .run_if(in_state(AppState::Flying)),
+        );
     }
 }
 
 /// The PFDs are 737-only: they need an autopilot (and the MCP it drives).
-fn spawn(mut commands: Commands, sim: Res<Sim>, mut materials: ResMut<Assets<PfdMaterial>>) {
+fn spawn(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    mut materials: ResMut<Assets<PfdMaterial>>,
+    mut materials_3d: ResMut<Assets<Pfd3dMaterial>>,
+) {
     if !aircraft_profile::profile(&sim.name).has_autopilot {
         return;
     }
     let material = materials.add(PfdMaterial::default());
     commands.insert_resource(PfdMaterialHandle(material.clone()));
+    commands.insert_resource(Pfd3dMaterialHandle(
+        materials_3d.add(Pfd3dMaterial::default()),
+    ));
 
     for left in [true, false] {
         commands.spawn((
@@ -139,24 +202,72 @@ fn fit_to_window(
     }
 }
 
+/// The 2D corner PFDs are chase-view instruments; the cockpit has the real
+/// screens. Hide the overlays while the pilot's eye is inside.
+fn cockpit_visibility(ui: Res<Ui>, mut q: Query<&mut Node, With<Pfd>>) {
+    let display = if ui.cockpit {
+        Display::None
+    } else {
+        Display::Flex
+    };
+    for mut node in &mut q {
+        if node.display != display {
+            node.display = display;
+        }
+    }
+}
+
+/// Put the PFDs on the 737's two inboard display units once the cockpit model
+/// exists. The quads are children of that model, so they inherit its pose and
+/// visibility (hidden in the chase view, where the model itself is hidden).
+fn spawn_3d(
+    mut commands: Commands,
+    sim: Res<Sim>,
+    cockpit: Query<Entity, With<CockpitModel>>,
+    existing: Query<(), With<Pfd3d>>,
+    handle: Option<Res<Pfd3dMaterialHandle>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    if !matches!(sim.name.as_str(), "737" | "b737") || !existing.is_empty() {
+        return;
+    }
+    let (Some(handle), Ok(model)) = (handle, cockpit.single()) else {
+        return;
+    };
+    let mesh = meshes.add(Rectangle::new(PFD3D_W, PFD3D_H));
+    for centre in PFD3D_CENTRES {
+        commands.spawn((
+            Pfd3d,
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(handle.0.clone()),
+            Transform {
+                translation: Vec3::from_array(centre),
+                // The model's screens face aft; a Rectangle's normal is +Z.
+                rotation: Quat::from_rotation_y(std::f32::consts::PI),
+                ..default()
+            },
+            ChildOf(model),
+        ));
+    }
+}
+
 fn update_params(
     state: Res<AircraftState>,
     mcp: Res<Mcp>,
     ap: Res<Autopilot>,
     time: Res<Time>,
-    handle: Option<Res<PfdMaterialHandle>>,
+    ui_handle: Option<Res<PfdMaterialHandle>>,
+    du_handle: Option<Res<Pfd3dMaterialHandle>>,
     mut materials: ResMut<Assets<PfdMaterial>>,
+    mut materials_3d: ResMut<Assets<Pfd3dMaterial>>,
 ) {
-    let Some(handle) = handle else {
-        return;
-    };
-    let Some(mut material) = materials.get_mut(&handle.0) else {
+    let (Some(ui_handle), Some(du_handle)) = (ui_handle, du_handle) else {
         return;
     };
 
     let flap_norm = (state.flap_deg / 40.0).clamp(0.0, 1.0);
     let speed_is_mach = mcp.speed_unit == SpeedUnit::Mach;
-    material.params = PfdParams {
+    let params = PfdParams {
         a: Vec4::new(
             state.cas_kts as f32,
             state.alt_ft as f32,
@@ -195,6 +306,12 @@ fn update_params(
         ),
         g: Vec4::new(time.elapsed_secs() as f32, state.slip as f32, state.tas_kts as f32, 0.0),
     };
+    if let Some(mut material) = materials.get_mut(&ui_handle.0) {
+        material.params = params;
+    }
+    if let Some(mut material) = materials_3d.get_mut(&du_handle.0) {
+        material.params = params;
+    }
 }
 
 /// Rotation speed for the current flap setting, from the takeoff probe in this

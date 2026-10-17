@@ -14,6 +14,12 @@ use flight_model::FlightModel;
 use crate::app_state::AppState;
 use crate::autopilot::{Autopilot, Mcp};
 
+/// The menu rebuilds [`Sim`] for the selected aircraft when flying starts.
+/// Per-flight spawners that branch on `sim.name` must run `.after` this set,
+/// or they may read the previous flight's aircraft.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StartFlight;
+
 /// FDM step. Matches the rate JSBSim was validated against.
 pub const DT: f64 = 1.0 / 120.0;
 
