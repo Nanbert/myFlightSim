@@ -32,12 +32,17 @@ struct WaterParams {
 
 const PI: f32 = 3.14159265;
 const SEA_HEIGHT: f32 = 0.6;
-const SEA_CHOPPY: f32 = 4.0;
-const SEA_FREQ: f32 = 0.16;
+// Lower than Seascape's 4: soft, cloth-like ridges instead of sharp chop.
+const SEA_CHOPPY: f32 = 3.0;
+// Base spatial frequency. Lower than Seascape's 0.16, so the longest swell is
+// ~1.6x wider; combined with the gentler chop this reads as slow undulation
+// rather than a choppy sea.
+const SEA_FREQ: f32 = 0.10;
 // Phase speed of the longest swell in uv units/s. The reference's 0.8 came
 // from screen-space coordinates; read as metres it left 39 m swells crawling
 // at ~1 m/s. Deep-water dispersion slows the shorter octaves below this.
-const SEA_SPEED: f32 = 7.0;
+// 3.0 keeps even the reference-scale swell visibly rolling, but slowly.
+const SEA_SPEED: f32 = 3.0;
 // Linear-light equivalents of Seascape's sRGB palette.
 const SEA_WATER_COLOR: vec3<f32> = vec3<f32>(0.195, 0.253, 0.107);
 const OCTAVES: i32 = 5;
