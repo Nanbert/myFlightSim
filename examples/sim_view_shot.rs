@@ -19,6 +19,8 @@ mod app_state;
 mod hud;
 #[path = "../src/lens.rs"]
 mod lens;
+#[path = "../src/autopilot.rs"]
+mod autopilot;
 #[path = "../src/sim.rs"]
 mod sim;
 #[path = "../src/view.rs"]
@@ -57,6 +59,7 @@ fn main() {
         .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
         .add_plugins((
             sim::SimPlugin,
+            autopilot::AutopilotPlugin,
             // Before `InputPlugin`: it builds the startup bindings from the
             // saved keymap, so `GameConfig` must already exist.
             config::ConfigPlugin,
@@ -73,11 +76,6 @@ fn main() {
             OnEnter(app_state::AppState::Flying),
             (view::spawn_flight_aircraft, view::reset_control_rig).chain(),
         )
-        // Manual control, so nothing fights the pinned inputs below.
-        .insert_resource(sim::Autopilot {
-            enabled: false,
-            phase: "manual",
-        })
         .init_resource::<Frame>()
         .init_resource::<Cockpit>()
         .init_resource::<Rain>()

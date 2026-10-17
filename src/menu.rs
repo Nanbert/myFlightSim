@@ -14,7 +14,8 @@ use crate::aircraft_profile::{self, Action, ToggleAction};
 use crate::app_state::AppState;
 use crate::config::{self, ConfigSink, GameConfig, Keymap};
 use crate::input::Bindings;
-use crate::sim::{Autopilot, RenderPose, Sim};
+use crate::autopilot::{Autopilot, Mcp};
+use crate::sim::{RenderPose, Sim};
 use crate::view::spawn_model_child;
 use crate::weather::Weather;
 
@@ -779,6 +780,7 @@ fn bind_key(
 fn start_flight(
     mut sim: ResMut<Sim>,
     mut ap: ResMut<Autopilot>,
+    mut mcp: ResMut<Mcp>,
     mut bindings: ResMut<Bindings>,
     mut rp: ResMut<RenderPose>,
     sel: Res<MenuSelection>,
@@ -797,9 +799,10 @@ fn start_flight(
         controls.enable_arcade(id);
     }
     *bindings = controls;
-    // The autopilot is the 737's flight law; every other aircraft starts manual.
-    ap.enabled = crate::aircraft_profile::profile(id).has_autopilot;
-    ap.phase = if ap.enabled { "roll" } else { "manual" };
+    // Every flight starts under manual control with the MCP at its defaults;
+    // the 737's autopilot can be engaged once airborne.
+    ap.reset();
+    mcp.reset();
     rp.init = false;
 }
 
@@ -877,8 +880,8 @@ mod tests {
         assert_eq!(editor_slots("c172p", &Keymap::default()).len(), 16);
         // ah1s: 5 paired axes (10) + 2 toggles (rotor-trim, trim).
         assert_eq!(editor_slots("ah1s", &Keymap::default()).len(), 12);
-        // 737: c172p's slots + autopilot + gear toggles.
-        assert_eq!(editor_slots("737", &Keymap::default()).len(), 18);
+        // 737: c172p's slots + autopilot, gear, and the six MCP toggles.
+        assert_eq!(editor_slots("737", &Keymap::default()).len(), 24);
     }
 
     #[test]
@@ -989,7 +992,7 @@ mod tests {
         let mut config = GameConfig::default();
         let mut editor = EditorState { capturing: true, ..default() };
         let s = sink();
-        // Move the 737's gear toggle (row before its last: autopilot is last).
+        // Move the 737's gear toggle.
         let rows = editor_slots("737", &config.keymap("737"));
         let gear_row = rows
             .iter()

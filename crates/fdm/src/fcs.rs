@@ -91,8 +91,25 @@ pub struct DirectFcs {
     pub aileron_lim_deg: (f64, f64),
     pub rudder_gain: f64,
     pub rudder_lim_deg: (f64, f64),
+    /// Yaw-damper Mach schedule `(m0, m1)`: off at/below `m0`, fully on at/above
+    /// `m1`, squared between (the 737 schedules the signal twice). The damper
+    /// adds the aero yaw rate to the rudder command, clipped to ±1. `None` = no
+    /// damper (c172p).
+    pub yaw_damper: Option<(f64, f64)>,
     pub flap_max_deg: f64,
     pub flap_time_s: f64,
+}
+
+/// The 737's yaw-damper gain: the model's mach table applied to the yaw rate and
+/// then to the result, so the effective gain is the ramp squared.
+fn yaw_damper_gain(mach: f64, (m0, m1): (f64, f64)) -> f64 {
+    let sched = ((mach - m0) / (m1 - m0)).clamp(0.0, 1.0);
+    sched * sched
+}
+
+/// Rudder-command contribution of the yaw damper for aero yaw rate `r` (rad/s).
+fn yaw_damper_term(r: f64, mach: f64, schedule: Option<(f64, f64)>) -> f64 {
+    schedule.map_or(0.0, |sched| yaw_damper_gain(mach, sched) * r)
 }
 
 impl DirectFcs {
@@ -103,8 +120,11 @@ impl DirectFcs {
         ) * self.elevator_gain;
         let aileron_rad =
             scale(i.aileron_cmd + i.roll_trim_cmd, self.aileron_lim_deg) * self.aileron_gain;
-        let rudder_rad =
-            scale(i.rudder_cmd + i.yaw_trim_cmd, self.rudder_lim_deg) * self.rudder_gain;
+        // Yaw damper: mix the aero yaw rate into the rudder command. Positive r
+        // (nose right) adds positive rudder command, which yaws left — damping.
+        let damper = yaw_damper_term(i.r, i.mach, self.yaw_damper);
+        let rudder_cmd = (i.rudder_cmd + i.yaw_trim_cmd).clamp(-1.0, 1.0) + damper;
+        let rudder_rad = scale(rudder_cmd, self.rudder_lim_deg) * self.rudder_gain;
         // The 737's flap aero keys on the normalized position; the c172p's
         // keys on `flap_deg`. Publish both.
         let flap_norm = if self.flap_max_deg > 0.0 {
@@ -449,5 +469,28 @@ pub(crate) fn scale(cmd: f64, lim: (f64, f64)) -> f64 {
         cmd * lim.1
     } else {
         -cmd * lim.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::yaw_damper_term;
+
+    const SCHED: Option<(f64, f64)> = Some((0.10, 0.11));
+
+    #[test]
+    fn yaw_damper_is_silent_slow_and_full_fast() {
+        // Below M0.10 the model's schedule zeroes the damper.
+        assert_eq!(yaw_damper_term(0.2, 0.05, SCHED), 0.0);
+        assert_eq!(yaw_damper_term(0.2, 0.10, SCHED), 0.0);
+        // By M0.11 it passes the raw yaw rate through (the schedule is applied
+        // twice, but both are 1.0 here).
+        assert!((yaw_damper_term(0.2, 0.12, SCHED) - 0.2).abs() < 1e-12);
+        // Halfway up the ramp the gain is squared: 0.5².
+        assert!((yaw_damper_term(0.2, 0.105, SCHED) - 0.05).abs() < 1e-12);
+        // The sign opposes the yaw (positive command yaws left).
+        assert_eq!(yaw_damper_term(-0.2, 0.5, SCHED), -0.2);
+        // No schedule, no damper.
+        assert_eq!(yaw_damper_term(0.2, 0.5, None), 0.0);
     }
 }

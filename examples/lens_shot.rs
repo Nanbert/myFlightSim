@@ -20,6 +20,8 @@ mod config;
 mod input;
 #[path = "../src/lens.rs"]
 mod lens;
+#[path = "../src/autopilot.rs"]
+mod autopilot;
 #[path = "../src/sim.rs"]
 mod sim;
 #[path = "../src/view.rs"]
@@ -66,6 +68,7 @@ fn main() {
         .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
         .add_plugins((
             sim::SimPlugin,
+            autopilot::AutopilotPlugin,
             config::ConfigPlugin,
             input::InputPlugin,
             view::ViewPlugin,
@@ -77,10 +80,6 @@ fn main() {
             OnEnter(app_state::AppState::Flying),
             (view::spawn_flight_aircraft, view::reset_control_rig).chain(),
         )
-        .insert_resource(sim::Autopilot {
-            enabled: false,
-            phase: "manual",
-        })
         .init_resource::<Frame>()
         .insert_resource(scene)
         .add_systems(Startup, launch)

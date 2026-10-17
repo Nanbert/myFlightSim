@@ -265,6 +265,8 @@ const FCS: DirectFcs = DirectFcs {
     aileron_lim_deg: (-0.35 * R2D, 0.35 * R2D),
     rudder_gain: D2R,
     rudder_lim_deg: (-0.35 * R2D, 0.35 * R2D),
+    // `fcs/yaw-damper-final`: zero below M0.10, full by M0.11.
+    yaw_damper: Some((0.10, 0.11)),
     // 40 deg of flaps, run over the sum of the model's 9-segment kinematic
     // schedule (5+4+3+2+2+2+2+2 = 22 s) collapsed onto one rate.
     flap_max_deg: 40.0,

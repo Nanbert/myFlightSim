@@ -16,6 +16,7 @@ use bevy::prelude::*;
 
 use crate::aircraft_profile::{self, Action, Axis, ToggleAction, ToggleSpec};
 use crate::app_state::AppState;
+use crate::autopilot::{Autopilot, Mcp};
 use crate::config::{GameConfig, Keymap};
 
 /// How fast the arcade throttle spools up while its key is held, in normalized
@@ -169,7 +170,8 @@ fn read_input(
     time: Res<Time>,
     mut bindings: ResMut<Bindings>,
     mut sim: ResMut<crate::sim::Sim>,
-    mut ap: ResMut<crate::sim::Autopilot>,
+    mut ap: ResMut<Autopilot>,
+    mut mcp: ResMut<Mcp>,
     config: Res<GameConfig>,
 ) {
     let dt = time.delta_secs_f64();
@@ -199,6 +201,19 @@ fn read_input(
         }
     }
 
+    // Pilot stick or throttle input overrides the automation, as it does in the
+    // real aircraft: moving the column or the levers drops the A/P or the A/T.
+    for b in &bindings.list {
+        if b.direction(&keys) == 0.0 {
+            continue;
+        }
+        match b.action {
+            Action::Elevator | Action::Aileron | Action::Rudder => ap.disengage(),
+            Action::Throttle => ap.disconnect_autothrottle(),
+            _ => {}
+        }
+    }
+
     // Edge toggles declared by the active profile. Collect first so the borrow
     // of `bindings.toggles` ends before `adopt_trim` takes `&mut bindings`.
     let fired: Vec<ToggleAction> = bindings
@@ -209,7 +224,13 @@ fn read_input(
         .collect();
     for action in fired {
         match action {
-            ToggleAction::Autopilot => ap.enabled = !ap.enabled,
+            ToggleAction::Autopilot => ap.toggle(&*sim.model),
+            ToggleAction::HdgSel
+            | ToggleAction::AltHold
+            | ToggleAction::VsMode
+            | ToggleAction::LvlChg
+            | ToggleAction::AutoThrottle => ap.press_mode(action, &*sim.model),
+            ToggleAction::SpeedMach => mcp.toggle_speed_unit(),
             // A no-op on models without these (the FDM ignores the property).
             ToggleAction::Tvc => toggle_prop(&mut sim, "fcs/tvc-enable"),
             ToggleAction::Gear => toggle_prop(&mut sim, "gear/gear-cmd-norm"),
@@ -217,12 +238,12 @@ fn read_input(
             // adopt the trimmed commands so the per-step writes don't undo it.
             ToggleAction::Trim => {
                 sim.trim_now();
-                ap.enabled = false;
+                ap.disengage();
                 adopt_trim(&mut bindings, &sim);
             }
             ToggleAction::Cruise => {
                 sim.reset_cruise();
-                ap.enabled = false;
+                ap.disengage();
                 adopt_trim(&mut bindings, &sim);
             }
             ToggleAction::RotorTrim => {
@@ -240,7 +261,8 @@ fn read_input(
             rebuilt.enable_arcade(&sim.name);
         }
         *bindings = rebuilt;
-        ap.enabled = aircraft_profile::profile(&sim.name).has_autopilot;
+        ap.reset();
+        mcp.reset();
     }
 }
 

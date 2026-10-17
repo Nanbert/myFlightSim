@@ -359,6 +359,7 @@ const FCS: DirectFcs = DirectFcs {
     aileron_lim_deg: (-20.0, 15.0),
     rudder_gain: 0.01745,
     rudder_lim_deg: (-16.0, 16.0),
+    yaw_damper: None,
     flap_max_deg: 30.0,
     flap_time_s: 30.0,
 };

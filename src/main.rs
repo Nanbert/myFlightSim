@@ -1,12 +1,15 @@
 mod aircraft_profile;
 mod app_state;
+mod autopilot;
 mod config;
 mod fx;
 mod gauge;
 mod hud;
 mod input;
 mod lens;
+mod mcp_ui;
 mod menu;
+mod pfd;
 mod sim;
 mod sky;
 mod vapor;
@@ -33,6 +36,9 @@ fn main() {
         .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
         .add_plugins((
             sim::SimPlugin,
+            autopilot::AutopilotPlugin,
+            mcp_ui::McpUiPlugin,
+            pfd::PfdPlugin,
             // Before `InputPlugin`: it needs `GameConfig` to build the startup
             // aircraft's bindings from the saved keymap.
             config::ConfigPlugin,

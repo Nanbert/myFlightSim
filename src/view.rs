@@ -12,6 +12,7 @@ use bevy::window::{CursorGrabMode, CursorOptions};
 use std::collections::{HashMap, HashSet};
 
 use crate::app_state::AppState;
+use crate::autopilot::Autopilot;
 use crate::input::Bindings;
 use crate::sim::{AircraftState, RenderPose, Sim};
 use crate::weather::Weather;
@@ -1099,7 +1100,7 @@ fn bar(v: f64) -> String {
 /// Per-aircraft key hints, generated from the active control set so they can't
 /// drift from the profile. Duplicates collapse (both brakes share one entry),
 /// and the list wraps a few entries per row.
-fn control_hints(bindings: &Bindings, cockpit: bool, f22_hud: bool) -> String {
+fn control_hints(bindings: &Bindings, cockpit: bool, f22_hud: bool, mcp: bool) -> String {
     use crate::aircraft_profile::key_name;
     let mut entries: Vec<String> = Vec::new();
     for b in &bindings.list {
@@ -1121,6 +1122,12 @@ fn control_hints(bindings: &Bindings, cockpit: bool, f22_hud: bool) -> String {
     if f22_hud {
         entries.push("O hud".to_string());
     }
+    if mcp {
+        entries.push("Left/Right hdg".to_string());
+        entries.push("Up/Down alt".to_string());
+        entries.push("PgUp/PgDn v/s".to_string());
+        entries.push("[ ] speed".to_string());
+    }
     if cockpit {
         // Free-look only does anything from the pilot's seat.
         entries.push("N recentre".to_string());
@@ -1141,19 +1148,16 @@ fn update_hud(
     weather: Res<Weather>,
     sim: Res<Sim>,
     bindings: Res<Bindings>,
+    ap: Res<Autopilot>,
     mut q: Query<&mut Text, With<Hud>>,
 ) {
     let Ok(mut text) = q.single_mut() else {
         return;
     };
-    // Mode is only meaningful for aircraft that have an autopilot (the 737);
-    // everything else flies manual and shows nothing.
+    // Flight-mode annunciation, only for aircraft that have an autopilot (the
+    // 737); everything else flies manual and shows nothing.
     let mode = if state.autopilot_available {
-        if state.autopilot {
-            format!("   [AUTO: {}]", state.phase)
-        } else {
-            "   [MANUAL]".to_string()
-        }
+        format!("   [{}]", ap.fma())
     } else {
         String::new()
     };
@@ -1230,7 +1234,12 @@ fn update_hud(
     }
 
     out.push_str("\n\n");
-    out.push_str(&control_hints(&bindings, ui.cockpit, sim.name == "f22"));
+    out.push_str(&control_hints(
+        &bindings,
+        ui.cockpit,
+        sim.name == "f22",
+        state.autopilot_available,
+    ));
 
     text.0 = out;
 }

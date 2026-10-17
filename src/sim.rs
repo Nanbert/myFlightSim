@@ -12,6 +12,7 @@ use bevy::prelude::*;
 use flight_model::FlightModel;
 
 use crate::app_state::AppState;
+use crate::autopilot::{Autopilot, Mcp};
 
 /// FDM step. Matches the rate JSBSim was validated against.
 pub const DT: f64 = 1.0 / 120.0;
@@ -206,16 +207,17 @@ pub struct AircraftState {
     pub elevator_trim: f64,
     pub flap_deg: f64,
     pub rpm: f64,
-    pub autopilot: bool,
     /// Whether the loaded aircraft has an autopilot at all (737 only).
     pub autopilot_available: bool,
-    pub phase: &'static str,
     /// Thrust vectoring switched on (`fcs/tvc-enable`).
     pub tvc_on: bool,
     /// Whether the loaded model supports TVC at all (F-22 only).
     pub tvc_available: bool,
     /// Achieved landing-gear position (`gear/gear-pos-norm`): 1 = down, 0 = up.
     pub gear_pos: f64,
+    /// Weight-on-wheels (`gear/wow` > 0.5) — drives the PFD's Vr bug and
+    /// ROTATE callout.
+    pub on_ground: bool,
     /// Whether the loaded model's gear retracts at all (F-22 only).
     pub gear_available: bool,
     /// Main-rotor rpm (`propulsion/engine[0]/rotor-rpm`); drives the rotor spin.
@@ -270,30 +272,14 @@ pub struct RenderPose {
     pub init: bool,
 }
 
-/// Autopilot switch. When enabled it overrides the keyboard and flies the
-/// ground-takeoff -> cruise mission in `jsbsim_sys::autopilot`.
-#[derive(Resource)]
-pub struct Autopilot {
-    pub enabled: bool,
-    pub phase: &'static str,
-}
-
 pub struct SimPlugin;
 
 impl Plugin for SimPlugin {
     fn build(&self, app: &mut App) {
-        // Start under the autopilot only for aircraft that have one (the 737);
-        // everything else begins under manual control.
-        let name = startup_aircraft();
-        let auto = crate::aircraft_profile::profile(&name).has_autopilot;
-        let sim = Sim::new(&name);
+        let sim = Sim::new(&startup_aircraft());
         app.insert_resource(sim)
             .init_resource::<AircraftState>()
             .init_resource::<RenderPose>()
-            .insert_resource(Autopilot {
-                enabled: auto,
-                phase: if auto { "roll" } else { "manual" },
-            })
             .add_systems(
                 FixedUpdate,
                 (advance_fdm, capture_render_pose)
@@ -307,6 +293,7 @@ impl Plugin for SimPlugin {
 fn advance_fdm(
     mut sim: ResMut<Sim>,
     bindings: Res<crate::input::Bindings>,
+    mcp: Res<Mcp>,
     mut ap: ResMut<Autopilot>,
 ) {
     // Pilot bindings drive every property the loaded model exposes. This runs
@@ -316,16 +303,9 @@ fn advance_fdm(
         sim.model.set(b.property, b.effective());
     }
 
-    // The autopilot, when engaged, takes over the channels it owns (elevator,
-    // aileron, rudder, throttle, trim) by writing them after the bindings. It's
-    // the fixed-wing mission law, so it never runs a rotorcraft.
-    if ap.enabled && !sim.model.has_rotor() {
-        let (cmds, phase) = jsbsim_sys::autopilot::step(&*sim.model);
-        ap.phase = phase;
-        jsbsim_sys::autopilot::apply(&mut *sim.model, &cmds);
-    } else {
-        ap.phase = "manual";
-    }
+    // The autothrottle and the engaged modes write their own channels after
+    // the bindings, so the automation wins the step.
+    crate::autopilot::advance(&mut *sim.model, &mcp, &mut ap, DT);
 
     sim.model.step();
 }
@@ -349,12 +329,7 @@ fn capture_render_pose(sim: Res<Sim>, mut rp: ResMut<RenderPose>) {
     rp.curr_heading = heading;
 }
 
-fn publish_state(
-    mut sim: ResMut<Sim>,
-    time: Res<Time>,
-    ap: Res<Autopilot>,
-    mut state: ResMut<AircraftState>,
-) {
+fn publish_state(mut sim: ResMut<Sim>, time: Res<Time>, mut state: ResMut<AircraftState>) {
     let (pos, _, _) = sim.pose();
     // Split the borrow: the FDM is read through `m` while the HUD history
     // fields are written below, without either aliasing the other.
@@ -426,12 +401,11 @@ fn publish_state(
         elevator_trim: m.get("fcs/pitch-trim-cmd-norm"),
         flap_deg: m.get("fcs/flap-pos-deg"),
         rpm: m.get("propulsion/engine[0]/engine-rpm"),
-        autopilot: ap.enabled,
         autopilot_available: crate::aircraft_profile::profile(name).has_autopilot,
-        phase: ap.phase,
         tvc_on: m.get("fcs/tvc-enable") > 0.5,
         tvc_available: m.has_tvc(),
         gear_pos: m.get("gear/gear-pos-norm"),
+        on_ground: m.get("gear/wow") > 0.5,
         gear_available: m.has_retractable_gear(),
         main_rotor_rpm: m.get("propulsion/engine[0]/rotor-rpm"),
         tail_rotor_rpm: m.get("propulsion/engine[1]/rotor-rpm"),

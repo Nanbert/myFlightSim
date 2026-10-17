@@ -101,6 +101,18 @@ pub enum ToggleAction {
     Cruise,
     /// A rotorcraft's hands-free level-flight trim.
     RotorTrim,
+    /// Select heading-select lateral mode (737 A/P).
+    HdgSel,
+    /// Capture and hold the current altitude (737 A/P).
+    AltHold,
+    /// Select vertical-speed mode (737 A/P).
+    VsMode,
+    /// Select speed-on-pitch level-change mode (737 A/P).
+    LvlChg,
+    /// Engage/disengage the autothrottle in SPD (737).
+    AutoThrottle,
+    /// Switch the MCP speed window between IAS and Mach (737).
+    SpeedMach,
 }
 
 impl ToggleAction {
@@ -112,6 +124,12 @@ impl ToggleAction {
             ToggleAction::Trim => "retrim",
             ToggleAction::Cruise => "cruise",
             ToggleAction::RotorTrim => "trim",
+            ToggleAction::HdgSel => "HDG SEL",
+            ToggleAction::AltHold => "ALT HOLD",
+            ToggleAction::VsMode => "V/S",
+            ToggleAction::LvlChg => "LVL CHG",
+            ToggleAction::AutoThrottle => "A/T",
+            ToggleAction::SpeedMach => "IAS/MACH",
         }
     }
 
@@ -124,6 +142,12 @@ impl ToggleAction {
             ToggleAction::Trim => "trim",
             ToggleAction::Cruise => "cruise",
             ToggleAction::RotorTrim => "rotor-trim",
+            ToggleAction::HdgSel => "hdg-sel",
+            ToggleAction::AltHold => "alt-hold",
+            ToggleAction::VsMode => "vs",
+            ToggleAction::LvlChg => "lvl-chg",
+            ToggleAction::AutoThrottle => "autothrottle",
+            ToggleAction::SpeedMach => "speed-mach",
         }
     }
 
@@ -135,6 +159,12 @@ impl ToggleAction {
             "trim" => ToggleAction::Trim,
             "cruise" => ToggleAction::Cruise,
             "rotor-trim" => ToggleAction::RotorTrim,
+            "hdg-sel" => ToggleAction::HdgSel,
+            "alt-hold" => ToggleAction::AltHold,
+            "vs" => ToggleAction::VsMode,
+            "lvl-chg" => ToggleAction::LvlChg,
+            "autothrottle" => ToggleAction::AutoThrottle,
+            "speed-mach" => ToggleAction::SpeedMach,
             _ => return None,
         })
     }
@@ -267,6 +297,13 @@ pub fn profile(id: &str) -> Profile {
                 let mut t = core_toggles();
                 t.push(ToggleSpec { action: ToggleAction::Autopilot, key: KeyCode::KeyG });
                 t.push(ToggleSpec { action: ToggleAction::Gear, key: KeyCode::KeyU });
+                // MCP mode buttons, laid out like the 737's mode control panel.
+                t.push(ToggleSpec { action: ToggleAction::HdgSel, key: KeyCode::Digit1 });
+                t.push(ToggleSpec { action: ToggleAction::AltHold, key: KeyCode::Digit2 });
+                t.push(ToggleSpec { action: ToggleAction::VsMode, key: KeyCode::Digit3 });
+                t.push(ToggleSpec { action: ToggleAction::LvlChg, key: KeyCode::Digit4 });
+                t.push(ToggleSpec { action: ToggleAction::AutoThrottle, key: KeyCode::Digit5 });
+                t.push(ToggleSpec { action: ToggleAction::SpeedMach, key: KeyCode::KeyM });
                 t
             },
         },
@@ -513,6 +550,12 @@ mod tests {
             ToggleAction::Trim,
             ToggleAction::Cruise,
             ToggleAction::RotorTrim,
+            ToggleAction::HdgSel,
+            ToggleAction::AltHold,
+            ToggleAction::VsMode,
+            ToggleAction::LvlChg,
+            ToggleAction::AutoThrottle,
+            ToggleAction::SpeedMach,
         ] {
             assert_eq!(ToggleAction::from_id(a.id()), Some(a));
         }
