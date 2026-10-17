@@ -54,13 +54,31 @@ impl UiMaterial for HudMaterial {
 #[derive(Component)]
 struct HudOverlay;
 
+/// Whether the F-22 symbology is drawn. `O` toggles it.
+#[derive(Resource)]
+struct HudShown(bool);
+
+impl Default for HudShown {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(UiMaterialPlugin::<HudMaterial>::default())
+            .init_resource::<HudShown>()
             .add_systems(Startup, setup)
-            .add_systems(Update, (update, sync_visibility));
+            .add_systems(
+                Update,
+                (
+                    update,
+                    toggle_shown.run_if(in_state(AppState::Flying)),
+                    sync_visibility,
+                ),
+            );
     }
 }
 
@@ -141,13 +159,21 @@ fn update(
     };
 }
 
-/// HUD only exists for the F-22, and only while flying it.
+fn toggle_shown(keys: Res<ButtonInput<KeyCode>>, mut shown: ResMut<HudShown>) {
+    if keys.just_pressed(KeyCode::KeyO) {
+        shown.0 = !shown.0;
+    }
+}
+
+/// The HUD exists only for the F-22, only while flying it, and only while the
+/// pilot hasn't toggled it off with `O`.
 fn sync_visibility(
     state: Res<State<AppState>>,
     sim: Res<Sim>,
+    shown: Res<HudShown>,
     mut q: Query<&mut Node, With<HudOverlay>>,
 ) {
-    let want = if *state.get() == AppState::Flying && sim.name == "f22" {
+    let want = if *state.get() == AppState::Flying && sim.name == "f22" && shown.0 {
         Display::Flex
     } else {
         Display::None

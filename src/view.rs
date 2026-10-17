@@ -963,7 +963,7 @@ fn bar(v: f64) -> String {
 /// Per-aircraft key hints, generated from the active control set so they can't
 /// drift from the profile. Duplicates collapse (both brakes share one entry),
 /// and the list wraps a few entries per row.
-fn control_hints(bindings: &Bindings, cockpit: bool) -> String {
+fn control_hints(bindings: &Bindings, cockpit: bool, f22_hud: bool) -> String {
     use crate::aircraft_profile::key_name;
     let mut entries: Vec<String> = Vec::new();
     for b in &bindings.list {
@@ -982,6 +982,9 @@ fn control_hints(bindings: &Bindings, cockpit: bool) -> String {
     entries.push("H inputs".to_string());
     entries.push("R reset".to_string());
     entries.push("C view".to_string());
+    if f22_hud {
+        entries.push("O hud".to_string());
+    }
     if cockpit {
         // Free-look only does anything from the pilot's seat.
         entries.push("N recentre".to_string());
@@ -1091,7 +1094,7 @@ fn update_hud(
     }
 
     out.push_str("\n\n");
-    out.push_str(&control_hints(&bindings, ui.cockpit));
+    out.push_str(&control_hints(&bindings, ui.cockpit, sim.name == "f22"));
 
     text.0 = out;
 }
