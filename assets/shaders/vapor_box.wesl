@@ -115,13 +115,18 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
                 + vec3<f32>(5.0, params.anim.y * 0.60, side * 2.0),
         );
 
-        // Footprint ellipse, shifted forward so the leading edge is inside it.
-        // The previous centred ellipse only covered the rear half of the wing.
+        // Speed-driven footprint. At low speed the ellipse is small and sits at
+        // the root/leading edge; as speed rises it grows and moves outboard so
+        // the same burst covers more of the wing.
+        let cov = clamp(params.color.w, 0.25, 1.0);
+        let root_bias = 1.0 - cov;
+        let cx = 0.26 * root_bias;
+        let cz = -0.20 - 0.12 * root_bias;
         let wob = (n - 0.5) * 0.04;
         let radial = 1.0 - smoothstep(
             0.30,
             0.52,
-            length(vec2<f32>(lx * 0.85, (p.z + 0.18) * 0.55)) + wob,
+            length(vec2<f32>((lx - cx) * 0.85, (p.z - cz) * 0.55)) / cov + wob,
         );
         let edge = radial;
 

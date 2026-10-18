@@ -31,10 +31,15 @@ fn noise2(p: vec2<f32>) -> f32 {
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv = in.uv;
-    let span = smoothstep(0.0, 0.06, uv.x) * (1.0 - smoothstep(0.78, 1.0, uv.x));
-    let chord = smoothstep(0.0, 0.06, uv.y) * (1.0 - smoothstep(0.72, 1.0, uv.y));
+    let cov = clamp(params.rgb.w, 0.25, 1.0);
+    let root_bias = 1.0 - cov;
+    // Low speed: a small pool near the root/LE. High speed: most of the wing.
+    let cu = 0.42 - 0.24 * root_bias;
+    let cv = 0.20;
+    let d = length(vec2<f32>((uv.x - cu) * 1.1, (uv.y - cv) * 0.8));
+    let patch = 1.0 - smoothstep(0.12, 0.38, d / cov);
     let n = noise2(uv * 6.0 + vec2<f32>(params.anim.y * 0.15, 0.0));
-    let a = params.anim.x * span * chord * (0.55 + 0.45 * n);
+    let a = params.anim.x * patch * (0.55 + 0.45 * n);
     if (a < 0.003) {
         discard;
     }

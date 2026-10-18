@@ -419,7 +419,10 @@ struct SheetState {
     strength: [f32; 2],
     /// Tip trails stay off until the mass has had a head start.
     trail_unlock: [bool; 2],
+    /// Speed-driven footprint coverage (0.25..1), per side.
+    coverage: [f32; 2],
     prev_g: f32,
+    prev_alpha: f32,
 }
 
 fn smoothstep01(a: f32, b: f32, x: f32) -> f32 {
@@ -1013,19 +1016,35 @@ fn drive_vapor(
     let g = state.g_norm as f32;
     let load = ((g - 2.0) / 3.0).clamp(0.0, 1.0);
     let alpha_load = ((alpha - 8.0) / 8.0).clamp(0.0, 1.0);
-    let base = load.max(alpha_load * 0.8) * speed_gate * humidity;
+    // Low speed can still condense, but only a small patch in the trigger-prone
+    // root/leading-edge region; high speed spreads the burst over more wing.
+    let speed_kts = state.cas_kts as f32;
+    let vapor_speed = smoothstep01(60.0, 320.0, speed_kts);
+    let coverage = 0.30 + 0.70 * vapor_speed;
+    let alpha_rate = (alpha - sheet_state.prev_alpha) / dt.max(1.0e-3);
+    let maneuver = load
+        .max(alpha_load * 0.9)
+        .max((alpha_rate / 80.0).clamp(0.0, 1.0))
+        .max((roll.abs() / 120.0).clamp(0.0, 1.0));
+    let base = maneuver * humidity * (0.55 + 0.45 * vapor_speed);
     let previous_g = sheet_state.prev_g;
-    if previous_g > 0.5
-        && (g - previous_g > 0.5 || (previous_g < 3.0 && g >= 3.0))
-    {
+    let previous_alpha = sheet_state.prev_alpha;
+    let spike = g - previous_g > 0.5
+        || alpha - previous_alpha > 3.0
+        || alpha_rate > 25.0
+        || roll.abs() > 60.0
+        || (previous_g < 3.0 && g >= 3.0);
+    if speed_kts >= 60.0 && previous_g > 0.5 && spike {
         for side in 0..2 {
             let roll_side = if side == 0 { -1.0 } else { 1.0 };
             let bias = (roll * 0.0015 * roll_side).clamp(-0.4, 0.4);
             sheet_state.age[side] = 0.0;
             sheet_state.strength[side] = (base + bias * 0.3).clamp(0.15, 1.0);
+            sheet_state.coverage[side] = (coverage + bias * 0.08).clamp(0.25, 1.0);
         }
     }
     sheet_state.prev_g = g;
+    sheet_state.prev_alpha = alpha;
     for side in 0..2 {
         if sheet_state.strength[side] > 0.0 {
             sheet_state.age[side] += dt;
@@ -1304,14 +1323,17 @@ fn drive_box(
     for (vapor_box, global, mat, mut vis) in &mut boxes {
         let side = vapor_box.side.min(1);
         let (density, scale) = burst_envelope(sheet_state.age[side]);
-        let intensity = sheet_state.strength[side] * density;
+        let coverage = sheet_state.coverage[side].clamp(0.25, 1.0);
+        let size = 0.55 + 0.45 * coverage;
+        let intensity = sheet_state.strength[side] * density * size;
+        let scale = scale * size;
         *vis = if intensity > 0.004 && scale > 0.004 {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         };
         if let Some(mut m) = box_mats.get_mut(&mat.0) {
-            m.params.color = Vec4::new(0.96, 0.98, 1.0, 1.0);
+            m.params.color = Vec4::new(0.96, 0.98, 1.0, coverage);
             m.params.anim = Vec4::new(intensity, t, side as f32, scale);
             m.params.light = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, 0.0);
             m.params.world_to_local = global.to_matrix().inverse();
@@ -1334,6 +1356,7 @@ fn drive_shadow(
     for (shadow, mat, mut vis) in &mut shadows {
         let side = shadow.side.min(1);
         let (density, _) = burst_envelope(sheet_state.age[side]);
+        let coverage = sheet_state.coverage[side].clamp(0.25, 1.0);
         let opacity = sheet_state.strength[side] * density;
         *vis = if opacity > 0.004 {
             Visibility::Inherited
@@ -1341,7 +1364,7 @@ fn drive_shadow(
             Visibility::Hidden
         };
         if let Some(mut m) = shadow_mats.get_mut(&mat.0) {
-            m.params.color = Vec4::new(0.035, 0.055, 0.085, 1.0);
+            m.params.color = Vec4::new(0.035, 0.055, 0.085, coverage);
             m.params.anim = Vec4::new(opacity * 1.20, t + side as f32, 0.0, 0.0);
         }
     }
