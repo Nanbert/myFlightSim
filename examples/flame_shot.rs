@@ -9,6 +9,8 @@
 //! up and back down, so the plume's automatic growth and fade are on camera.
 //! Shots land in `/tmp/opencode/`.
 
+#[path = "../src/cloud_camera.rs"]
+mod cloud_camera;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
 #[path = "../src/app_state.rs"]

@@ -7,11 +7,14 @@
 //! `MOTION=1` instead renders 60-frame clips at 10 m and the 500 m mission
 //! minimum for judging the wave animation -> `/tmp/sea_motion/<alt>m_<frame>.png`.
 
+use bevy::asset::RenderAssetUsages;
 use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, ShaderType};
+use bevy::render::render_resource::{
+    AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat,
+};
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 use bevy::shader::ShaderRef;
 
@@ -22,12 +25,17 @@ struct WaterParams {
     deep: Vec4,
     fog: Vec4,
     tune: Vec4,
+    cloud: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 struct WaterMaterial {
     #[uniform(0)]
     params: WaterParams,
+    #[texture(1, dimension = "3d")]
+    #[sampler(2)]
+    #[dependency]
+    cloud_noise: Handle<Image>,
 }
 
 impl Material for WaterMaterial {
@@ -126,7 +134,21 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<WaterMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
+    // Constant mid-grey volume: the shader needs the cloud-noise binding, but a
+    // value below the coverage gate means no cloud shadow in these shots.
+    let cloud_noise = images.add(Image::new(
+        Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D3,
+        vec![128],
+        TextureFormat::R8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    ));
     let water = mats.add(WaterMaterial {
         params: WaterParams {
             camera: Vec4::ZERO,
@@ -134,7 +156,9 @@ fn setup(
             deep: Vec4::new(0.006, 0.028, 0.052, 1.0),
             fog: Vec4::new(0.55, 0.70, 0.87, 0.000032),
             tune: VARIANTS[0].tune,
+            cloud: Vec4::new(1_500.0, 3_400.0, 0.35, 6.0),
         },
+        cloud_noise,
     });
     commands.insert_resource(Water(water.clone()));
 

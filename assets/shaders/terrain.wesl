@@ -20,11 +20,93 @@ struct TerrainParams {
     fog: vec4<f32>,
     // x = rock/snow line, y = mode (0 islands, 1 alpine), z = haze density
     rules: vec4<f32>,
+    // x = cloud base, y = cloud top, z = coverage, w = wind (m/s)
+    cloud: vec4<f32>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> u: TerrainParams;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var detail_tex: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(2) var detail_samp: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(3) var cloud_noise: texture_3d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(4) var cloud_samp: sampler;
+
+// Project the shaded point up to the cloud base along the sun and evaluate the
+// same weather field the dome marches. The mid-layer shape decides whether the
+// column actually holds a cloud, so the ground shadow follows the same gaps.
+fn cloud_shadow(p: vec3<f32>, sun: vec3<f32>) -> f32 {
+    if (sun.y <= 0.03) {
+        return 1.0;
+    }
+    let t = (u.cloud.x - p.y) / sun.y;
+    if (t <= 0.0) {
+        return 1.0;
+    }
+    let q = p + sun * t
+        + vec3<f32>(u.camera.w * u.cloud.w, 0.0, u.camera.w * u.cloud.w * 0.35);
+    let a = textureSampleLevel(cloud_noise, cloud_samp, q / 18000.0, 0.0).r;
+    let b = textureSampleLevel(
+        cloud_noise,
+        cloud_samp,
+        q / 5000.0 + vec3<f32>(0.53, 0.19, 0.91),
+        0.0,
+    ).r;
+    let threshold = mix(0.72, 0.30, u.cloud.z);
+    let cover = smoothstep(threshold - 0.06, threshold + 0.06, a * 0.55 + b * 0.45);
+
+    let mid = vec3<f32>(q.x, (u.cloud.x + u.cloud.y) * 0.5, q.z);
+    let raw = textureSampleLevel(
+        cloud_noise,
+        cloud_samp,
+        vec3<f32>(mid.x / 2600.0, mid.y / 780.0, mid.z / 2600.0),
+        0.0,
+    ).r;
+    let billow = 1.0 - abs(raw * 2.0 - 1.0);
+    let body = smoothstep(0.45, 0.70, mix(raw, billow, 0.5));
+    return 1.0 - 0.55 * cover * body;
+}
+
+// Whiteout when the camera is inside the layer. The dome is drawn at the back,
+// so without this the terrain stays crisp behind the cloud the aircraft is
+// flying through. Five taps over the first ~560 m of the view ray, matching the
+// dome's fly-through integral. The altitude gate is uniform across the frame,
+// so the taps cost nothing while the aircraft is clear of the layer.
+fn cam_veil(rd: vec3<f32>) -> f32 {
+    if (u.camera.y < u.cloud.x - 200.0 || u.camera.y > u.cloud.y + 200.0) {
+        return 0.0;
+    }
+    var tau = 0.0;
+    var walk = 0.0;
+    var seg = 10.0;
+    for (var i = 0; i < 5; i = i + 1) {
+        let p = u.camera.xyz + rd * walk;
+        let q = p + vec3<f32>(u.camera.w * u.cloud.w, 0.0, u.camera.w * u.cloud.w * 0.35);
+        let a = textureSampleLevel(cloud_noise, cloud_samp, q / 18000.0, 0.0).r;
+        let b = textureSampleLevel(
+            cloud_noise,
+            cloud_samp,
+            q / 5000.0 + vec3<f32>(0.53, 0.19, 0.91),
+            0.0,
+        ).r;
+        let threshold = mix(0.72, 0.30, u.cloud.z);
+        let cover = smoothstep(threshold - 0.06, threshold + 0.06, a * 0.55 + b * 0.45);
+
+        let h = clamp((p.y - u.cloud.x) / (u.cloud.y - u.cloud.x), 0.0, 1.0);
+        let raw = textureSampleLevel(
+            cloud_noise,
+            cloud_samp,
+            vec3<f32>(q.x / 2600.0, q.y / 780.0, q.z / 2600.0),
+            0.0,
+        ).r;
+        let billow = 1.0 - abs(raw * 2.0 - 1.0);
+        let body = smoothstep(0.45, 0.70, mix(raw, billow, 0.5));
+        let prof = smoothstep(0.0, 0.06, h) * (1.0 - smoothstep(0.85, 1.0, h));
+
+        tau += cover * body * prof * seg * 0.0045;
+        walk += seg;
+        seg *= 2.4;
+    }
+    return 1.0 - exp(-tau);
+}
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -85,12 +167,18 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let ndl = max(dot(n, sun), 0.0);
     let sun_col = vec3<f32>(1.0, 0.95, 0.86) * (1.0 - 0.55 * rain);
     let amb = mix(vec3<f32>(0.22, 0.30, 0.44), vec3<f32>(0.34, 0.36, 0.40), rain);
-    col *= sun_col * (0.22 + 1.05 * ndl) + amb * 0.34;
+    let shadow = cloud_shadow(p, sun);
+    col *= sun_col * (0.22 + 1.05 * ndl * shadow) + amb * 0.34;
 
     // Aerial perspective into the sky horizon.
     let dist = length(p - u.camera.xyz);
     let haze = 1.0 - exp(-dist * u.rules.z);
     col = mix(col, u.fog.rgb, clamp(haze, 0.0, 1.0));
+
+    // Fly-through whiteout, applied last so the ground dissolves into the cloud
+    // rather than into the horizon fog.
+    let veil = cam_veil((p - u.camera.xyz) / max(dist, 1e-4));
+    col = mix(col, vec3<f32>(0.90, 0.94, 1.0) * (1.0 - 0.22 * rain), veil * 0.85);
 
     return vec4<f32>(col, 1.0);
 }

@@ -1,5 +1,6 @@
 mod aircraft_profile;
 mod app_state;
+mod cloud_camera;
 mod autopilot;
 mod cockpit;
 mod config;

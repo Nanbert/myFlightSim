@@ -416,7 +416,7 @@ fn drive_vapor(
     state: Res<AircraftState>,
     weather: Res<Weather>,
     root: Query<&Transform, (With<AircraftRoot>, Without<VaporPuff>, Without<VaporCone>)>,
-    cameras: Query<&Transform, (With<Camera3d>, Without<VaporPuff>, Without<VaporCone>)>,
+    cameras: Query<&Transform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>, Without<VaporPuff>, Without<VaporCone>)>,
     mut trails: ResMut<Trails>,
     mut puffs: Query<
         (

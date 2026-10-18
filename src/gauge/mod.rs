@@ -209,7 +209,7 @@ fn seat_panel(
     state: Res<State<AppState>>,
     ui: Res<crate::view::Ui>,
     sim: Res<Sim>,
-    cams: Query<(&Camera, &Transform), With<Camera3d>>,
+    cams: Query<(&Camera, &Transform), (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
     airframe: Query<&Transform, With<crate::view::AircraftRoot>>,
     mut q: Query<(&mut Instrument, &mut Node, &mut UiTransform)>,
 ) {

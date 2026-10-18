@@ -18,6 +18,7 @@ use bevy::render::render_resource::{
 use bevy::shader::ShaderRef;
 
 use crate::app_state::AppState;
+use crate::sky::{coverage_for, CloudField};
 use crate::sim::StartFlight;
 
 /// Half-width of the square arena, metres. The terrain spans ±48 km.
@@ -114,7 +115,7 @@ impl MapId {
             // read best from, and below the cloud deck.
             MapId::Archipelago => 1_200.0,
             // Above the cloud top so the opening shot looks down on the peaks.
-            MapId::Alpine => (ground + 900.0).max(3_800.0),
+            MapId::Alpine => (ground + 900.0).max(7_200.0),
         };
         m / 0.3048
     }
@@ -173,6 +174,8 @@ struct TerrainParams {
     fog: Vec4,
     /// x = rock/snow line, y = palette mode, z = haze density, w = unused.
     rules: Vec4,
+    /// x = cloud base, y = cloud top, z = coverage, w = wind (m/s).
+    cloud: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
@@ -184,6 +187,11 @@ struct TerrainMaterial {
     #[sampler(2)]
     #[dependency]
     noise: Handle<Image>,
+    /// The cloud volume, sampled upward along the sun to cast cloud shadows.
+    #[texture(3, dimension = "3d")]
+    #[sampler(4)]
+    #[dependency]
+    cloud_noise: Handle<Image>,
 }
 
 impl Material for TerrainMaterial {
@@ -210,12 +218,19 @@ struct WaterParams {
     fog: Vec4,
     /// x = wave-LOD scale, y = swell gain, z = glitter gain, w = glitter exponent.
     tune: Vec4,
+    /// x = cloud base, y = cloud top, z = coverage, w = wind (m/s).
+    cloud: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 struct WaterMaterial {
     #[uniform(0)]
     params: WaterParams,
+    /// The cloud volume, sampled upward along the sun to cast cloud shadows.
+    #[texture(1, dimension = "3d")]
+    #[sampler(2)]
+    #[dependency]
+    cloud_noise: Handle<Image>,
 }
 
 impl Material for WaterMaterial {
@@ -262,6 +277,8 @@ fn enter_mission(
     mut images: ResMut<Assets<Image>>,
     mut terrain_mats: ResMut<Assets<TerrainMaterial>>,
     mut water_mats: ResMut<Assets<WaterMaterial>>,
+    weather: Res<crate::weather::Weather>,
+    cloud: Res<CloudField>,
     mut lights: Query<&mut Transform, With<DirectionalLight>>,
 ) {
     let Some(map) = pending.0.take() else {
@@ -271,6 +288,7 @@ fn enter_mission(
 
     let pal = map.palette();
     let fog = fog_color(0.0);
+    let cloud_params = Vec4::new(cloud.base, cloud.top, coverage_for(weather.rain), cloud.wind);
     let material = terrain_mats.add(TerrainMaterial {
         params: TerrainParams {
             camera: Vec4::ZERO,
@@ -281,8 +299,10 @@ fn enter_mission(
             deep: vec4_rgb(pal.deep),
             fog: vec4_rgb(fog),
             rules: Vec4::new(pal.line, pal.mode, HAZE, 0.0),
+            cloud: cloud_params,
         },
         noise: images.add(noise_image()),
+        cloud_noise: cloud.noise.clone(),
     });
     commands.spawn((
         Mesh3d(meshes.add(terrain_mesh(map))),
@@ -301,7 +321,9 @@ fn enter_mission(
                 // Fine waves survive ~1.7x farther out than the raw footprint
                 // LOD, so the sea keeps the detail of the near-surface renders.
                 tune: Vec4::new(0.6, 1.05, 1.1, 65.0),
+                cloud: cloud_params,
             },
+            cloud_noise: cloud.noise.clone(),
         });
         commands.spawn((
             Mesh3d(meshes.add(Plane3d::default().mesh().size(WATER_SIZE, WATER_SIZE))),
@@ -342,9 +364,10 @@ fn leave_mission(
 fn update_map_params(
     time: Res<Time>,
     weather: Res<crate::weather::Weather>,
-    camera: Query<&GlobalTransform, With<Camera3d>>,
+    camera: Query<&GlobalTransform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
     sun: Query<&GlobalTransform, With<DirectionalLight>>,
     handles: Res<MapHandles>,
+    cloud: Res<CloudField>,
     mut terrain_mats: ResMut<Assets<TerrainMaterial>>,
     mut water_mats: ResMut<Assets<WaterMaterial>>,
 ) {
@@ -356,12 +379,14 @@ fn update_map_params(
     let rain = weather.rain as f32;
     let fog = fog_color(rain);
     let t = time.elapsed_secs();
+    let cloud_params = Vec4::new(cloud.base, cloud.top, coverage_for(rain), cloud.wind);
 
     if let Some(handle) = &handles.terrain {
         if let Some(mut mat) = terrain_mats.get_mut(handle) {
             mat.params.camera = Vec4::new(pos.x, pos.y, pos.z, t);
             mat.params.sun = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, rain);
             mat.params.fog = vec4_rgb(fog);
+            mat.params.cloud = cloud_params;
         }
     }
     if let Some(handle) = &handles.water {
@@ -369,6 +394,7 @@ fn update_map_params(
             mat.params.camera = Vec4::new(pos.x, pos.y, pos.z, t);
             mat.params.sun = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, rain);
             mat.params.fog = Vec4::new(fog[0], fog[1], fog[2], HAZE);
+            mat.params.cloud = cloud_params;
         }
     }
 }

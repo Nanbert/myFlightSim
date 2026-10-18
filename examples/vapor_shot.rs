@@ -8,6 +8,8 @@
 //! lights up on the descending wing alone; `SCENE=sonic` flies fast for the
 //! Mach-1 cone. Shots land in `/tmp/opencode/`.
 
+#[path = "../src/cloud_camera.rs"]
+mod cloud_camera;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
 #[path = "../src/app_state.rs"]

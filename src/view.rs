@@ -983,7 +983,7 @@ pub(crate) fn follow_camera(
     ui: Res<Ui>,
     tune: Res<CockpitTune>,
     mut chase: ResMut<Chase>,
-    mut q: Query<&mut Transform, With<Camera3d>>,
+    mut q: Query<&mut Transform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
 ) {
     let Ok(mut t) = q.single_mut() else {
         return;
@@ -1056,7 +1056,7 @@ fn buffet_weight(cas_kts: f64, alpha_deg: f64) -> f32 {
 /// Undo the parts of `camera_feel` that outlive a flight — the widened lens and
 /// the motion blur — so the menu isn't left looking like it's at 400 kt. The
 /// shake itself needs no cleanup: `follow_camera` rewrites the pose every frame.
-fn reset_camera_feel(mut q: Query<(&mut Projection, Option<&mut MotionBlur>), With<Camera3d>>) {
+fn reset_camera_feel(mut q: Query<(&mut Projection, Option<&mut MotionBlur>), (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>) {
     let Ok((mut projection, blur)) = q.single_mut() else {
         return;
     };
@@ -1088,7 +1088,7 @@ fn camera_feel(
     tune: Res<CockpitTune>,
     mut q: Query<
         (&mut Transform, &mut Projection, Option<&mut MotionBlur>),
-        With<Camera3d>,
+        (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>),
     >,
 ) {
     let Ok((mut t, mut projection, blur)) = q.single_mut() else {

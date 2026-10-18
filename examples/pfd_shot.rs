@@ -2,6 +2,8 @@
 //!
 //! Run: `cargo run --example pfd_shot` and open `/tmp/pfd_shot.png`.
 
+#[path = "../src/cloud_camera.rs"]
+mod cloud_camera;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
 #[path = "../src/app_state.rs"]

@@ -190,7 +190,7 @@ fn update_rain(
     weather: Res<Weather>,
     mat: Res<RainMaterial>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    camera: Query<&Transform, (With<Camera3d>, Without<RainDrop>)>,
+    camera: Query<&Transform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>, Without<RainDrop>)>,
     mut drops: Query<(&mut Transform, &mut Visibility, &RainDrop)>,
 ) {
     let Ok(cam) = camera.single() else {
@@ -236,7 +236,7 @@ fn update_splashes(
     weather: Res<Weather>,
     mut rng: Local<Lcg>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    camera: Query<&Transform, (With<Camera3d>, Without<Splash>)>,
+    camera: Query<&Transform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>, Without<Splash>)>,
     mut splashes: Query<(&mut Transform, &mut Visibility, &mut Splash)>,
 ) {
     let Ok(cam) = camera.single() else {

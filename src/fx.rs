@@ -470,7 +470,7 @@ fn drive_flames(
     mut burner: ResMut<Burner>,
     mut plume: ResMut<Plume>,
     root: Query<&Transform, (With<AircraftRoot>, Without<FlamePuff>)>,
-    cameras: Query<&Transform, (With<Camera3d>, Without<FlamePuff>)>,
+    cameras: Query<&Transform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>, Without<FlamePuff>)>,
     mut puffs: Query<(
         &FlamePuff,
         &MeshMaterial3d<FlamePuffMaterial>,
@@ -665,7 +665,7 @@ fn manage_haze(
     state: Res<AircraftState>,
     burner: Res<Burner>,
     root: Query<&Transform, With<AircraftRoot>>,
-    mut cameras: Query<(Entity, &Camera, &GlobalTransform, Option<&ExhaustHaze>), With<Camera3d>>,
+    mut cameras: Query<(Entity, &Camera, &GlobalTransform, Option<&ExhaustHaze>), (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
 ) {
     let throttle = state.throttle.clamp(0.0, 1.0) as f32;
     // Exhaust heat, the same blend the plume colours itself from: the spooled

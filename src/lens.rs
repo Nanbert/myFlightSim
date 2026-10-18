@@ -450,7 +450,7 @@ fn manage_lens(
     sim: Res<Sim>,
     ui: Res<Ui>,
     mut film: ResMut<Film>,
-    cameras: Query<(Entity, Option<&RainLens>), With<Camera3d>>,
+    cameras: Query<(Entity, Option<&RainLens>), (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
 ) {
     let dt = time.delta_secs().min(0.1);
     let flying = *app_state.get() == AppState::Flying;

@@ -26,9 +26,89 @@ struct WaterParams {
     // x = wave-LOD scale (1 = baseline; < 1 keeps fine octaves farther out),
     // y = swell height gain, z = sun-glitter gain, w = glitter exponent.
     tune: vec4<f32>,
+    // x = cloud base, y = cloud top, z = coverage, w = wind (m/s)
+    cloud: vec4<f32>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> u: WaterParams;
+@group(constants::MATERIAL_BIND_GROUP) @binding(1) var cloud_noise: texture_3d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(2) var cloud_samp: sampler;
+
+// The sun's direct path is occluded where a cloud sits between it and the sea.
+// Same projection and weather field as the terrain shadow.
+fn cloud_shadow(p: vec3<f32>, sun: vec3<f32>) -> f32 {
+    if (sun.y <= 0.03) {
+        return 1.0;
+    }
+    let t = (u.cloud.x - p.y) / sun.y;
+    if (t <= 0.0) {
+        return 1.0;
+    }
+    let q = p + sun * t
+        + vec3<f32>(u.camera.w * u.cloud.w, 0.0, u.camera.w * u.cloud.w * 0.35);
+    let a = textureSampleLevel(cloud_noise, cloud_samp, q / 18000.0, 0.0).r;
+    let b = textureSampleLevel(
+        cloud_noise,
+        cloud_samp,
+        q / 5000.0 + vec3<f32>(0.53, 0.19, 0.91),
+        0.0,
+    ).r;
+    let threshold = mix(0.72, 0.30, u.cloud.z);
+    let cover = smoothstep(threshold - 0.06, threshold + 0.06, a * 0.55 + b * 0.45);
+
+    let mid = vec3<f32>(q.x, (u.cloud.x + u.cloud.y) * 0.5, q.z);
+    let raw = textureSampleLevel(
+        cloud_noise,
+        cloud_samp,
+        vec3<f32>(mid.x / 2600.0, mid.y / 780.0, mid.z / 2600.0),
+        0.0,
+    ).r;
+    let billow = 1.0 - abs(raw * 2.0 - 1.0);
+    let body = smoothstep(0.45, 0.70, mix(raw, billow, 0.5));
+    return 1.0 - 0.55 * cover * body;
+}
+
+// Whiteout when the camera is inside the layer. The dome is drawn at the back,
+// so without this the sea stays crisp behind the cloud the aircraft is flying
+// through. Five taps over the first ~560 m of the view ray, matching the dome's
+// fly-through integral; the altitude gate makes it free when clear of the layer.
+fn cam_veil(rd: vec3<f32>) -> f32 {
+    if (u.camera.y < u.cloud.x - 200.0 || u.camera.y > u.cloud.y + 200.0) {
+        return 0.0;
+    }
+    var tau = 0.0;
+    var walk = 0.0;
+    var seg = 10.0;
+    for (var i = 0; i < 5; i = i + 1) {
+        let p = u.camera.xyz + rd * walk;
+        let q = p + vec3<f32>(u.camera.w * u.cloud.w, 0.0, u.camera.w * u.cloud.w * 0.35);
+        let a = textureSampleLevel(cloud_noise, cloud_samp, q / 18000.0, 0.0).r;
+        let b = textureSampleLevel(
+            cloud_noise,
+            cloud_samp,
+            q / 5000.0 + vec3<f32>(0.53, 0.19, 0.91),
+            0.0,
+        ).r;
+        let threshold = mix(0.72, 0.30, u.cloud.z);
+        let cover = smoothstep(threshold - 0.06, threshold + 0.06, a * 0.55 + b * 0.45);
+
+        let h = clamp((p.y - u.cloud.x) / (u.cloud.y - u.cloud.x), 0.0, 1.0);
+        let raw = textureSampleLevel(
+            cloud_noise,
+            cloud_samp,
+            vec3<f32>(q.x / 2600.0, q.y / 780.0, q.z / 2600.0),
+            0.0,
+        ).r;
+        let billow = 1.0 - abs(raw * 2.0 - 1.0);
+        let body = smoothstep(0.45, 0.70, mix(raw, billow, 0.5));
+        let prof = smoothstep(0.0, 0.06, h) * (1.0 - smoothstep(0.85, 1.0, h));
+
+        tau += cover * body * prof * seg * 0.0045;
+        walk += seg;
+        seg *= 2.4;
+    }
+    return 1.0 - exp(-tau);
+}
 
 const PI: f32 = 3.14159265;
 const SEA_HEIGHT: f32 = 0.6;
@@ -275,7 +355,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // the water stays visible at grazing angles instead of turning to mirror.
     let fresnel = min(pow(clamp(1.0 - dot(n, v), 0.0, 1.0), 3.0), 0.5);
     let reflected = sky_color(reflect(-v, n), sun, rain);
-    let refracted = u.deep.rgb + diffuse(n, sun, 80.0) * SEA_WATER_COLOR * 0.12;
+    let shadow = cloud_shadow(hit, sun);
+    let refracted = u.deep.rgb + diffuse(n, sun, 80.0) * SEA_WATER_COLOR * 0.12 * shadow;
     var col = mix(refracted, reflected, fresnel);
 
     // Crests catch a little upwelling light; troughs darken. Height is divided
@@ -285,11 +366,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let sun_col = vec3<f32>(1.0, 0.95, 0.86) * (1.0 - 0.55 * rain);
     let glitter = specular(n, sun, v, max(u.tune.w, 1.0)) * max(u.tune.z, 0.0);
-    col += sun_col * glitter * (1.0 - 0.75 * rain);
+    col += sun_col * glitter * shadow * (1.0 - 0.75 * rain);
 
     // Aerial perspective, same falloff as the terrain (fog.w carries density).
     let haze = 1.0 - exp(-dist * u.fog.w);
     col = mix(col, u.fog.rgb, clamp(haze, 0.0, 1.0));
+
+    // Fly-through whiteout: the sea disappears into the cloud too.
+    let veil = cam_veil((hit - ro) / max(dist, 1e-4));
+    col = mix(col, vec3<f32>(0.90, 0.94, 1.0) * (1.0 - 0.22 * rain), veil * 0.85);
 
     return vec4<f32>(col, 1.0);
 }

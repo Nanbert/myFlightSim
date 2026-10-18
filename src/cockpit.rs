@@ -167,7 +167,7 @@ fn board_probe(
     mut ui: ResMut<Ui>,
     mut hover: ResMut<BoardHover>,
     mut frame: Query<&mut Node, With<BoardFrame>>,
-    cameras: Query<&Camera, With<Camera3d>>,
+    cameras: Query<&Camera, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
 ) {
     hover.hovered = false;
     let autopilot = aircraft_profile::profile(&sim.name).has_autopilot;

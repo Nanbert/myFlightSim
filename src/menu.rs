@@ -869,7 +869,7 @@ fn menu_camera(
     time: Res<Time>,
     sel: Res<MenuSelection>,
     mut look: ResMut<MenuCamLook>,
-    mut q: Query<&mut Transform, With<Camera3d>>,
+    mut q: Query<&mut Transform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
 ) {
     let Ok(mut t) = q.single_mut() else {
         return;

@@ -6,6 +6,8 @@
 //!
 //! `VIEW=side` swaps the camera to a broadside view of the exhaust.
 
+#[path = "../src/cloud_camera.rs"]
+mod cloud_camera;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
 #[path = "../src/app_state.rs"]
