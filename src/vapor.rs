@@ -422,6 +422,8 @@ struct SheetState {
     trail_unlock: [bool; 2],
     /// Speed-driven footprint coverage (0.25..1), per side.
     coverage: [f32; 2],
+    /// +1 upper surface, -1 lower surface, per side.
+    surface: [f32; 2],
     prev_g: f32,
     prev_local_alpha: [f32; 2],
 }
@@ -485,8 +487,10 @@ struct BoxParams {
     color: Vec4,
     /// x = intensity, y = time (s), z = side, w unused.
     anim: Vec4,
-    /// xyz = direction toward the sun.
+    /// xyz = direction toward the sun, w = surface sign.
     light: Vec4,
+    /// xyz = body/local drift, w = age fraction.
+    drift: Vec4,
     /// World -> box-local (unit cube) transform.
     world_to_local: Mat4,
 }
@@ -552,6 +556,8 @@ impl Material for ShadowMaterial {
 #[derive(Component)]
 struct MassShadow {
     side: usize,
+    surface: f32,
+    base: Vec3,
 }
 
 /// A body-frame box over one wing whose fragment shader raymarches the
@@ -560,6 +566,7 @@ struct MassShadow {
 #[derive(Component)]
 struct VaporBox {
     side: usize,
+    surface: f32,
 }
 
 /// One camera-facing puff of the wing boundary-layer cloud. Positions are
@@ -782,39 +789,50 @@ fn spawn_vapor(
     }
 
     if BOX_VOLUME_ENABLED {
-        // One wing-shaped thick layer per side. The box is only the raymarch
-        // bounds; a planform mask in the shader gives it the wing footprint.
+        // Two surfaces per side. Only the suction-side copy is shown; the
+        // other stays hidden. The shader flips its height axis for the lower.
         let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
         for side in 0..2 {
             let mirror = if side == 0 { 1.0 } else { -1.0 };
-            let material = box_mats.add(BoxMaterial {
-                params: BoxParams::default(),
-            });
-            commands.spawn((
-                VaporBox { side },
-                Mesh3d(cube.clone()),
-                MeshMaterial3d(material),
-                Transform::from_xyz(-4.35 * mirror, 0.77, 3.25)
-                    .with_scale(Vec3::new(5.2, 1.40, 7.6)),
-                Visibility::Hidden,
-                DespawnOnExit(AppState::Flying),
-                ChildOf(root),
-            ));
+            for surface in [1.0, -1.0] {
+                let material = box_mats.add(BoxMaterial {
+                    params: BoxParams::default(),
+                });
+                let y = if surface > 0.0 { 0.77 } else { -0.85 };
+                commands.spawn((
+                    VaporBox { side, surface },
+                    Mesh3d(cube.clone()),
+                    MeshMaterial3d(material),
+                    Transform::from_xyz(-4.35 * mirror, y, 3.25)
+                        .with_scale(Vec3::new(5.2, 1.40, 7.6)),
+                    Visibility::Hidden,
+                    DespawnOnExit(AppState::Flying),
+                    ChildOf(root),
+                ));
 
-            // Wing-shaped shadow: reuse the upper-wing grid so the dark pool
-            // follows the planform instead of being a round decal.
-            let shadow = shadow_mats.add(ShadowMaterial {
-                params: ShadowParams::default(),
-            });
-            commands.spawn((
-                MassShadow { side },
-                Mesh3d(meshes.add(wing_sheet_mesh(&sim.name, mirror, 0))),
-                MeshMaterial3d(shadow),
-                Transform::from_xyz(0.0, 0.035, 0.0).with_scale(Vec3::splat(1.15)),
-                Visibility::Hidden,
-                DespawnOnExit(AppState::Flying),
-                ChildOf(root),
-            ));
+                let shadow = shadow_mats.add(ShadowMaterial {
+                    params: ShadowParams::default(),
+                });
+                let y = if surface > 0.0 { 0.035 } else { -0.18 };
+                let scale = if surface > 0.0 {
+                    Vec3::splat(1.15)
+                } else {
+                    Vec3::new(1.15, -1.15, 1.15)
+                };
+                commands.spawn((
+                    MassShadow {
+                        side,
+                        surface,
+                        base: Vec3::new(0.0, y, 0.0),
+                    },
+                    Mesh3d(meshes.add(wing_sheet_mesh(&sim.name, mirror, 0))),
+                    MeshMaterial3d(shadow),
+                    Transform::from_xyz(0.0, y, 0.0).with_scale(scale),
+                    Visibility::Hidden,
+                    DespawnOnExit(AppState::Flying),
+                    ChildOf(root),
+                ));
+            }
         }
     }
 
@@ -1015,7 +1033,7 @@ fn drive_vapor(
     // mass snaps open, holds, then shrinks back into the wing. Tip trails are
     // held off for the first 0.10 s so the eye sees the mass pop first.
     let g = state.g_norm as f32;
-    let load = ((g - 2.0) / 3.0).clamp(0.0, 1.0);
+    let load = ((g.abs() - 2.0) / 3.0).clamp(0.0, 1.0);
     // Low speed can still condense, but only a small patch in the trigger-prone
     // root/leading-edge region; high speed spreads the burst over more wing.
     let speed_kts = state.cas_kts as f32;
@@ -1030,27 +1048,30 @@ fn drive_vapor(
     let delta_alpha = (roll * 3.5 / speed_mps).clamp(-6.0, 6.0);
     let local_alpha = [alpha - delta_alpha, alpha + delta_alpha];
     let previous_g = sheet_state.prev_g;
-    let g_spike = previous_g > 0.5
-        && (g - previous_g > 0.5 || (previous_g < 3.0 && g >= 3.0));
+    let g_spike = previous_g.abs() > 0.5
+        && ((g - previous_g).abs() > 0.5
+            || (previous_g.abs() < 3.0 && g.abs() >= 3.0));
 
     for side in 0..2 {
         let a = local_alpha[side];
         let prev_a = sheet_state.prev_local_alpha[side];
-        let alpha_load = ((a - 8.0) / 8.0).clamp(0.0, 1.0);
+        let alpha_load = ((a.abs() - 8.0) / 8.0).clamp(0.0, 1.0);
         let alpha_rate = (a - prev_a) / dt.max(1.0e-3);
         let maneuver = load
             .max(alpha_load * 0.9)
-            .max((alpha_rate / 80.0).clamp(0.0, 1.0));
+            .max((alpha_rate.abs() / 80.0).clamp(0.0, 1.0));
         let base = maneuver * humidity * (0.55 + 0.45 * vapor_speed);
-        let alpha_spike = a - prev_a > 3.0
-            || alpha_rate > 25.0
-            || (a > 12.0 && prev_a <= 12.0);
+        let alpha_spike = (a - prev_a).abs() > 3.0
+            || alpha_rate.abs() > 25.0
+            || (a.abs() > 12.0 && prev_a.abs() <= 12.0);
+        let surface = if g < -0.5 || a < 0.0 { -1.0 } else { 1.0 };
         if speed_kts >= 60.0 && (g_spike || alpha_spike) {
             sheet_state.age[side] = 0.0;
             sheet_state.strength[side] = base.clamp(0.15, 1.0);
             // The descending wing also gets the larger low-pressure footprint.
             let side_coverage = coverage * (0.75 + 0.25 * alpha_load);
             sheet_state.coverage[side] = side_coverage.clamp(0.25, 1.0);
+            sheet_state.surface[side] = surface;
         }
     }
     sheet_state.prev_g = g;
@@ -1332,11 +1353,21 @@ fn drive_box(
     let t = time.elapsed_secs();
     for (vapor_box, global, mat, mut vis) in &mut boxes {
         let side = vapor_box.side.min(1);
+        let surface = sheet_state.surface[side];
+        if (vapor_box.surface > 0.0) != (surface > 0.0) {
+            *vis = Visibility::Hidden;
+            continue;
+        }
         let (density, scale) = burst_envelope(sheet_state.age[side]);
         let coverage = sheet_state.coverage[side].clamp(0.25, 1.0);
         let size = 0.55 + 0.45 * coverage;
         let intensity = sheet_state.strength[side] * density * size;
         let scale = scale * size;
+        let age = sheet_state.age[side];
+        let f = (age / 0.45).clamp(0.0, 1.0);
+        let outboard = if side == 0 { -1.0 } else { 1.0 };
+        let dx = outboard * 0.6 * f / 5.2;
+        let dz = 1.8 * f / 7.6;
         *vis = if intensity > 0.004 && scale > 0.004 {
             Visibility::Inherited
         } else {
@@ -1345,7 +1376,8 @@ fn drive_box(
         if let Some(mut m) = box_mats.get_mut(&mat.0) {
             m.params.color = Vec4::new(0.96, 0.98, 1.0, coverage);
             m.params.anim = Vec4::new(intensity, t, side as f32, scale);
-            m.params.light = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, 0.0);
+            m.params.light = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, surface);
+            m.params.drift = Vec4::new(dx, 0.0, dz, f);
             m.params.world_to_local = global.to_matrix().inverse();
         }
     }
@@ -1358,16 +1390,27 @@ fn drive_shadow(
     mut shadows: Query<(
         &MassShadow,
         &MeshMaterial3d<ShadowMaterial>,
+        &mut Transform,
         &mut Visibility,
     )>,
     mut shadow_mats: ResMut<Assets<ShadowMaterial>>,
 ) {
     let t = time.elapsed_secs();
-    for (shadow, mat, mut vis) in &mut shadows {
+    for (shadow, mat, mut tf, mut vis) in &mut shadows {
         let side = shadow.side.min(1);
+        let surface = sheet_state.surface[side];
+        if (shadow.surface > 0.0) != (surface > 0.0) {
+            *vis = Visibility::Hidden;
+            continue;
+        }
         let (density, _) = burst_envelope(sheet_state.age[side]);
         let coverage = sheet_state.coverage[side].clamp(0.25, 1.0);
         let opacity = sheet_state.strength[side] * density;
+        let age = sheet_state.age[side];
+        let f = (age / 0.45).clamp(0.0, 1.0);
+        let outboard = if side == 0 { -1.0 } else { 1.0 };
+        tf.translation = shadow.base
+            + Vec3::new(outboard * 0.6 * f * 0.15, 0.0, 1.8 * f * 0.15);
         *vis = if opacity > 0.004 {
             Visibility::Inherited
         } else {

@@ -13,6 +13,8 @@ struct BoxParams {
     // x = intensity, y = time (s), z = side, w = thickness scale (0..1).
     anim: vec4<f32>,
     light: vec4<f32>,
+    // xyz = local drift, w = age fraction.
+    drift: vec4<f32>,
     world_to_local: mat4x4<f32>,
 };
 
@@ -94,24 +96,31 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let dt = (t1 - t0) / f32(STEPS);
     let sun = normalize(params.light.xyz);
     let side = params.anim.z;
+    let surface = params.light.w;
     let s = max(params.anim.w, 0.001);
+    let drift_f = clamp(params.drift.w, 0.0, 1.0);
+    let grow = 1.0 + 0.30 * drift_f;
 
     var acc = vec3<f32>(0.0);
     var trans = 1.0;
     for (var i = 0; i < STEPS; i = i + 1) {
         let p = ro + rd * (t0 + (f32(i) + 0.5) * dt);
 
-        // Box local x/z are the planform; y is the layer height. Scaling only
-        // y makes the burst collapse down onto the wing instead of becoming a
-        // small ball.
-        let h = clamp((p.y + 0.5) / s, 0.0, 1.0);
-        let lx = select(p.x, -p.x, side > 0.5);
+        // Box local x/z are the planform; y is the layer height. The lower
+        // surface copy flips y so both sides stay dense at the wing.
+        let sy = clamp((p.y + 0.5) / s, 0.0, 1.0);
+        let h = select(1.0 - sy, sy, surface > 0.0);
+        // Base stays near the wing; the top is sheared aft/outboard by the
+        // boundary-layer flow. This is a short drift, not a world-space trail.
+        let shear = 0.15 + 0.85 * h;
+        let pd = p - params.drift.xyz * shear;
+        let lx = select(pd.x, -pd.x, side > 0.5);
         let n = fbm3(
-            vec3<f32>(p.x * 4.0, p.y * 4.0, p.z * 4.0)
+            vec3<f32>(pd.x * 4.0, pd.y * 4.0, pd.z * 4.0)
                 + vec3<f32>(side * 9.0, params.anim.y * 0.25, 0.0),
         );
         let n2 = fbm3(
-            vec3<f32>(p.x * 8.0, p.y * 6.0, p.z * 8.0)
+            vec3<f32>(pd.x * 8.0, pd.y * 6.0, pd.z * 8.0)
                 + vec3<f32>(5.0, params.anim.y * 0.60, side * 2.0),
         );
 
@@ -127,7 +136,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let radial = 1.0 - smoothstep(
             0.30,
             0.52,
-            length(vec2<f32>((lx - cx) * 1.15, (p.z - cz) * 1.10)) / r + wob,
+            length(vec2<f32>((lx - cx) * 1.15, (pd.z - cz) * 1.10)) / (r * grow) + wob,
         );
         // At full coverage the ellipse reaches the raymarch box faces; fade the
         // density out before them so the layer never gets a rectangular cut.
