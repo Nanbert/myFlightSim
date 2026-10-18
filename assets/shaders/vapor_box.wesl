@@ -123,12 +123,17 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let cx = 0.26 * root_bias;
         let cz = -0.20 - 0.12 * root_bias;
         let wob = (n - 0.5) * 0.04;
+        let r = 0.18 + 0.82 * cov;
         let radial = 1.0 - smoothstep(
             0.30,
             0.52,
-            length(vec2<f32>((lx - cx) * 0.85, (p.z - cz) * 0.55)) / cov + wob,
+            length(vec2<f32>((lx - cx) * 1.15, (p.z - cz) * 1.10)) / r + wob,
         );
-        let edge = radial;
+        // At full coverage the ellipse reaches the raymarch box faces; fade the
+        // density out before them so the layer never gets a rectangular cut.
+        let box_fade = smoothstep(0.0, 0.14, 0.5 - abs(p.x))
+            * smoothstep(0.0, 0.14, 0.5 - abs(p.z));
+        let edge = radial * box_fade;
 
         let height = pow(1.0 - h, 1.15);
         let field = edge * height * (0.25 + 0.75 * n) * (0.70 + 0.30 * n2);
