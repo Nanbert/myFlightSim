@@ -115,19 +115,19 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
                 + vec3<f32>(5.0, params.anim.y * 0.60, side * 2.0),
         );
 
-        // Elliptical footprint over the upper wing. The wing-shaped shadow
-        // supplies the planform read; the volume itself stays soft and torn.
-        let wob = (n - 0.5) * 0.035;
+        // Footprint ellipse, shifted forward so the leading edge is inside it.
+        // The previous centred ellipse only covered the rear half of the wing.
+        let wob = (n - 0.5) * 0.04;
         let radial = 1.0 - smoothstep(
             0.30,
-            0.50,
-            length(vec2<f32>(lx * 0.95, (p.z - 0.04) * 0.62)) + wob,
+            0.52,
+            length(vec2<f32>(lx * 0.85, (p.z + 0.18) * 0.55)) + wob,
         );
         let edge = radial;
 
         let height = pow(1.0 - h, 1.15);
         let field = edge * height * (0.25 + 0.75 * n) * (0.70 + 0.30 * n2);
-        let density = field * intensity * 300.0;
+        let density = field * intensity * 1000.0;
         let a = 1.0 - exp(-density * dt);
 
         if (a > 0.0001) {
