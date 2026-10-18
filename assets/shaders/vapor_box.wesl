@@ -1,27 +1,24 @@
-// Local volumetric wing-vapor box.
+// Wing-surface condensation layer.
 //
-// Two boxes (one per wing) ride the airframe. Each fragment ray-marches the
-// boundary-layer density inside the box, so the cloud has a real 3D silhouette
-// and self-occlusion instead of reading as a flat decal or a stack of
-// billboards. Density is densest at the wing surface and feathers upward.
+// One wing-shaped volume per side. The box is only the raymarch bounds; the
+// density is masked to the F-22 wing planform in box-local coordinates and
+// falls off with height, so the layer hugs the upper surface instead of reading
+// as a blob. `anim.w` shrinks the thickness toward the wing as the burst dies.
 
 import bevy_pbr::render::forward_io::VertexOutput;
 import bevy_pbr::render::mesh_view_bindings::view;
 
 struct BoxParams {
-    // rgb = vapour colour, a unused.
     color: vec4<f32>,
-    // x = intensity, y = time (s), z = side, w unused.
+    // x = intensity, y = time (s), z = side, w = thickness scale (0..1).
     anim: vec4<f32>,
-    // xyz = direction toward the sun.
     light: vec4<f32>,
-    // World -> box-local (unit cube) transform.
     world_to_local: mat4x4<f32>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> params: BoxParams;
 
-const STEPS: i32 = 16;
+const STEPS: i32 = 20;
 
 fn hash31(p: vec3<f32>) -> f32 {
     var q = fract(p * vec3<f32>(0.1031, 0.1030, 0.0973));
@@ -97,50 +94,53 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let dt = (t1 - t0) / f32(STEPS);
     let sun = normalize(params.light.xyz);
     let side = params.anim.z;
+    let s = max(params.anim.w, 0.001);
+
     var acc = vec3<f32>(0.0);
     var trans = 1.0;
-
     for (var i = 0; i < STEPS; i = i + 1) {
         let p = ro + rd * (t0 + (f32(i) + 0.5) * dt);
-        let h = clamp(p.y + 0.5, 0.0, 1.0);
-        let height = smoothstep(0.0, 0.22, h) * (1.0 - smoothstep(0.58, 1.0, h));
+
+        // Box local x/z are the planform; y is the layer height. Scaling only
+        // y makes the burst collapse down onto the wing instead of becoming a
+        // small ball.
+        let h = clamp((p.y + 0.5) / s, 0.0, 1.0);
+        let lx = select(p.x, -p.x, side > 0.5);
         let n = fbm3(
-            vec3<f32>(p.x * 5.5, p.y * 4.0, p.z * 5.5)
-                + vec3<f32>(side * 9.0, params.anim.y * 0.20, 0.0),
+            vec3<f32>(p.x * 4.0, p.y * 4.0, p.z * 4.0)
+                + vec3<f32>(side * 9.0, params.anim.y * 0.25, 0.0),
         );
-        // Rounded, noise-dithered ellipsoid: the box faces never shape the
-        // visible cloud, only the density falloff does.
-        let radial = 1.0 - smoothstep(
-            0.20,
-            0.55,
-            length(p * 1.20) + (n - 0.5) * 0.08,
-        );
-        let ex = smoothstep(0.0, 0.08, 0.5 - abs(p.x));
-        let ez = smoothstep(0.0, 0.08, 0.5 - abs(p.z));
-        let edge = radial * ex * ez;
         let n2 = fbm3(
-            vec3<f32>(p.x * 11.0, p.y * 8.0, p.z * 11.0)
-                + vec3<f32>(4.0, params.anim.y * 0.35, side * 3.0),
+            vec3<f32>(p.x * 8.0, p.y * 6.0, p.z * 8.0)
+                + vec3<f32>(5.0, params.anim.y * 0.60, side * 2.0),
         );
-        let d = edge
-            * height
-            * smoothstep(0.20, 0.62, n)
-            * (0.55 + 0.45 * n2)
-            * intensity
-            * 14.0;
-        let a = 1.0 - exp(-d * dt);
+
+        // Elliptical footprint over the upper wing. The wing-shaped shadow
+        // supplies the planform read; the volume itself stays soft and torn.
+        let wob = (n - 0.5) * 0.035;
+        let radial = 1.0 - smoothstep(
+            0.30,
+            0.50,
+            length(vec2<f32>(lx * 0.95, (p.z - 0.04) * 0.62)) + wob,
+        );
+        let edge = radial;
+
+        let height = pow(1.0 - h, 1.15);
+        let field = edge * height * (0.25 + 0.75 * n) * (0.70 + 0.30 * n2);
+        let density = field * intensity * 300.0;
+        let a = 1.0 - exp(-density * dt);
+
         if (a > 0.0001) {
             let ndl = max(sun.y, 0.0);
             let V = normalize(cam - P);
             let back = pow(max(dot(-V, sun), 0.0), 3.0);
-            let lit = clamp(0.32 + 0.68 * ndl + 0.45 * back, 0.0, 1.5);
-            // Cool shadow at the base, warm white at the top: the wing is
-            // already light, so a uniform white cloud would vanish into it.
-            let shade = smoothstep(0.0, 0.55, h);
+            let lit = clamp(0.30 + 0.70 * ndl + 0.45 * back, 0.0, 1.5)
+                * (0.80 + 0.20 * n2);
+            let shade = smoothstep(0.0, 0.85, h);
             let col = mix(
-                vec3<f32>(0.36, 0.46, 0.60),
-                vec3<f32>(1.0, 0.98, 0.94),
-                shade,
+                vec3<f32>(0.42, 0.52, 0.66),
+                vec3<f32>(0.94, 0.97, 1.0),
+                shade * 0.55,
             ) * lit;
             acc += col * a * trans;
             trans *= 1.0 - a;
