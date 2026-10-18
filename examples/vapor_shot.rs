@@ -10,6 +10,10 @@
 
 #[path = "../src/cloud_camera.rs"]
 mod cloud_camera;
+#[path = "../src/map.rs"]
+mod map;
+#[path = "../src/sky.rs"]
+mod sky;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
 #[path = "../src/app_state.rs"]
@@ -31,7 +35,13 @@ mod view;
 #[path = "../src/weather.rs"]
 mod weather;
 
+use bevy::camera::Hdr;
+use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::post_process::bloom::Bloom;
+use bevy::post_process::motion_blur::MotionBlur;
 use bevy::prelude::*;
+use bevy::render::view::{DebandDither, Msaa};
+use bevy::window::PresentMode;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 use bevy::winit::WinitSettings;
 
@@ -84,6 +94,11 @@ fn main() {
             primary_window: Some(Window {
                 title: "vapor_shot".into(),
                 resolution: (1200, 800).into(),
+                present_mode: if std::env::var("SOFTWARE").is_ok() {
+                    PresentMode::Immediate
+                } else {
+                    PresentMode::AutoVsync
+                },
                 ..default()
             }),
             ..default()
@@ -100,6 +115,7 @@ fn main() {
             vapor::VaporPlugin,
             fx::FxPlugin,
             weather::WeatherPlugin,
+            map::MapPlugin,
         ))
         .insert_state(app_state::AppState::Flying)
         .add_systems(
@@ -110,13 +126,41 @@ fn main() {
         .insert_resource(scene)
         .insert_resource(GameCam(game_cam))
         .insert_resource(MachHold { throttle: 0.75 })
+        .insert_resource(sky::CloudField {
+            noise: Handle::default(),
+            base: 1_500.0,
+            top: 6_500.0,
+            wind: 6.0,
+        })
         .add_systems(Startup, launch)
+        .add_systems(Update, software_camera)
         .add_systems(Update, clear_weather)
         .add_systems(Update, report)
         .add_systems(Last, drive)
         .add_systems(Last, shot)
         .add_systems(PostUpdate, chase_cam)
         .run();
+}
+
+/// Software-GL fallback: without a real GPU, bloom/MSAA's float targets fail in
+/// llvmpipe. Strip the HDR post chain and use 8-bit when `SOFTWARE=1`.
+fn software_camera(
+    mut commands: Commands,
+    cameras: Query<Entity, (With<Camera3d>, Without<cloud_camera::CloudCamera>)>,
+) {
+    if std::env::var("SOFTWARE").is_err() {
+        return;
+    }
+    for entity in &cameras {
+        commands
+            .entity(entity)
+            .remove::<Hdr>()
+            .remove::<Bloom>()
+            .remove::<MotionBlur>()
+            .insert(Msaa::Off)
+            .insert(Tonemapping::None)
+            .insert(DebandDither::Disabled);
+    }
 }
 
 /// Start airborne and moving. At 30,000 ft Mach 1 is about 390 kt CAS, so the
@@ -238,7 +282,9 @@ fn shot(
     let dir = format!("{name}_{cam}");
     for (n, tag) in [(150u32, "a"), (300, "b"), (450, "c")] {
         if f.0 == n {
-            let path = format!("/tmp/opencode/vapor_{dir}_{tag}.png");
+            let out = std::env::var("OUT").unwrap_or_else(|_| "/tmp/opencode".into());
+            std::fs::create_dir_all(&out).ok();
+            let path = format!("{out}/vapor_{dir}_{tag}.png");
             commands
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk(path.clone()));

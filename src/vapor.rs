@@ -32,6 +32,8 @@
 //! examples that build their own scene (and never add it) are unaffected. Every
 //! entity carries `DespawnOnExit`, so a fresh flight starts clean.
 
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::mesh::ConeAnchor;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
@@ -70,6 +72,9 @@ struct Emitter {
     /// effect from the vortex vapor, and letting every emitter draw on the band
     /// would pile all seven into one blob over the wing.
     mach_gain: f32,
+    /// Whether this emitter drops a world-space trail. Only the wingtips do;
+    /// the wing-surface vapor is an attached sheet instead of a long wake.
+    trail: bool,
 }
 
 /// The F-22's vortex sources. The two wingtips are the anchors the model was
@@ -79,34 +84,35 @@ struct Emitter {
 /// of the canopy. All distances are model units.
 const EMITTERS: &[Emitter] = &[
     // Wingtips (left +x, right −x; the roll only biases the ones that move).
-    Emitter { model: Vec3::new( 1.00, 0.14, -0.72), roll_side: -1.0, aoa0: 5.0, aoa1: 16.0, roll_gain: 0.000, yaw_gain: 0.00, mach_gain: 1.0 },
-    Emitter { model: Vec3::new(-1.00, 0.14, -0.72), roll_side:  1.0, aoa0: 5.0, aoa1: 16.0, roll_gain: 0.000, yaw_gain: 0.00, mach_gain: 1.0 },
+    Emitter { model: Vec3::new( 1.00, 0.14, -0.72), roll_side: -1.0, aoa0: 5.0, aoa1: 16.0, roll_gain: 0.000, yaw_gain: 0.00, mach_gain: 1.0, trail: true },
+    Emitter { model: Vec3::new(-1.00, 0.14, -0.72), roll_side:  1.0, aoa0: 5.0, aoa1: 16.0, roll_gain: 0.000, yaw_gain: 0.00, mach_gain: 1.0, trail: true },
     // Leading edge, mid-span (the tip-to-root sweep line).
-    Emitter { model: Vec3::new( 0.66, 0.08, -0.31), roll_side: -1.0, aoa0: 6.0, aoa1: 14.0, roll_gain: 0.035, yaw_gain: 0.02, mach_gain: 0.0 },
-    Emitter { model: Vec3::new(-0.66, 0.08, -0.31), roll_side:  1.0, aoa0: 6.0, aoa1: 14.0, roll_gain: 0.035, yaw_gain: 0.02, mach_gain: 0.0 },
+    Emitter { model: Vec3::new( 0.66, 0.08, -0.31), roll_side: -1.0, aoa0: 6.0, aoa1: 14.0, roll_gain: 0.035, yaw_gain: 0.02, mach_gain: 0.0, trail: false },
+    Emitter { model: Vec3::new(-0.66, 0.08, -0.31), roll_side:  1.0, aoa0: 6.0, aoa1: 14.0, roll_gain: 0.035, yaw_gain: 0.02, mach_gain: 0.0, trail: false },
     // Wing-root leading edge / LEX, where the vortex is strongest.
-    Emitter { model: Vec3::new( 0.34, 0.08,  0.06), roll_side: -1.0, aoa0: 5.0, aoa1: 13.0, roll_gain: 0.026, yaw_gain: 0.03, mach_gain: 0.0 },
-    Emitter { model: Vec3::new(-0.34, 0.08,  0.06), roll_side:  1.0, aoa0: 5.0, aoa1: 13.0, roll_gain: 0.026, yaw_gain: 0.03, mach_gain: 0.0 },
+    Emitter { model: Vec3::new( 0.34, 0.08,  0.06), roll_side: -1.0, aoa0: 5.0, aoa1: 13.0, roll_gain: 0.026, yaw_gain: 0.03, mach_gain: 0.0, trail: false },
+    Emitter { model: Vec3::new(-0.34, 0.08,  0.06), roll_side:  1.0, aoa0: 5.0, aoa1: 13.0, roll_gain: 0.026, yaw_gain: 0.03, mach_gain: 0.0, trail: false },
     // Forebody / chine, over the centerline ahead of the canopy. On the roll axis,
     // so the roll does not bias it — only the yaw does.
-    Emitter { model: Vec3::new( 0.00, 0.22,  0.34), roll_side:  0.0, aoa0: 7.0, aoa1: 20.0, roll_gain: 0.000, yaw_gain: 0.05, mach_gain: 0.0 },
+    Emitter { model: Vec3::new( 0.00, 0.22,  0.34), roll_side:  0.0, aoa0: 7.0, aoa1: 20.0, roll_gain: 0.000, yaw_gain: 0.05, mach_gain: 0.0, trail: false },
 ];
 
 /// One trail ring per emitter.
 const EMITTER_COUNT: usize = EMITTERS.len();
 
 /// History samples per trail; the ring holds `SAMPLES · STEP` metres of trail.
-const SAMPLES: usize = 60;
+/// Kept short: the wingtip vortex is a brief ribbon, not a smoke wake.
+const SAMPLES: usize = 36;
 
 /// Distance (m) between trail samples along a wingtip's path. Emission is
 /// spaced in *distance*, not time: a time-spaced ring would put the samples
 /// 5 m apart at Mach 1 and string the trail out into beads, where at 200 kt the
 /// same ring merges into a ribbon. Distance spacing holds at any speed.
-const STEP: f32 = 1.8;
+const STEP: f32 = 1.2;
 
-/// How long vapor lives (s), on its own clock. Above about 160 kt the ring is
-/// the limit, so this only binds when the jet is slow: same trail, shorter.
-const LIFE: f32 = 1.6;
+/// How long a wingtip ribbon lives (s), on its own clock. Above about 160 kt the
+/// ring is the limit, so this only binds when the jet is slow: same trail, shorter.
+const LIFE: f32 = 0.6;
 
 /// Puff radius (m) at birth and at death; a puff expands as it dissipates. Born
 /// wider than half the sample spacing so consecutive puffs merge into a ribbon
@@ -116,11 +122,11 @@ const PUFF_R1: f32 = 2.8;
 /// Peak opacity of a fresh puff on a fully-fed trail. Kept low because a dense
 /// stream of them accumulates; dialled down from the two-emitter version now
 /// that a hard pull lights several streams at once.
-const PUFF_ALPHA: f32 = 0.06;
+const PUFF_ALPHA: f32 = 0.045;
 /// How far (m) a puff's centre may wander off the sampled path. Breaks the
 /// ribbon up so it reads as vapor rather than a smooth tube, without pulling
 /// neighbouring puffs far enough apart to come unstitched.
-const PUFF_WANDER: f32 = 0.7;
+const PUFF_WANDER: f32 = 0.4;
 
 /// Speed (m/s) below which the vortex trails are suppressed — on rotation the
 /// wing is loaded but the aircraft is slow, and a stationary puff pile looks
@@ -155,8 +161,14 @@ impl Plugin for VaporPlugin {
         app.add_plugins((
             MaterialPlugin::<PuffMaterial>::default(),
             MaterialPlugin::<ConeMaterial>::default(),
+            MaterialPlugin::<SheetMaterial>::default(),
+            MaterialPlugin::<VolumeMaterial>::default(),
+            MaterialPlugin::<BoxMaterial>::default(),
         ))
         .init_resource::<Trails>()
+        .init_resource::<SheetState>()
+        .init_resource::<WingPuffs>()
+        .add_systems(OnEnter(AppState::Flying), reset_vapor_state)
         .add_systems(
             Update,
             spawn_vapor.run_if(in_state(AppState::Flying)),
@@ -168,8 +180,27 @@ impl Plugin for VaporPlugin {
             drive_vapor
                 .after(crate::view::sync_aircraft)
                 .run_if(in_state(AppState::Flying)),
+        )
+        .add_systems(
+            Update,
+            drive_sheet
+                .after(drive_vapor)
+                .run_if(in_state(AppState::Flying)),
+        )
+        .add_systems(
+            Update,
+            drive_box
+                .after(drive_vapor)
+                .run_if(in_state(AppState::Flying)),
         );
     }
+}
+
+/// Clear the world-space rings and the sheet envelope when a flight starts, so
+/// a new aircraft never inherits the previous one's trail or burst level.
+fn reset_vapor_state(mut trails: ResMut<Trails>, mut sheet: ResMut<SheetState>) {
+    *trails = Trails::default();
+    *sheet = SheetState::default();
 }
 
 // --- wingtip trail puffs ---------------------------------------------------
@@ -287,6 +318,289 @@ impl Material for ConeMaterial {
 #[derive(Component)]
 struct VaporCone;
 
+// --- wing surface sheet ----------------------------------------------------
+
+/// Approximate F-22 wing planform, in the model frame: root LE, tip LE, tip TE,
+/// root TE. The sheet sits a little above the upper surface; the shader fades
+/// its root/tip and leading/trailing edges, so the exact outline is forgiving.
+const WING_SHEET: [(f32, f32, f32); 4] = [
+    (0.28, 0.14, 0.06),
+    (1.00, 0.18, -0.72),
+    (0.98, 0.16, -1.02),
+    (0.28, 0.13, -0.60),
+];
+
+/// Three stacked sheets per wing: a dense base, a billowing middle and a thin
+/// torn top. The vertical offsets give real parallax from the chase camera, so
+/// the effect reads as a volume instead of a decal on the wing.
+const SHEET_LAYERS: usize = 1;
+const SHEET_LAYER_OFFSET: [f32; SHEET_LAYERS] = [0.12];
+/// Spanwise/chordwise subdivisions of each sheet. A flat quad reads as frost;
+/// a gently billowed grid gives the silhouette parallax and thickness.
+const SPAN_SEGS: usize = 6;
+const CHORD_SEGS: usize = 6;
+/// Static billow amplitude per layer, metres. The edges are windowed to zero so
+/// the sheet still starts and ends on the wing.
+const SHEET_LAYER_WAVE: [f32; SHEET_LAYERS] = [0.12];
+
+/// The visible surface vapor is a short-lived volume cloud of camera-facing
+/// puffs distributed through the wing's boundary layer. The sheet remains as a
+/// faint base (disabled here); the puffs are what give it thickness.
+const WING_PUFF_COUNT: usize = 384;
+const WING_PUFFS_ENABLED: bool = false;
+const WING_PUFFS_PER_WING: usize = WING_PUFF_COUNT / 2;
+const WING_PUFF_ALPHA: f32 = 0.20;
+const WING_PUFF_LIFE_MIN: f32 = 0.18;
+const WING_PUFF_LIFE_MAX: f32 = 0.34;
+/// Set false to drop the flat sheet entirely; the volume puffs carry the look.
+const SHEET_ENABLED: bool = false;
+const BOX_VOLUME_ENABLED: bool = true;
+
+/// Uniform for `assets/shaders/vapor_sheet.wesl`.
+#[derive(Clone, Copy, ShaderType, Default)]
+struct SheetParams {
+    /// x = intensity (0..1), y = time (s), z = side, w = layer.
+    anim: Vec4,
+    /// rgb = vapor colour.
+    tint: Vec4,
+    /// xyz = direction toward the sun.
+    light: Vec4,
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct SheetMaterial {
+    #[uniform(0)]
+    params: SheetParams,
+}
+
+impl Material for SheetMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/vapor_sheet.wesl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+}
+
+/// One attached sheet per wing. The mesh is authored in the body frame and
+/// parented to `AircraftRoot`, so the vapor stays on the wing instead of being
+/// left behind as a world-space wake.
+#[derive(Component)]
+struct VaporSheet {
+    side: usize,
+    layer: usize,
+}
+
+/// Fast-attack / short-release envelope for the surface sheet, plus a one-shot
+/// pulse when the load factor spikes.
+#[derive(Resource, Default)]
+struct SheetState {
+    intensity: [f32; 2],
+    prev_g: f32,
+    pulse: f32,
+}
+
+// --- wing volume puffs -----------------------------------------------------
+
+/// Uniform for `assets/shaders/vapor_volume.wesl`.
+#[derive(Clone, Copy, ShaderType, Default)]
+struct VolumeParams {
+    /// rgb = vapour colour, a = opacity.
+    color: Vec4,
+    /// x = seed, y = time (s), zw unused.
+    anim: Vec4,
+    /// xyz = direction toward the sun.
+    light: Vec4,
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct VolumeMaterial {
+    #[uniform(0)]
+    params: VolumeParams,
+}
+
+impl Material for VolumeMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/vapor_volume.wesl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+}
+
+/// Uniform for `assets/shaders/vapor_box.wesl`.
+#[derive(Clone, Copy, ShaderType, Default)]
+struct BoxParams {
+    /// rgb = vapour colour, a unused.
+    color: Vec4,
+    /// x = intensity, y = time (s), z = side, w unused.
+    anim: Vec4,
+    /// xyz = direction toward the sun.
+    light: Vec4,
+    /// World -> box-local (unit cube) transform.
+    world_to_local: Mat4,
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct BoxMaterial {
+    #[uniform(0)]
+    params: BoxParams,
+}
+
+impl Material for BoxMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/vapor_box.wesl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+}
+
+/// A body-frame box over one wing whose fragment shader raymarches the
+/// boundary-layer density. Unlike a flat sheet, the box has a real 3D
+/// silhouette, and unlike billboards it has no stacking bands.
+#[derive(Component)]
+struct VaporBox {
+    side: usize,
+    lobe: usize,
+}
+
+/// One camera-facing puff of the wing boundary-layer cloud. Positions are
+/// recomputed from the body-frame anchor every frame, so the cloud rides the
+/// wing instead of being left behind.
+#[derive(Component)]
+struct WingPuff {
+    idx: usize,
+}
+
+#[derive(Resource)]
+struct WingPuffs {
+    age: [f32; WING_PUFF_COUNT],
+    life: [f32; WING_PUFF_COUNT],
+    strength: [f32; WING_PUFF_COUNT],
+    seed: [f32; WING_PUFF_COUNT],
+    anchor: [Vec3; WING_PUFF_COUNT],
+    cursor: usize,
+    spawn_acc: f32,
+}
+
+impl Default for WingPuffs {
+    fn default() -> Self {
+        Self {
+            age: [f32::MAX; WING_PUFF_COUNT],
+            life: [0.0; WING_PUFF_COUNT],
+            strength: [0.0; WING_PUFF_COUNT],
+            seed: [0.0; WING_PUFF_COUNT],
+            anchor: [Vec3::ZERO; WING_PUFF_COUNT],
+            cursor: 0,
+            spawn_acc: 0.0,
+        }
+    }
+}
+
+fn hash01(mut x: f32) -> f32 {
+    x = (x * 12.9898 + 78.233).sin() * 43_758.545;
+    x.fract().abs()
+}
+
+/// A deterministic body-frame anchor in the wing's boundary layer. Root and
+/// leading edge are biased denser, and the height spreads the cloud through a
+/// few tens of centimetres above the surface.
+fn wing_puff_anchor(name: &str, idx: usize) -> Vec3 {
+    let side = idx / WING_PUFFS_PER_WING;
+    let i = idx % WING_PUFFS_PER_WING;
+    let mirror = if side == 0 { 1.0 } else { -1.0 };
+    let corners = WING_SHEET.map(|(x, y, z)| Vec3::new(x * mirror, y, z));
+    // Root-biased span and leading-edge-biased chord.
+    let u = hash01(i as f32 * 0.618_034 + side as f32 * 0.37).powf(1.4);
+    let v = hash01(i as f32 * 0.754_878 + side as f32 * 0.61).powf(1.3);
+    let h = hash01(i as f32 * 0.569_840 + side as f32 * 0.23) * 0.07;
+    let root = corners[0].lerp(corners[3], v);
+    let tip = corners[1].lerp(corners[2], v);
+    let model_point = root.lerp(tip, u) + Vec3::Y * h;
+    model_to_body(name, model_point)
+}
+
+/// Build one wing patch in the body frame. `mirror` is +1 for the left wing
+/// and −1 for the right; the index order flips with the mirror so both patches
+/// face up. The grid is billowed slightly (and differently per layer), so the
+/// layers read as a volume rather than a flat decal.
+fn wing_sheet_mesh(name: &str, mirror: f32, layer: usize) -> Mesh {
+    let corners = WING_SHEET.map(|(x, y, z)| Vec3::new(x * mirror, y, z));
+    let mut positions = Vec::with_capacity((SPAN_SEGS + 1) * (CHORD_SEGS + 1));
+    let mut normals = Vec::with_capacity(positions.capacity());
+    let mut uvs = Vec::with_capacity(positions.capacity());
+    for j in 0..=CHORD_SEGS {
+        let v = j as f32 / CHORD_SEGS as f32;
+        for i in 0..=SPAN_SEGS {
+            let u = i as f32 / SPAN_SEGS as f32;
+            let root = corners[0].lerp(corners[3], v);
+            let tip = corners[1].lerp(corners[2], v);
+            let model_point = root.lerp(tip, u);
+            let mut body = model_to_body(name, model_point);
+            // Window the billow to zero at both edges so the sheet stays seated
+            // on the wing. The layer phase makes the three surfaces caress
+            // rather than stack as identical planes.
+            let window = (std::f32::consts::PI * u).sin()
+                * (std::f32::consts::PI * v).sin();
+            let wave = (u * 9.0 + layer as f32 * 1.7).sin()
+                * (v * 6.0 - layer as f32 * 2.1).cos();
+            body.y += wave * window * SHEET_LAYER_WAVE[layer];
+            positions.push(body.to_array());
+            normals.push(Vec3::Y.to_array());
+            uvs.push([u, v]);
+        }
+    }
+    let row = (SPAN_SEGS + 1) as u32;
+    let mut indices = Vec::with_capacity(SPAN_SEGS * CHORD_SEGS * 6);
+    for j in 0..CHORD_SEGS {
+        for i in 0..SPAN_SEGS {
+            let a = (j as u32) * row + i as u32;
+            let b = a + 1;
+            let c = a + row;
+            let d = c + 1;
+            if mirror > 0.0 {
+                indices.extend([a, b, d, a, d, c]);
+            } else {
+                indices.extend([a, d, b, a, c, d]);
+            }
+        }
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
 // --- spawn -----------------------------------------------------------------
 
 /// Spawn the F-22's vapor entities once the flown aircraft exists. Idempotent:
@@ -300,6 +614,10 @@ fn spawn_vapor(
     mut meshes: ResMut<Assets<Mesh>>,
     mut puffs: ResMut<Assets<PuffMaterial>>,
     mut cones: ResMut<Assets<ConeMaterial>>,
+    mut sheet_mats: ResMut<Assets<SheetMaterial>>,
+    mut volume_mats: ResMut<Assets<VolumeMaterial>>,
+    mut box_mats: ResMut<Assets<BoxMaterial>>,
+    mut wing: ResMut<WingPuffs>,
     roots: Query<Entity, With<AircraftRoot>>,
     existing: Query<(), With<VaporPuff>>,
 ) {
@@ -369,6 +687,110 @@ fn spawn_vapor(
         DespawnOnExit(AppState::Flying),
         ChildOf(root),
     ));
+
+    // The old flat sheet is kept behind a switch for comparison, but the
+    // visible surface vapor is now a volume cloud of wing-anchored puffs.
+    if SHEET_ENABLED {
+        for side in 0..2 {
+            let mirror = if side == 0 { 1.0 } else { -1.0 };
+            for layer in 0..SHEET_LAYERS {
+                let material = sheet_mats.add(SheetMaterial {
+                    params: SheetParams::default(),
+                });
+                commands.spawn((
+                    VaporSheet { side, layer },
+                    Mesh3d(meshes.add(wing_sheet_mesh(&sim.name, mirror, layer))),
+                    MeshMaterial3d(material),
+                    Transform::from_xyz(0.0, SHEET_LAYER_OFFSET[layer], 0.0),
+                    Visibility::Hidden,
+                    DespawnOnExit(AppState::Flying),
+                    ChildOf(root),
+                ));
+            }
+        }
+    }
+
+    if BOX_VOLUME_ENABLED {
+        // Five overlapping ellipsoids per wing, marching outboard along the
+        // sweep. One box reads as a slab; the union reads as a billowed strip.
+        const LOBES: [(f32, f32, f32, f32, f32); 11] = [
+            // |x|, z, x-size, y-size, z-size
+            // Leading-edge row.
+            (1.8, 0.9, 2.4, 0.40, 3.0),
+            (2.4, 1.2, 3.0, 0.44, 3.8),
+            (3.7, 2.4, 3.2, 0.46, 4.2),
+            (4.9, 3.6, 3.2, 0.44, 4.2),
+            (6.0, 4.9, 3.0, 0.40, 3.8),
+            (6.8, 6.0, 2.4, 0.36, 3.2),
+            // Aft row fills the chord instead of leaving a necklace.
+            (2.4, 3.0, 2.8, 0.38, 3.4),
+            (3.7, 4.1, 3.0, 0.38, 3.6),
+            (4.9, 5.2, 3.0, 0.36, 3.6),
+            (6.0, 6.2, 2.8, 0.34, 3.2),
+            (6.8, 7.0, 2.2, 0.30, 2.8),
+        ];
+        let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+        for side in 0..2 {
+            for (lobe, &(x, z, sx, sy, sz)) in LOBES.iter().enumerate() {
+                let x = if side == 0 { -x } else { x };
+                let material = box_mats.add(BoxMaterial {
+                    params: BoxParams::default(),
+                });
+                commands.spawn((
+                    VaporBox { side, lobe },
+                    Mesh3d(cube.clone()),
+                    MeshMaterial3d(material),
+                    Transform::from_xyz(x, 0.24, z).with_scale(Vec3::new(sx, sy, sz)),
+                    Visibility::Hidden,
+                    DespawnOnExit(AppState::Flying),
+                    ChildOf(root),
+                ));
+            }
+        }
+    }
+
+    *wing = WingPuffs::default();
+    if WING_PUFFS_ENABLED {
+        // Randomly oriented quads need both faces; otherwise half of the cloud
+        // is back-face culled and it reads as a handful of flat cards.
+        let mut volume_quad = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        volume_quad.insert_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            vec![
+                [-1.0, -1.0, 0.0],
+                [1.0, -1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [-1.0, 1.0, 0.0],
+            ],
+        );
+        volume_quad.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; 4]);
+        volume_quad.insert_attribute(
+            Mesh::ATTRIBUTE_UV_0,
+            vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+        );
+        volume_quad.insert_indices(Indices::U32(vec![
+            0, 1, 2, 0, 2, 3,
+            0, 2, 1, 0, 3, 2,
+        ]));
+        let volume_quad = meshes.add(volume_quad);
+        for idx in 0..WING_PUFF_COUNT {
+            wing.anchor[idx] = wing_puff_anchor(&sim.name, idx);
+            let material = volume_mats.add(VolumeMaterial {
+                params: VolumeParams::default(),
+            });
+            commands.spawn((
+                WingPuff { idx },
+                Mesh3d(volume_quad.clone()),
+                MeshMaterial3d(material),
+                Transform::default(),
+                Visibility::Hidden,
+                DespawnOnExit(AppState::Flying),
+            ));
+        }
+    }
 }
 
 /// The uniform scale `spawn_model_child` applies to `name`'s glTF, recovered
@@ -408,6 +830,34 @@ fn cone_band(mach: f32) -> f32 {
     (1.0 - d * d).clamp(0.0, 1.0)
 }
 
+/// Build an orthonormal basis for a flow-aligned ribbon: local X across the
+/// streak, local Y along the flow, local Z towards the camera. Projecting the
+/// flow into the camera plane keeps the ribbon visible from directly astern,
+/// where a pure velocity-billboard would collapse to a line.
+fn streak_basis(flow: Vec3, to_cam: Vec3) -> (Vec3, Vec3, Vec3) {
+    let z = to_cam.normalize_or_zero();
+    let f = flow.normalize_or_zero();
+    let mut y = f - z * f.dot(z);
+    if y.length_squared() < 1.0e-4 {
+        y = Vec3::Y - z * Vec3::Y.dot(z);
+    }
+    if y.length_squared() < 1.0e-4 {
+        y = Vec3::X - z * Vec3::X.dot(z);
+    }
+    let y = y.normalize_or_zero();
+    let x = y.cross(z).normalize_or_zero();
+    (x, y, z)
+}
+
+/// How much of the flow lies across the view axis. 1 = broadside (stretch the
+/// ribbon), 0 = looking straight down the trail (keep it round, or it collapses
+/// to a vertical blade).
+fn streak_alignment(flow: Vec3, to_cam: Vec3) -> f32 {
+    let z = to_cam.normalize_or_zero();
+    let f = flow.normalize_or_zero();
+    (f - z * f.dot(z)).length().clamp(0.0, 1.0)
+}
+
 /// Advance both effects: drop fresh puffs at the wingtips, age and place the
 /// trail, and refresh the cone's opacity.
 fn drive_vapor(
@@ -415,8 +865,28 @@ fn drive_vapor(
     sim: Res<Sim>,
     state: Res<AircraftState>,
     weather: Res<Weather>,
-    root: Query<&Transform, (With<AircraftRoot>, Without<VaporPuff>, Without<VaporCone>)>,
-    cameras: Query<&Transform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>, Without<VaporPuff>, Without<VaporCone>)>,
+    sun: Query<&GlobalTransform, With<DirectionalLight>>,
+    root: Query<
+        &Transform,
+        (
+            With<AircraftRoot>,
+            Without<VaporPuff>,
+            Without<VaporCone>,
+            Without<VaporSheet>,
+            Without<WingPuff>,
+        ),
+    >,
+    cameras: Query<
+        &Transform,
+        (
+            With<Camera3d>,
+            Without<crate::cloud_camera::CloudCamera>,
+            Without<VaporPuff>,
+            Without<VaporCone>,
+            Without<VaporSheet>,
+            Without<WingPuff>,
+        ),
+    >,
     mut trails: ResMut<Trails>,
     mut puffs: Query<
         (
@@ -425,14 +895,31 @@ fn drive_vapor(
             &mut Transform,
             &mut Visibility,
         ),
-        Without<VaporCone>,
+        (Without<VaporCone>, Without<VaporSheet>, Without<WingPuff>),
     >,
     mut puff_mats: ResMut<Assets<PuffMaterial>>,
     mut cones: Query<
         (&MeshMaterial3d<ConeMaterial>, &mut Visibility),
-        (With<VaporCone>, Without<VaporPuff>),
+        (With<VaporCone>, Without<VaporPuff>, Without<VaporSheet>, Without<WingPuff>),
     >,
     mut cone_mats: ResMut<Assets<ConeMaterial>>,
+    mut sheet_state: ResMut<SheetState>,
+    mut wing: ResMut<WingPuffs>,
+    mut wing_puffs: Query<
+        (
+            &WingPuff,
+            &MeshMaterial3d<VolumeMaterial>,
+            &mut Transform,
+            &mut Visibility,
+        ),
+        (
+            With<WingPuff>,
+            Without<VaporPuff>,
+            Without<VaporCone>,
+            Without<VaporSheet>,
+        ),
+    >,
+    mut volume_mats: ResMut<Assets<VolumeMaterial>>,
 ) {
     if sim.name != "f22" {
         return;
@@ -463,8 +950,17 @@ fn drive_vapor(
         }
     }
 
-    if let Ok(root_tf) = root.single() {
+    let root_tf = root.single().ok();
+    // +Z is aft in the body frame; using it as the ribbon's long axis puts the
+    // feathered tail behind the aircraft.
+    let flow_dir = root_tf
+        .map(|tf| (tf.rotation * Vec3::Z).normalize_or_zero())
+        .unwrap_or(Vec3::Z);
+    if let Some(root_tf) = root_tf {
         for (side, e) in EMITTERS.iter().enumerate() {
+            if !e.trail {
+                continue;
+            }
             let at = root_tf.translation + root_tf.rotation * model_to_body(&sim.name, e.model);
             // Drop a sample every `STEP` metres, and record the *current*
             // strength with it, so the trail's brightness follows the load.
@@ -517,17 +1013,30 @@ fn drive_vapor(
             0.0,
         ) * Vec3::Z;
         tf.translation = trails.pos[side][idx] + wob * PUFF_WANDER * size_j * f;
-        tf.scale = Vec3::splat((PUFF_R0 + (PUFF_R1 - PUFF_R0) * f) * size_j);
-        // Billboard about the quad's normal (+Z) so the puff always faces the
-        // viewer.
+        // A long, thin sheet along the relative wind instead of a round puff.
+        // The length grows with airspeed so the trail reads as a streak rather
+        // than a row of beads; the width still expands as the vapor dissipates.
+        let radius = (PUFF_R0 + (PUFF_R1 - PUFF_R0) * f) * size_j;
+        let base_stretch = (1.4 + speed * 0.006).clamp(1.4, 3.6);
+        let mut stretch = base_stretch;
+        // Camera-facing, with the long axis projected along the flow. From
+        // directly astern the projection vanishes, so fade the stretch back to
+        // 1 and keep the puff round instead of snapping it to a vertical blade.
         if let Some(cam) = cam {
             let to_cam = cam - tf.translation;
             if to_cam.length_squared() > 1e-6 {
-                tf.rotation = Quat::from_rotation_arc(Vec3::Z, to_cam.normalize());
+                let align = streak_alignment(flow_dir, to_cam);
+                stretch = 1.0 + (base_stretch - 1.0) * align;
+                let (x, y, z) = streak_basis(flow_dir, to_cam);
+                tf.rotation = Quat::from_mat3(&Mat3::from_cols(x, y, z));
             }
         }
+        tf.scale = Vec3::new(radius, radius * stretch, 1.0);
         if let Some(mut m) = puff_mats.get_mut(&mat.0) {
             m.params.color.w = PUFF_ALPHA * strength * alpha_j * (1.0 - f).powf(1.4);
+            // Per-slot seed: without it every ribbon segment repeats the same
+            // filament pattern and the trail reads as a periodic texture.
+            m.params.anim.y = h.fract();
         }
     }
 
@@ -542,6 +1051,186 @@ fn drive_vapor(
         };
         if let Some(mut m) = cone_mats.get_mut(&mat.0) {
             m.params.anim = Vec4::new(cone_i, time_s, 0.0, 0.0);
+        }
+    }
+
+    // Wing-surface sheet: a dense burst that appears on the wing almost
+    // instantly and is gone in a few tenths of a second. It is attached to the
+    // airframe, so it never stretches into the long wake the wingtip trails do.
+    let g = state.g_norm as f32;
+    let load = ((g - 2.0) / 3.0).clamp(0.0, 1.0);
+    let alpha_load = ((alpha - 8.0) / 8.0).clamp(0.0, 1.0);
+    // A held manoeuvre only leaves a faint sheen; the visible sheet is the
+    // one-shot burst, so it "snaps on" and is gone in a few tenths of a second.
+    let base = load.max(alpha_load * 0.8) * speed_gate * humidity * 0.22;
+    let roll = state.roll_rate_dps as f32;
+    let previous_g = sheet_state.prev_g;
+    if previous_g > 0.5
+        && (g - previous_g > 0.5 || (previous_g < 3.0 && g >= 3.0))
+    {
+        sheet_state.pulse = 1.0;
+    }
+    sheet_state.prev_g = g;
+    sheet_state.pulse = (sheet_state.pulse - dt / 0.28).max(0.0);
+    for side in 0..2 {
+        let roll_side = if side == 0 { -1.0 } else { 1.0 };
+        let bias = (roll * 0.0015 * roll_side).clamp(-0.4, 0.4);
+        let target = (base + bias * 0.3).clamp(0.0, 1.0).max(sheet_state.pulse);
+        let current = sheet_state.intensity[side];
+        // Hard attack and a short release: the condensation "snaps" onto the
+        // wing and is gone before a long sustained trail can form.
+        let tau = if target > current { 0.03 } else { 0.12 };
+        let k = 1.0 - (-dt / tau).exp();
+        sheet_state.intensity[side] = current + (target - current) * k;
+    }
+    let sun_dir = sun
+        .single()
+        .map(|t| (t.rotation() * Vec3::Z).normalize_or_zero())
+        .unwrap_or(Vec3::Y);
+
+    // Wing boundary-layer volume: while the burst is active, recycle puffs
+    // through a deterministic anchor cloud on the wing. Each puff lives a few
+    // tenths of a second, so the cloud snaps on and dissipates in place.
+    if WING_PUFFS_ENABLED {
+        let wing_intensity = sheet_state.intensity[0].max(sheet_state.intensity[1]);
+        if wing_intensity > 0.01 && root_tf.is_some() {
+            wing.spawn_acc += dt * (200.0 + 1100.0 * wing_intensity);
+            while wing.spawn_acc >= 1.0 {
+                wing.spawn_acc -= 1.0;
+                let idx = wing.cursor % WING_PUFF_COUNT;
+                wing.cursor = wing.cursor.wrapping_add(1);
+                wing.age[idx] = 0.0;
+                wing.life[idx] = WING_PUFF_LIFE_MIN
+                    + (WING_PUFF_LIFE_MAX - WING_PUFF_LIFE_MIN)
+                        * hash01(idx as f32 * 1.7 + wing.cursor as f32 * 0.3);
+                wing.strength[idx] = wing_intensity;
+                wing.seed[idx] = hash01(idx as f32 * 0.618 + wing.cursor as f32 * 0.37);
+            }
+        }
+        for age in &mut wing.age {
+            *age += dt;
+        }
+        for (puff, mat, mut tf, mut vis) in &mut wing_puffs {
+            let idx = puff.idx;
+            let age = wing.age[idx];
+            let life = wing.life[idx];
+            let strength = wing.strength[idx];
+            let Some(root_tf) = root_tf else {
+                *vis = Visibility::Hidden;
+                continue;
+            };
+            if age >= life || strength <= 0.01 {
+                *vis = Visibility::Hidden;
+                continue;
+            }
+            let f = age / life;
+            let side = (idx / WING_PUFFS_PER_WING).min(1);
+            let intensity = strength * sheet_state.intensity[side] * (1.0 - f).powf(1.2);
+            if intensity <= 0.004 {
+                *vis = Visibility::Hidden;
+                continue;
+            }
+            *vis = Visibility::Inherited;
+
+            let seed = wing.seed[idx];
+            let jitter = Vec3::new(
+                (seed * 17.0 + f * 3.1).sin(),
+                (seed * 23.0 + f * 2.3).cos() * 0.5,
+                (seed * 29.0 - f * 2.7).cos(),
+            ) * (0.10 + 0.18 * f);
+            let anchor = wing.anchor[idx] + jitter;
+            let world = root_tf.translation + root_tf.rotation * anchor;
+            tf.translation = world;
+            let size = (0.45 + 0.75 * f) * (0.80 + 0.40 * seed);
+            tf.scale = Vec3::splat(size);
+            // Random plane orientations fill a volume from every view;
+            // parallel camera-facing billboards stack into visible bands.
+            tf.rotation = Quat::from_euler(
+                EulerRot::XYZ,
+                seed * std::f32::consts::TAU,
+                (seed * 1.7).fract() * std::f32::consts::TAU,
+                (seed * 2.3).fract() * std::f32::consts::TAU,
+            );
+            if let Some(mut m) = volume_mats.get_mut(&mat.0) {
+                m.params.color = Vec4::new(0.96, 0.98, 1.0, WING_PUFF_ALPHA * intensity);
+                m.params.anim = Vec4::new(seed, time_s, 0.0, 0.0);
+                m.params.light = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, 0.0);
+            }
+        }
+    }
+}
+
+/// Push the burst envelope and sun direction into the single volumetric wing
+/// sheet. Kept separate from `drive_vapor` to stay within Bevy's system-param
+/// limit.
+fn drive_sheet(
+    time: Res<Time>,
+    sheet_state: Res<SheetState>,
+    sun: Query<&GlobalTransform, With<DirectionalLight>>,
+    mut sheets: Query<(
+        &VaporSheet,
+        &MeshMaterial3d<SheetMaterial>,
+        &mut Visibility,
+    )>,
+    mut sheet_mats: ResMut<Assets<SheetMaterial>>,
+) {
+    let sun_dir = sun
+        .single()
+        .map(|t| (t.rotation() * Vec3::Z).normalize_or_zero())
+        .unwrap_or(Vec3::Y);
+    let t = time.elapsed_secs();
+    for (sheet, mat, mut vis) in &mut sheets {
+        let intensity = sheet_state.intensity[sheet.side.min(1)];
+        *vis = if intensity > 0.004 {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if let Some(mut m) = sheet_mats.get_mut(&mat.0) {
+            m.params.anim = Vec4::new(
+                intensity,
+                t,
+                sheet.side as f32,
+                sheet.layer as f32,
+            );
+            m.params.tint = Vec4::new(0.95, 0.97, 1.0, 0.0);
+            m.params.light = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, 0.0);
+        }
+    }
+}
+
+/// Feed the burst envelope, sun and world-to-local transform into the two wing
+/// volume boxes. The shader does the raymarch; this just keeps the box glued to
+/// the airframe and tells it how dense to be.
+fn drive_box(
+    time: Res<Time>,
+    sheet_state: Res<SheetState>,
+    sun: Query<&GlobalTransform, With<DirectionalLight>>,
+    mut boxes: Query<(
+        &VaporBox,
+        &GlobalTransform,
+        &MeshMaterial3d<BoxMaterial>,
+        &mut Visibility,
+    )>,
+    mut box_mats: ResMut<Assets<BoxMaterial>>,
+) {
+    let sun_dir = sun
+        .single()
+        .map(|t| (t.rotation() * Vec3::Z).normalize_or_zero())
+        .unwrap_or(Vec3::Y);
+    let t = time.elapsed_secs();
+    for (vapor_box, global, mat, mut vis) in &mut boxes {
+        let intensity = sheet_state.intensity[vapor_box.side.min(1)];
+        *vis = if intensity > 0.004 {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if let Some(mut m) = box_mats.get_mut(&mat.0) {
+            m.params.color = Vec4::new(0.96, 0.98, 1.0, 1.0);
+            m.params.anim = Vec4::new(intensity, t, vapor_box.side as f32, 0.0);
+            m.params.light = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, 0.0);
+            m.params.world_to_local = global.to_matrix().inverse();
         }
     }
 }
@@ -650,5 +1339,74 @@ mod tests {
     fn model_scale_recovers_the_f22_gltf_scale() {
         // `model_spec` scales the F-22 by 6.8 (see `view.rs`).
         assert!((model_scale("f22") - 6.8).abs() < 1e-3);
+    }
+
+    #[test]
+    fn only_the_wingtips_drop_world_space_trails() {
+        for (i, e) in EMITTERS.iter().enumerate() {
+            assert_eq!(e.trail, i < 2, "emitter {i} has the wrong trail flag");
+        }
+    }
+
+    #[test]
+    fn wing_sheet_mesh_is_a_subdivided_patch() {
+        let mesh = wing_sheet_mesh("f22", 1.0, 0);
+        let Some(positions) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
+            panic!("sheet has no positions");
+        };
+        assert_eq!(positions.len(), (SPAN_SEGS + 1) * (CHORD_SEGS + 1));
+        assert_eq!(
+            mesh.indices().expect("indexed").len(),
+            SPAN_SEGS * CHORD_SEGS * 6
+        );
+    }
+
+    #[test]
+    fn wing_sheet_first_triangle_faces_up_on_both_wings() {
+        for mirror in [1.0f32, -1.0] {
+            let p = |i: usize| {
+                let (x, y, z) = WING_SHEET[i];
+                model_to_body("f22", Vec3::new(x * mirror, y, z))
+            };
+            // Must match the first triangle in `wing_sheet_mesh`.
+            let (a, b, c) = if mirror > 0.0 {
+                (p(0), p(1), p(2))
+            } else {
+                (p(0), p(2), p(1))
+            };
+            let normal = (b - a).cross(c - a);
+            assert!(
+                normal.y > 0.0,
+                "sheet triangle faces down for mirror {mirror}: {normal:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn streak_alignment_is_full_broadside_and_zero_astern() {
+        assert!((streak_alignment(Vec3::NEG_Z, Vec3::X) - 1.0).abs() < 1e-4);
+        assert!(streak_alignment(Vec3::NEG_Z, Vec3::Z) < 1e-4);
+        assert!(streak_alignment(Vec3::NEG_Z, (Vec3::Z + Vec3::X).normalize()) > 0.5);
+    }
+
+    #[test]
+    fn streak_basis_is_orthonormal_from_side_and_astern() {
+        for (flow, to_cam) in [
+            // Ordinary side view.
+            (Vec3::NEG_Z, Vec3::X),
+            // Directly astern: the flow projects to a point, so the up fallback
+            // must keep a usable width axis.
+            (Vec3::NEG_Z, Vec3::Z),
+            // Front quarter.
+            (Vec3::NEG_Z, (Vec3::Z + Vec3::X).normalize()),
+        ] {
+            let (x, y, z) = streak_basis(flow, to_cam);
+            assert!((x.length() - 1.0).abs() < 1e-4, "x not unit: {x:?}");
+            assert!((y.length() - 1.0).abs() < 1e-4, "y not unit: {y:?}");
+            assert!((z.length() - 1.0).abs() < 1e-4, "z not unit: {z:?}");
+            assert!(x.dot(y).abs() < 1e-4, "x/y not perpendicular");
+            assert!(x.dot(z).abs() < 1e-4, "x/z not perpendicular");
+            assert!(y.dot(z).abs() < 1e-4, "y/z not perpendicular");
+        }
     }
 }
