@@ -37,6 +37,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::mesh::ConeAnchor;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
+use bevy::transform::TransformSystems;
 use bevy::shader::ShaderRef;
 
 use crate::app_state::AppState;
@@ -189,9 +190,9 @@ impl Plugin for VaporPlugin {
                 .run_if(in_state(AppState::Flying)),
         )
         .add_systems(
-            Update,
+            PostUpdate,
             drive_box
-                .after(drive_vapor)
+                .after(TransformSystems::Propagate)
                 .run_if(in_state(AppState::Flying)),
         )
         .add_systems(
