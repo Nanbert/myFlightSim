@@ -423,7 +423,7 @@ struct SheetState {
     /// Speed-driven footprint coverage (0.25..1), per side.
     coverage: [f32; 2],
     prev_g: f32,
-    prev_alpha: f32,
+    prev_local_alpha: [f32; 2],
 }
 
 fn smoothstep01(a: f32, b: f32, x: f32) -> f32 {
@@ -1016,36 +1016,45 @@ fn drive_vapor(
     // held off for the first 0.10 s so the eye sees the mass pop first.
     let g = state.g_norm as f32;
     let load = ((g - 2.0) / 3.0).clamp(0.0, 1.0);
-    let alpha_load = ((alpha - 8.0) / 8.0).clamp(0.0, 1.0);
     // Low speed can still condense, but only a small patch in the trigger-prone
     // root/leading-edge region; high speed spreads the burst over more wing.
     let speed_kts = state.cas_kts as f32;
     let vapor_speed = smoothstep01(60.0, 320.0, speed_kts);
     let coverage = 0.30 + 0.70 * vapor_speed;
-    let alpha_rate = (alpha - sheet_state.prev_alpha) / dt.max(1.0e-3);
-    let maneuver = load
-        .max(alpha_load * 0.9)
-        .max((alpha_rate / 80.0).clamp(0.0, 1.0))
-        .max((roll.abs() / 120.0).clamp(0.0, 1.0));
-    let base = maneuver * humidity * (0.55 + 0.45 * vapor_speed);
+
+    // A roll changes the *local* angle of attack: the descending wing sees
+    // more, the rising wing less. Delta alpha ~ roll_rate * semi-span / V.
+    // Use per-side local alpha instead of a symmetric roll trigger, so a pure
+    // roll does not pop the same cloud on both wings.
+    let speed_mps = speed.max(25.0);
+    let delta_alpha = (roll * 3.5 / speed_mps).clamp(-6.0, 6.0);
+    let local_alpha = [alpha - delta_alpha, alpha + delta_alpha];
     let previous_g = sheet_state.prev_g;
-    let previous_alpha = sheet_state.prev_alpha;
-    let spike = g - previous_g > 0.5
-        || alpha - previous_alpha > 3.0
-        || alpha_rate > 25.0
-        || roll.abs() > 60.0
-        || (previous_g < 3.0 && g >= 3.0);
-    if speed_kts >= 60.0 && previous_g > 0.5 && spike {
-        for side in 0..2 {
-            let roll_side = if side == 0 { -1.0 } else { 1.0 };
-            let bias = (roll * 0.0015 * roll_side).clamp(-0.4, 0.4);
+    let g_spike = previous_g > 0.5
+        && (g - previous_g > 0.5 || (previous_g < 3.0 && g >= 3.0));
+
+    for side in 0..2 {
+        let a = local_alpha[side];
+        let prev_a = sheet_state.prev_local_alpha[side];
+        let alpha_load = ((a - 8.0) / 8.0).clamp(0.0, 1.0);
+        let alpha_rate = (a - prev_a) / dt.max(1.0e-3);
+        let maneuver = load
+            .max(alpha_load * 0.9)
+            .max((alpha_rate / 80.0).clamp(0.0, 1.0));
+        let base = maneuver * humidity * (0.55 + 0.45 * vapor_speed);
+        let alpha_spike = a - prev_a > 3.0
+            || alpha_rate > 25.0
+            || (a > 12.0 && prev_a <= 12.0);
+        if speed_kts >= 60.0 && (g_spike || alpha_spike) {
             sheet_state.age[side] = 0.0;
-            sheet_state.strength[side] = (base + bias * 0.3).clamp(0.15, 1.0);
-            sheet_state.coverage[side] = (coverage + bias * 0.08).clamp(0.25, 1.0);
+            sheet_state.strength[side] = base.clamp(0.15, 1.0);
+            // The descending wing also gets the larger low-pressure footprint.
+            let side_coverage = coverage * (0.75 + 0.25 * alpha_load);
+            sheet_state.coverage[side] = side_coverage.clamp(0.25, 1.0);
         }
     }
     sheet_state.prev_g = g;
-    sheet_state.prev_alpha = alpha;
+    sheet_state.prev_local_alpha = local_alpha;
     for side in 0..2 {
         if sheet_state.strength[side] > 0.0 {
             sheet_state.age[side] += dt;
