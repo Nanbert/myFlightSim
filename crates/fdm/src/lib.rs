@@ -377,7 +377,7 @@ impl Fdm {
         let ac = self.ac;
         let (u, v, w) = (self.state.vel[0], self.state.vel[1], self.state.vel[2]);
         let vt = (u * u + v * v + w * w).sqrt().max(1e-6);
-        let alpha = w.atan2(u);
+        let (alpha, _) = air_angles(u, v, w);
         let qbar = 0.5 * rho * vt * vt;
         let speedbrake_pos = if ac.has_speedbrake {
             self.speedbrake_pos
@@ -786,10 +786,15 @@ impl Fdm {
         norm(self.air_vel_body())
     }
 
-    /// Air-relative sideslip (rad), same convention as `aero/beta-deg`.
+    /// Air-relative sideslip (rad), same convention as `aero/beta-deg`. Held
+    /// at zero near a standstill (see `air_angles`).
     fn air_beta_rad(&self) -> f64 {
         let air = self.air_vel_body();
-        air[1].atan2(air[0])
+        if norm(air) < AIR_ANGLES_MIN_FPS {
+            0.0
+        } else {
+            air[1].atan2(air[0])
+        }
     }
 
     /// Re-seat the vehicle *velocity* for a wind-aware world: the trims and ICs
@@ -1800,6 +1805,29 @@ impl FlightModel for Fdm {
 /// Fill the named-property scratch map the aero evaluator reads. The gear
 /// position (`gear/gear-pos-norm`, driving the CDgear drag term) is set by the
 /// caller, since it's a whole-aircraft state rather than a resolved surface.
+const AIR_ANGLES_MIN_FPS: f64 = 2.0;
+
+/// Angle-of-attack and sideslip from an air-relative velocity, held at an
+/// honest zero below a walking pace (`AIR_ANGLES_MIN_FPS`). Near a standstill
+/// that velocity is settling and creep noise — a few millimetres per second
+/// whose direction sweeps as the plane creeps — so the `atan2`s land anywhere:
+/// park noise reads ±90°/±180° and drifts through the stall band, and every
+/// consumer of the reading (the HUD's data stack and FPM AoA chevron, the
+/// slip ball's beta, the camera's speed-feel, the FCS schedules) breathes with
+/// it. The gate cannot hurt physics: below it the dynamic pressure — and so
+/// every force carrying alpha — is all but zero.
+fn air_angles(u: f64, v: f64, w: f64) -> (f64, f64) {
+    let air = (u * u + v * v + w * w).sqrt();
+    if air < AIR_ANGLES_MIN_FPS {
+        (0.0, 0.0)
+    } else {
+        (w.atan2(u), v.atan2((u * u + w * w).sqrt()))
+    }
+}
+
+/// Fill the named-property scratch map the aero evaluator reads. The gear
+/// position (`gear/gear-pos-norm`, driving the CDgear drag term) is set by the
+/// caller, since it's a whole-aircraft state rather than a resolved surface.
 fn fill_props(
     props: &mut PropMap,
     ac: &Aircraft,
@@ -1819,8 +1847,7 @@ fn fill_props(
         s.vel[2] - wind_body[2],
     );
     let vt = (u * u + v * v + w * w).sqrt().max(1e-6);
-    let alpha = w.atan2(u);
-    let beta = v.atan2((u * u + w * w).sqrt());
+    let (alpha, beta) = air_angles(u, v, w);
     let qbar = 0.5 * rho * vt * vt;
 
     props.set("metrics/Sw-sqft", ac.wing_area_sqft);
@@ -2057,6 +2084,40 @@ mod tests {
         assert!(
             m.get("velocities/h-dot-fps").abs() < 1.0,
             "should be at rest"
+        );
+    }
+
+    #[test]
+    fn parked_angles_settle_to_zero() {
+        // Near a standstill alpha/beta are `atan2` of drift noise: the settle
+        // and the centimetres-a-second creep sweep the readings around
+        // ±90°/±180° and through the stall band, and the HUD, the slip ball
+        // and the chase camera all breathe with it. The bus must hold them at
+        // an honest zero until there is real airflow. Brakes on, exactly as
+        // the app's parking-brake hook programs a cold spawn.
+        let mut m = parked();
+        m.set("fcs/left-brake-cmd-norm", 1.0);
+        m.set("fcs/right-brake-cmd-norm", 1.0);
+        for _ in 0..120 * 5 {
+            m.step();
+        }
+        assert_eq!(m.get("aero/alpha-deg"), 0.0);
+        assert_eq!(m.get("aero/beta-deg"), 0.0);
+    }
+
+    #[test]
+    fn cruise_alpha_never_reads_as_the_rest_noise() {
+        // The gate covers the standstill only. A trimmed flight stalls in
+        // alpha ~4-6 deg — never the ±90 garbage the old raw reading showed.
+        let mut m = Fdm::new("c172p");
+        m.trim(120.0, 3000.0);
+        for _ in 0..120 * 5 {
+            m.step();
+        }
+        let alpha = m.get("aero/alpha-deg");
+        assert!(
+            alpha.abs() < 15.0,
+            "cruise alpha must be a real wing reading: {alpha}"
         );
     }
 

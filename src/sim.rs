@@ -312,9 +312,10 @@ pub struct AircraftState {
     /// Angle of attack (`aero/alpha-rad`), degrees — drives the F-22's wingtip
     /// vapor trails (`vapor.rs`), which feed with the wing's load.
     ///
-    /// Note this is the FDM's raw reading: at a standstill it is `atan2` of
-    /// drift noise, so every consumer near rest must gate it on airspeed (the
-    /// chase camera does, see `buffet_weight`).
+    /// The FDM holds the reading at an honest zero below a walking pace, where
+    /// the raw `atan2` is only drift noise (see `fdm::air_angles`); the chase
+    /// camera's airflow gate (`buffet_weight`) is a second line of defence
+    /// around the same stair.
     pub alpha_deg: f64,
     /// Mach number (`velocities/mach`) — drives the transonic vapor cone.
     pub mach: f64,
@@ -404,7 +405,8 @@ pub struct AircraftState {
     pub speed_trend: f64,
     /// Height above the ground (`position/h-agl-ft`).
     pub radar_alt_ft: f64,
-    /// Angle of sideslip (`aero/beta-deg`).
+    /// Angle of sideslip (`aero/beta-deg`). Also held at zero near a
+    /// standstill, same gate as the alpha reading.
     pub beta_deg: f64,
     /// Wind velocity components (`atmosphere/wind-{north,east}-fps`), fps.
     pub wind_north_fps: f64,
