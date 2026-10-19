@@ -139,6 +139,7 @@ impl Sim {
         self.model.set("gear/gear-cmd-norm", 1.0);
         self.model.set("gear/gear-pos-norm", 1.0);
         self.light_engine();
+        self.settle_gear();
         self.reset_hud_memory();
         self.origin_lat = 0.0;
         self.origin_lon = 0.0;
@@ -158,9 +159,28 @@ impl Sim {
         self.model.set("gear/gear-pos-norm", 1.0);
         // Light the engine; without this the throttle commands produce no thrust.
         self.light_engine();
+        self.settle_gear();
         self.reset_hud_memory();
         self.origin_lat = self.model.get("position/lat-gc-deg");
         self.origin_lon = self.model.get("position/long-gc-deg");
+    }
+
+    /// March the FDM a few seconds with the throttle pinned at idle so the
+    /// gear springs take the weight and the attitude stops ringing *before*
+    /// the first rendered frame. Seeding the IC at the rest height with a
+    /// level attitude means the airframe starts nose-level and sags onto the
+    /// wheels over ~0.2 s, then sways on the (lightly damped) springs for
+    /// seconds — the parked-but-visible camera sway. Idempotent for the
+    /// rigid-gear backends, which settle instantly.
+    fn settle_gear(&mut self) {
+        let throttle = self.model.get("fcs/throttle-cmd-norm");
+        self.model.set("fcs/throttle-cmd-norm", 0.0);
+        for _ in 0..360 {
+            self.model.step();
+        }
+        // Hand the lever back: the app writes its own 60% taxi setting right
+        // after the reset returns.
+        self.model.set("fcs/throttle-cmd-norm", throttle);
     }
 
     /// Start airborne, already trimmed for level cruise at `alt_ft` / `vc_kts`.
@@ -627,6 +647,41 @@ mod tests {
 
     /// The pure-Rust backend is the one that can trim; every entry point here
     /// reaches the solver through the `Box<dyn FlightModel>` trait object.
+    #[test]
+    fn a_cold_parked_c172_does_not_rock_or_spin_down_visibly() {
+        // The menu's Sim::new lights the engine warm; switching ENGINE = COLD
+        // at PLAY used to leave it winding down from idle rpm — a spinning
+        // prop rocking the parked airframe on its gear (visible camera sway).
+        // The cold spawn must enter the scene already stopped, rpm at zero.
+        let mut sim = rust_sim();
+        sim.set_engine_cold(true);
+        sim.reset_ground();
+        assert_eq!(sim.model.get("propulsion/engine[0]/engine-rpm"), 0.0);
+        // The gear is already settled: seated pitch from frame zero, and no
+        // attitude ringing afterwards.
+        let theta0 = sim.model.get("attitude/theta-deg");
+        assert!(
+            theta0 > 2.0,
+            "parked C172 should sit nose-up on its gear: {theta0}"
+        );
+        for i in 0..120 * 5 {
+            sim.model.step();
+            if i % 30 == 0 {
+                println!("t={:.1}s phi={:+.5} theta={:+.5} rpm={:.0}",
+                    i as f64 / 120.0,
+                    sim.model.get("attitude/phi-deg"),
+                    sim.model.get("attitude/theta-deg"),
+                    sim.model.get("propulsion/engine[0]/engine-rpm"));
+            }
+        }
+        assert_eq!(sim.model.get("propulsion/engine[0]/engine-rpm"), 0.0);
+        assert!(
+            (sim.model.get("attitude/theta-deg") - theta0).abs() < 0.05,
+            "parked airframe still ringing: {theta0} -> {}",
+            sim.model.get("attitude/theta-deg")
+        );
+    }
+
     fn rust_sim() -> Sim {
         std::env::set_var("FDM_BACKEND", "rust");
         Sim::new("c172p")

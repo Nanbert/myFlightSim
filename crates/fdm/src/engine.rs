@@ -211,6 +211,11 @@ impl PistonEngine {
     pub fn stop(&mut self) {
         self.running = false;
         self.starter_cmd = 0.0;
+        // Snap the prop to a stop. The caller toggles this from the settings
+        // switch (and the pre-flight of a cold spawn); leaving the rpm to wind
+        // down produced a ghost idle — a spinning prop rocking the parked
+        // airframe on its gear right at scene entry.
+        self.rpm = 0.0;
     }
 
     /// Time-march the (already lit) engine at big 0.5 s steps until the thrust

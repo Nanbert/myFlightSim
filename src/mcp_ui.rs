@@ -1117,6 +1117,16 @@ mod tests {
     #[test]
     fn clicking_cmd_a_engages_the_autopilot() {
         let mut app = test_app();
+        // Engagement is airborne-only (weight off the wheels); seat the sim in
+        // the air first — the parked 737's gear now settles under load, which
+        // correctly refuses the ground engagement this test used to rely on.
+        // `wow` only refreshes on a step, so fly a few frames airborne.
+        let mut sim = app.world_mut().resource_mut::<Sim>();
+        sim.reset_air(5000.0, 250.0);
+        for _ in 0..10 {
+            sim.model.step();
+        }
+        assert!(sim.model.get("gear/wow") < 0.5, "should be airborne");
         let button = find(&mut app, |press: &McpPress| *press == McpPress::Cmd);
         app.world_mut().trigger(Activate { entity: button });
         let ap = app.world().resource::<Autopilot>();
