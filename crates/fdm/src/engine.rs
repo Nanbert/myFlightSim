@@ -85,6 +85,12 @@ pub struct EngineOutput {
     pub rpm: f64,
 }
 
+// Starter torque while cranking (lb·ft), and the rpm where the fire-up check
+// triggers. Sized so the prop (ixx 1.67 slug·ft²) reaches ~250 rpm in about
+// two seconds of holding the key, like the real starter.
+const STARTER_TORQUE_LBFT: f64 = 30.0;
+const FIRE_RPM: f64 = 200.0;
+
 /// Running reciprocating engine + propeller state.
 pub struct PistonEngine {
     piston: PistonSpec,
@@ -97,6 +103,16 @@ pub struct PistonEngine {
     pub rpm: f64,
     tmap: f64,
     pub running: bool,
+    /// No fuel left: the flows zero out and the engine flames out (running
+    /// drops) — JSBSim's `Starved` handling, flipped into a real shutdown.
+    starved: bool,
+    /// Starter crank command 0..1 (the held key). Only cranks while not running.
+    starter_cmd: f64,
+    /// Spark: master + magnetos as one external boolean. Without it the crank
+    /// spins but never fires.
+    ignition: bool,
+    /// Fuel flow (lb/hr) from the last `step` — read by the fuel bookkeeping.
+    fuel_flow_pph: f64,
 }
 
 impl PistonEngine {
@@ -135,7 +151,33 @@ impl PistonEngine {
             rpm: 0.0,
             tmap: STD_PRESSURE,
             running: false,
+            starved: false,
+            starter_cmd: 0.0,
+            ignition: true,
+            fuel_flow_pph: 0.0,
         }
+    }
+
+    /// Cut the fuel supply (`propulsion/engine[0]/starved`). While set, the
+    /// flows are zero; a running engine flames out on the next step.
+    pub fn set_starved(&mut self, starved: bool) {
+        self.starved = starved;
+    }
+
+    /// Starter crank command, 0..1 (`propulsion/engine[0]/starter-cmd-norm`).
+    pub fn set_starter(&mut self, cmd: f64) {
+        self.starter_cmd = cmd.clamp(0.0, 1.0);
+    }
+
+    /// Spark present (master + magnetos folded together by the caller,
+    /// `propulsion/ignition-enable`). Without spark the crank never fires.
+    pub fn set_ignition(&mut self, on: bool) {
+        self.ignition = on;
+    }
+
+    /// Fuel flow (lb/hr) from the last `step`; 0 when not running or starved.
+    pub fn fuel_flow_pph(&self) -> f64 {
+        self.fuel_flow_pph
     }
 
     /// Light the engine and time-march it to a steady state at full throttle,
@@ -161,6 +203,14 @@ impl PistonEngine {
         self.rpm = 2.0 * self.piston.idle_rpm;
         self.running = true;
         self.tmap = STD_PRESSURE;
+    }
+
+    /// Shut the engine down (`propulsion/engine[0]/set-stopped`): running drops,
+    /// and the prop free-spins down on its own drag. A `set-running` light is
+    /// needed to restart.
+    pub fn stop(&mut self) {
+        self.running = false;
+        self.starter_cmd = 0.0;
     }
 
     /// Time-march the (already lit) engine at big 0.5 s steps until the thrust
@@ -274,6 +324,21 @@ impl PistonEngine {
         vel_x: f64,
         sound_speed: f64,
     ) -> EngineOutput {
+        // Starved engines flame out: JSBSim zeroes the flows but keeps Running,
+        // which would let a refuel "relight in place" — unrealistic, so the
+        // shutdown is real and restart needs the starter flow again.
+        if self.starved && self.running {
+            self.running = false;
+        }
+
+        // Fire-up: cranking fast enough with spark and fuel lights the engine
+        // (JSBSim's `InitRunning` starting point, 2× idle rpm).
+        if self.starter_cmd > 0.5 && !self.running && !self.starved && self.ignition
+            && self.rpm >= FIRE_RPM
+        {
+            self.light();
+        }
+
         let throttle = throttle.clamp(self.piston.min_throttle, self.piston.max_throttle);
         let p_amb = pressure_psf * PSF_TO_PA;
         let t_amb = temperature_r / 1.8;
@@ -321,6 +386,7 @@ impl PistonEngine {
         let pmep = (map - p_amb) * self.piston.volumetric_eff;
 
         if !self.running {
+            self.fuel_flow_pph = 0.0;
             return 0.0;
         }
 
@@ -341,6 +407,7 @@ impl PistonEngine {
         let equivalence_ratio = 1.3 * STD_PRESSURE / p_amb;
         let m_dot_fuel = m_dot_air * equivalence_ratio / 14.7;
         let fuel_flow_pph = m_dot_fuel * 2.2046 * 3600.0;
+        self.fuel_flow_pph = fuel_flow_pph;
 
         // --- brake power ---
         let me = mixture_efficiency(m_dot_fuel / m_dot_air.max(1e-9));
@@ -390,11 +457,16 @@ impl PistonEngine {
         let (_, _, power_required) = self.prop_forces(rho, vel, sound_speed);
         let rps = self.rpm / 60.0;
         let omega = rps * 2.0 * std::f64::consts::PI;
-        let excess_torque = if omega > 0.01 {
+        let mut excess_torque = if omega > 0.01 {
             (engine_power - power_required) / omega
         } else {
             engine_power - power_required
         };
+        // The starter cranks against the prop's own drag whenever it is engaged
+        // and the engine is not running.
+        if self.starter_cmd > 0.5 && !self.running {
+            excess_torque += STARTER_TORQUE_LBFT;
+        }
         self.rpm =
             (rps + ((excess_torque / self.prop.ixx) / (2.0 * std::f64::consts::PI)) * dt) * 60.0;
         if self.rpm < 0.0 {
@@ -710,6 +782,43 @@ impl Powerplant {
             ),
             Powerplant::Turbine(t) => t.steady_output(throttle, rho, mach),
             Powerplant::Rotor(r) => r.steady_output(throttle),
+        }
+    }
+
+    /// Fuel flow (lb/hr) from the last piston step; always 0 for non-piston
+    /// plants (they have no fuel model yet).
+    pub fn fuel_flow_pph(&self) -> f64 {
+        match self {
+            Powerplant::Piston(e) => e.fuel_flow_pph(),
+            _ => 0.0,
+        }
+    }
+
+    /// Cut the fuel supply (see `PistonEngine::set_starved`).
+    pub fn set_starved(&mut self, starved: bool) {
+        if let Powerplant::Piston(e) = self {
+            e.set_starved(starved);
+        }
+    }
+
+    /// Starter crank command (see `PistonEngine::set_starter`).
+    pub fn set_starter(&mut self, cmd: f64) {
+        if let Powerplant::Piston(e) = self {
+            e.set_starter(cmd);
+        }
+    }
+
+    /// Spark present (see `PistonEngine::set_ignition`).
+    pub fn set_ignition(&mut self, on: bool) {
+        if let Powerplant::Piston(e) = self {
+            e.set_ignition(on);
+        }
+    }
+
+    /// Shut the running engine down (piston only).
+    pub fn stop(&mut self) {
+        if let Powerplant::Piston(e) = self {
+            e.stop();
         }
     }
 

@@ -74,6 +74,9 @@ pub struct GameConfig {
     pub weather_level: usize,
     /// Index into [`crate::weather::WIND_LEVELS`].
     pub wind_level: usize,
+    /// ENGINE = COLD: spawn the C172 shut down and let the pilot run the start
+    /// flow (master M, crank I). Ignored by every other aircraft.
+    pub engine_cold: bool,
     keymaps: HashMap<String, Keymap>,
     assists: HashMap<String, AssistConfig>,
     /// Aircraft set to fly in arcade mode, by canonical id. An id is present iff
@@ -196,6 +199,9 @@ fn truthy(value: &str) -> bool {
 fn serialize(config: &GameConfig) -> String {
     let mut out = format!("weather = {}\n", config.weather_level);
     out.push_str(&format!("wind = {}\n", config.wind_level));
+    if config.engine_cold {
+        out.push_str("engine_cold = 1\n");
+    }
 
     let mut ids: Vec<&String> = config.keymaps.keys().collect();
     ids.sort();
@@ -278,6 +284,9 @@ fn parse(text: &str) -> GameConfig {
                     if let Ok(n) = value.parse::<usize>() {
                         config.wind_level = n;
                     }
+                }
+                if key == "engine_cold" {
+                    config.engine_cold = truthy(value);
                 }
             }
             Some(ARCADE_SECTION) => {

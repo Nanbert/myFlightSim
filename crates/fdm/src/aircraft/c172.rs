@@ -6,7 +6,7 @@
 //!
 //! Values are imperial: areas ft², arms ft, moments slug·ft², positions inches.
 
-use super::{Aircraft, MassSpec, PointMass};
+use super::{Aircraft, FuelSpec, MassSpec, PointMass};
 use crate::aero::{Aerodynamics, Axis, Factor, Function, NamedFn};
 use crate::engine::{PistonSpec, PowerplantSpec, PropSpec};
 use crate::fcs::{ControlSystem, DirectFcs};
@@ -565,4 +565,11 @@ pub const C172: Aircraft = Aircraft {
     rest_h_ft: 4.7,
     has_speedbrake: false,
     max_reverse_lbs: 0.0,
+    // Two wing tanks, matching `<mass_balance>` points 1 and 2 (see `POINTS`).
+    // Capacity/contents are the model's 185/100 lb.
+    fuel: Some(FuelSpec {
+        tank_points: [1, 2],
+        capacity_lb: 185.0,
+        initial_lb: 100.0,
+    }),
 };

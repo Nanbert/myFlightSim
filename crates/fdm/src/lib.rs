@@ -186,6 +186,18 @@ pub struct Fdm {
     // ground velocity; gravity, the integrator and the tire forces stay
     // ground-based, so parked friction and the runway contact are unaffected.
     wind_ned_fps: Vec3,
+    // Fuel in the two wing tanks (lb), when the airframe declares a
+    // `FuelSpec`. The engine burns it every step; whenever the contents have
+    // moved ~0.2 lb the cached mass properties/tank arms are rebuilt (see
+    // `rebuild_mass`), so the CG genuinely wanders as the tanks empty.
+    // `fuel_built` is the snapshot these caches were built from.
+    fuel: [f64; 2],
+    fuel_built: [f64; 2],
+    // Cold-start inputs the app feeds in: spark available
+    // (`propulsion/ignition-enable`) and the held starter crank
+    // (`propulsion/engine[0]/starter-cmd-norm`). A running engine needs neither.
+    ignition: bool,
+    starter_cmd: f64,
     // Last step's force/moment breakdown, for frame-by-frame comparison against
     // JSBSim (`forces/*`, `moments/*`).
     diag: Diag,
@@ -225,6 +237,11 @@ impl Fdm {
             .iter()
             .map(|s| struct_to_body(s.location_in, cg_in))
             .collect();
+        // Tanks start at the model's `<contents>`, which by convention equals
+        // the static POINTS weights the arms above were built from — no rebuild
+        // needed until the first burn.
+        let fuel0 = ac.fuel.as_ref().map(|f| f.initial_lb).unwrap_or(0.0);
+        let fuel = [fuel0, fuel0];
         Fdm {
             ac,
             state: State::default(),
@@ -281,6 +298,10 @@ impl Fdm {
             gear_pos: 1.0,
             floor_ft: None,
             wind_ned_fps: [0.0; 3],
+            fuel,
+            fuel_built: fuel,
+            ignition: true,
+            starter_cmd: 0.0,
             diag: Diag::default(),
             origin_lat: 0.0,
             origin_lon: 0.0,
@@ -293,6 +314,45 @@ impl Fdm {
     /// The aircraft this model was built for.
     pub fn aircraft(&self) -> &str {
         self.ac.name
+    }
+
+    /// Recompute the cached mass properties and every CG-dependent arm from the
+    /// current fuel contents. Fuel is the only thing that moves the mass
+    /// points, so this runs whenever the tanks have moved enough since the last
+    /// build — the edit is small (sub-slug) but keeps the CG drift and the
+    /// inertia truthful as the tanks empty.
+    fn rebuild_mass(&mut self) {
+        let ac = self.ac;
+        let sel = if ac.fuel.is_some() { Some(&self.fuel) } else { None };
+        let loaded = ac.loaded_mass(sel);
+        let cg = loaded.cg_in;
+        self.prop_arm_ft = struct_to_body(ac.power.location_in(), cg);
+        self.rp_offset_ft = struct_to_body(ac.aero.aerorp_in, cg);
+        self.gear_arms_ft = ac
+            .gear
+            .iter()
+            .map(|g| struct_to_body(g.pos_in, cg))
+            .collect();
+        self.rotor_arms_ft = ac
+            .rotors
+            .iter()
+            .map(|s| struct_to_body(s.location_in, cg))
+            .collect();
+        self.mass = loaded.mass_slug;
+        self.inertia = loaded.inertia;
+    }
+
+    /// Fill the wing tanks to capacity — the apron pump at MYFS. Purely a fuel
+    /// action: a running engine doesn't care, and an empty one still needs the
+    /// starter flow afterwards (refuelling never relights an engine by itself).
+    pub fn refuel(&mut self) {
+        let Some(spec) = self.ac.fuel.as_ref() else {
+            return;
+        };
+        let cap = spec.capacity_lb;
+        self.fuel = [cap, cap];
+        self.fuel_built = self.fuel;
+        self.rebuild_mass();
     }
 
     /// Height above the ground (ft), from the NED down-axis.
@@ -499,6 +559,15 @@ impl Fdm {
         // same once-per-frame cadence JSBSim's propulsion module uses. The
         // turbofan's thrust tables are indexed by Mach, so it needs the step's
         // Mach number too.
+        // Fuel state first: push the ignition/starter commands to the engine
+        // and starve it once the tanks run dry, so this step's solve sees the
+        // correct fuel situation.
+        if self.ac.fuel.is_some() {
+            let starved = self.fuel[0] + self.fuel[1] <= 0.0;
+            self.power.set_starved(starved);
+            self.power.set_ignition(self.ignition);
+            self.power.set_starter(self.starter_cmd);
+        }
         let out = self.power.step(
             dt,
             self.throttle_cmd,
@@ -511,6 +580,22 @@ impl Fdm {
         );
         self.engine_rpm = out.rpm;
         self.engine_power_hp = out.power_hp;
+        // Deduct this step's burn symmetrically from the two tanks and rebuild
+        // the mass caches once the contents have moved ~0.2 lb (roughly every
+        // ten seconds at full power — cheap machinery, honest physics).
+        if self.ac.fuel.is_some() {
+            let burn_lb = dt * self.power.fuel_flow_pph() / 3600.0;
+            for f in &mut self.fuel {
+                *f = (*f - 0.5 * burn_lb).max(0.0);
+            }
+            let moved = (self.fuel[0] - self.fuel_built[0])
+                .abs()
+                .max((self.fuel[1] - self.fuel_built[1]).abs());
+            if moved > 0.2 {
+                self.fuel_built = self.fuel;
+                self.rebuild_mass();
+            }
+        }
         // Thrust reverse: back up the exhaust while the wheels carry weight. The
         // honest cell for that force is exactly where forward thrust lands —
         // net body-axis force and its moment arm both take the difference, so
@@ -1547,6 +1632,23 @@ impl FlightModel for Fdm {
             "propulsion/engine[0]/induced-inflow-ratio" => self.rotor_get(0, |r| r.inflow_ratio()),
             "propulsion/engine[0]/engine-rpm" => self.engine_rpm,
             "propulsion/engine[0]/power-hp" => self.engine_power_hp,
+            // Fuel readback (c172p only: the model declares a FuelSpec).
+            "propulsion/engine[0]/fuel-flow-pph" => self.power.fuel_flow_pph(),
+            "propulsion/engine[0]/has-fuel" => if self.ac.fuel.is_some() { 1.0 } else { 0.0 },
+            "propulsion/engine[0]/running" => if self.engine_rpm > 0.0 && self.engine_power_hp > 0.0
+            {
+                1.0
+            } else {
+                0.0
+            },
+            // Cold-start state readback (the status line's MASTER field).
+            "propulsion/ignition-enable" => if self.ignition { 1.0 } else { 0.0 },
+            "propulsion/tank-0-contents-lbs" => self.fuel[0],
+            "propulsion/tank-1-contents-lbs" => self.fuel[1],
+            // Total usable capacity, for gauge scaling.
+            "propulsion/tank-capacity-lbs" => {
+                self.ac.fuel.as_ref().map(|f| 2.0 * f.capacity_lb).unwrap_or(0.0)
+            }
             // Propeller/fan thrust for fixed-wing aircraft; the main rotor's
             // thrust for a helicopter (JSBSim ties this to the thruster's
             // `GetThrust`, which for an `FGRotor` is the rotor thrust).
@@ -1598,8 +1700,10 @@ impl FlightModel for Fdm {
             }
             // Any non-zero `set-running` lights the engine and spools it to a
             // steady state at the current flight condition (JSBSim's convention).
+            // A dry tank refuses the light: there is nothing to burn.
             "propulsion/set-running" => {
-                if value != 0.0 {
+                let dry = self.ac.fuel.is_some() && self.fuel[0] + self.fuel[1] <= 0.0;
+                if value != 0.0 && !dry {
                     let alt = self.alt_ft();
                     self.power.start(
                         self.isa.density(alt),
@@ -1620,6 +1724,24 @@ impl FlightModel for Fdm {
             "atmosphere/wind-north-fps" => self.wind_ned_fps[0] = value,
             "atmosphere/wind-east-fps" => self.wind_ned_fps[1] = value,
             "atmosphere/wind-down-fps" => self.wind_ned_fps[2] = value,
+            // Cold start: spark available (master + magnetos folded together by
+            // the app) and the held starter crank. Set-running is the shortcut
+            // the spawner uses; these are the pilot's path.
+            "propulsion/ignition-enable" => self.ignition = value != 0.0,
+            "propulsion/engine[0]/starter-cmd-norm" => self.starter_cmd = value.clamp(0.0, 1.0),
+            // Shutdown (`ENGINE = COLD` selector): kills the running engine —
+            // the mirror of `set-running` for the settings toggle.
+            "propulsion/engine[0]/set-stopped" => {
+                if value != 0.0 {
+                    self.power.stop();
+                }
+            }
+            // The apron pump filling the wing tanks to capacity.
+            "propulsion/refuel-cmd" => {
+                if value != 0.0 {
+                    self.refuel();
+                }
+            }
             "fcs/pitch-trim-cmd-norm" => self.pitch_trim_cmd = value,
             "fcs/roll-trim-cmd-norm" => self.roll_trim_cmd = value,
             "fcs/yaw-trim-cmd-norm" => self.yaw_trim_cmd = value,
@@ -3327,5 +3449,143 @@ mod heli_arcade_tests {
         }
         let level = m.get("attitude/phi-deg");
         assert!(level.abs() < 5.0, "should return to level, got {level}");
+    }
+}
+
+#[cfg(test)]
+mod fuel_tests {
+    use super::*;
+
+    /// Cold and parked at the threshold, like the app's ENGINE = COLD spawn.
+    fn parked_cold() -> Fdm {
+        let mut m = Fdm::new("c172p");
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", 4.7);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/ignition-enable", 0.0);
+        m
+    }
+
+    /// Parked with the engine running (the app's default spawn).
+    fn parked_running() -> Fdm {
+        let mut m = parked_cold();
+        m.set("propulsion/set-running", 1.0);
+        m
+    }
+
+    #[test]
+    fn engine_burns_fuel_and_reports_it() {
+        let mut m = parked_running();
+        let before = m.get("propulsion/tank-0-contents-lbs");
+        // Full throttle on the ramp: the flow should be plausibly C172-shaped
+        // (the engine manages ~50-60 pph at high power) and the left tank must
+        // tick down as the engine burns.
+        m.set("fcs/throttle-cmd-norm", 1.0);
+        for _ in 0..120 * 10 {
+            m.step();
+        }
+        let flow = m.get("propulsion/engine[0]/fuel-flow-pph");
+        assert!(
+            (30.0..80.0).contains(&flow),
+            "fuel flow out of piston range: {flow} pph"
+        );
+        let after = m.get("propulsion/tank-0-contents-lbs");
+        assert!(after < before - 0.1, "tank should burn: {before} -> {after}");
+    }
+
+    #[test]
+    fn dry_tank_flames_out_and_refuses_the_light() {
+        let mut m = parked_running();
+        // A cup of fuel per tank: high power burns it in a second or two.
+        m.fuel = [0.02, 0.02];
+        m.set("fcs/throttle-cmd-norm", 1.0);
+        for _ in 0..120 * 6 {
+            m.step();
+        }
+        assert!(m.fuel[0] == 0.0 && m.fuel[1] == 0.0, "tanks should run dry");
+        assert!(m.engine_power_hp < 1.0, "a starved engine makes no power");
+        assert!(m.engine_rpm < 1200.0, "rpm should be spinning down, was {}", m.engine_rpm);
+        // The spawn shortcut can't relight it: there is nothing to burn.
+        m.set("propulsion/set-running", 1.0);
+        for _ in 0..120 {
+            m.step();
+        }
+        assert!(
+            m.engine_power_hp < 1.0,
+            "refusing the light with an empty tank"
+        );
+        // ...but the pump can. Refuelling alone must not relight the engine.
+        m.refuel();
+        assert!(m.fuel[0] > 100.0, "the pump fills the tanks");
+        assert!(m.engine_power_hp < 1.0, "refuelling must not relight");
+        // Spark + starter do.
+        m.set("propulsion/ignition-enable", 1.0);
+        m.set("propulsion/engine[0]/starter-cmd-norm", 1.0);
+        for _ in 0..120 * 5 {
+            m.step();
+        }
+        assert!(
+            m.engine_rpm > 900.0,
+            "a cold engine cranks up and fires, rpm = {}",
+            m.engine_rpm
+        );
+    }
+
+    #[test]
+    fn cold_start_route_lights_only_with_spark_and_crank() {
+        let mut m = parked_cold();
+        // Cranking without spark spins the prop but never fires.
+        m.set("propulsion/engine[0]/starter-cmd-norm", 1.0);
+        for _ in 0..120 * 5 {
+            m.step();
+        }
+        assert!(m.engine_power_hp < 1.0, "no spark: no fire");
+        let crank_rpm = m.engine_rpm;
+        assert!(crank_rpm > 100.0, "the starter should crank, rpm = {crank_rpm}");
+        // Spark arrives mid-crank: it should catch.
+        m.set("propulsion/ignition-enable", 1.0);
+        for _ in 0..120 * 4 {
+            m.step();
+        }
+        assert!(
+            m.engine_power_hp > 5.0 && m.engine_rpm > 500.0,
+            "fires once spark arrives: rpm = {}, hp = {}",
+            m.engine_rpm,
+            m.engine_power_hp
+        );
+        // Release the starter: the engine keeps running on its own.
+        m.set("propulsion/engine[0]/starter-cmd-norm", 0.0);
+        for _ in 0..120 * 5 {
+            m.step();
+        }
+        assert!(
+            m.engine_rpm > 500.0,
+            "running engine must not stall with the starter released, rpm = {}",
+            m.engine_rpm
+        );
+    }
+
+    #[test]
+    fn burning_fuel_makes_the_mass_properties_follow() {
+        let mut m = parked_running();
+        let w0 = m.mass * 32.174049; // slug back to lb for readability
+        // Drain the tanks by hand, rebuild, and check the totals.
+        m.fuel = [0.0, 0.0];
+        m.fuel_built = [-1.0, -1.0]; // force the rebuild threshold
+        m.rebuild_mass();
+        let w_dry = m.mass * 32.174049;
+        assert!(
+            (w_dry - 1680.0).abs() < 2.0,
+            "empty tanks: empty + pilot = 1680 lb, got {w_dry}"
+        );
+        assert!(w_dry < w0 - 190.0, "burning fuel lightens the aircraft");
+        // Full tanks: 1500 + 180 + 2×185.
+        m.refuel();
+        let w_full = m.mass * 32.174049;
+        assert!(
+            (w_full - 2050.0).abs() < 2.0,
+            "full tanks: 2050 lb, got {w_full}"
+        );
     }
 }

@@ -117,8 +117,8 @@ enum Page {
     Global,
 }
 
-/// Rows on the global settings page. Weather intensity and wind speed today.
-const SETTINGS_ROWS: usize = 2;
+/// Rows on the global settings page. Weather, wind and the engine start mode.
+const SETTINGS_ROWS: usize = 3;
 
 /// Cursor within the global settings page.
 #[derive(Resource, Default)]
@@ -566,7 +566,7 @@ fn update_menu_ui(
     }
     if let Ok(mut text) = ptext.single_mut() {
         text.0 = match sel.page {
-            Some(Page::Global) => global_settings_text(&weather, &settings),
+            Some(Page::Global) => global_settings_text(&weather, &settings, &config),
             Some(Page::Settings) => editor_text(sel.aircraft_id(), &config, &editor),
             Some(Page::Tutorial) => tutorial::render(
                 sel.aircraft_id(),
@@ -646,7 +646,7 @@ fn aircraft_label(id: &str) -> &'static str {
 
 /// The global settings page: one row per setting, the selected one marked and
 /// its value in `< >` brackets.
-fn global_settings_text(weather: &Weather, settings: &SettingsState) -> String {
+fn global_settings_text(weather: &Weather, settings: &SettingsState, config: &GameConfig) -> String {
     let mut out = String::from("GLOBAL SETTINGS\n\n");
     for i in 0..SETTINGS_ROWS {
         let cursor = if i == settings.row { ">" } else { " " };
@@ -659,6 +659,10 @@ fn global_settings_text(weather: &Weather, settings: &SettingsState) -> String {
                 "{cursor} WIND 300DEG    < {} >\n",
                 weather.wind_label()
             )),
+            2 => {
+                let mode = if config.engine_cold { "COLD" } else { "AUTO" };
+                out.push_str(&format!("{cursor} ENGINE         < {mode} >\n"));
+            }
             _ => {}
         }
     }
@@ -699,6 +703,7 @@ fn menu_input(
     mut config: ResMut<GameConfig>,
     mut pending: ResMut<PendingMission>,
     sink: Res<ConfigSink>,
+    mut sim: ResMut<crate::sim::Sim>,
 ) {
     let enter = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
     let esc = keys.just_pressed(KeyCode::Escape);
@@ -731,6 +736,14 @@ fn menu_input(
                         1 => {
                             let level = weather.wind_level() as isize + dir;
                             config.wind_level = weather.set_wind_level(level);
+                            config::save(&config, &sink);
+                        }
+                        2 => {
+                            // ENGINE AUTO <-> COLD. Takes hold immediately on
+                            // the current flight (COLD = shut it down now and
+                            // run the checklist); persists for later spawns.
+                            config.engine_cold = !config.engine_cold;
+                            sim.set_engine_cold(config.engine_cold);
                             config::save(&config, &sink);
                         }
                         _ => {}
@@ -1001,6 +1014,9 @@ fn start_flight(
     } else if sim.name != id {
         *sim = Sim::new(id);
     }
+    // A fresh FDM knows nothing of the persisted ENGINE switch — the cold-start
+    // selection rides into every (re)spawn here. Reset paths honour it too.
+    sim.set_engine_cold(config.engine_cold);
     // Arcade is the mission's baseline, and the per-aircraft setting the
     // player saved decides for every other flight. The F-22 and the AH-64D
     // read the property; every other model ignores it.
@@ -1117,8 +1133,8 @@ mod tests {
 
     #[test]
     fn editor_lists_a_row_per_key_slot() {
-        // c172p: 6 paired axes (12) + 2 brakes + 2 toggles.
-        assert_eq!(editor_slots("c172p", &Keymap::default()).len(), 16);
+        // c172p: 6 paired axes (12) + 2 brakes + 1 starter axis + 3 toggles.
+        assert_eq!(editor_slots("c172p", &Keymap::default()).len(), 18);
         // ah1s: 5 paired axes (10) + 4 toggles (rotor-trim, trim, hover, balance).
         assert_eq!(editor_slots("ah1s", &Keymap::default()).len(), 14);
         // 737: c172p's slots + autopilot, gear, the six MCP toggles, the

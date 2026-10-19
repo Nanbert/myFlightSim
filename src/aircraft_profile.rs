@@ -34,6 +34,10 @@ pub enum Action {
     Flap,
     BrakeLeft,
     BrakeRight,
+    /// Crank the engine over with the starter motor (c172p). Held like the
+    /// throttle: the ramp IS the crank, and the engine lights when the prop
+    /// reaches firing speed with spark and fuel present.
+    Starter,
 }
 
 impl Action {
@@ -47,6 +51,7 @@ impl Action {
             Action::PitchTrim => "trim",
             Action::Flap => "flaps",
             Action::BrakeLeft | Action::BrakeRight => "brakes",
+            Action::Starter => "starter",
         }
     }
 
@@ -62,6 +67,7 @@ impl Action {
             Action::Flap => "flap",
             Action::BrakeLeft => "brake-left",
             Action::BrakeRight => "brake-right",
+            Action::Starter => "starter",
         }
     }
 
@@ -76,13 +82,14 @@ impl Action {
             "flap" => Action::Flap,
             "brake-left" => Action::BrakeLeft,
             "brake-right" => Action::BrakeRight,
+            "starter" => Action::Starter,
             _ => return None,
         })
     }
 
     /// Whether the control has a second (negative-direction) key slot.
     pub fn is_paired(self) -> bool {
-        !matches!(self, Action::BrakeLeft | Action::BrakeRight)
+        !matches!(self, Action::BrakeLeft | Action::BrakeRight | Action::Starter)
     }
 }
 
@@ -124,6 +131,10 @@ pub enum ToggleAction {
     Reverse,
     /// Arm/disarm the APP mode (LOC + GS beams, 737 MCP).
     Approach,
+    /// Master switch: battery + alternator as one (`propulsion/
+    /// ignition-enable`, c172p OFF until the pilot turns it on for the cold
+    /// start; with the engine already running the mags keep it alive anyway).
+    Master,
 }
 
 impl ToggleAction {
@@ -146,6 +157,7 @@ impl ToggleAction {
             ToggleAction::SpeedBrake => "speedbrake",
             ToggleAction::Reverse => "reverse",
             ToggleAction::Approach => "APP",
+            ToggleAction::Master => "master",
         }
     }
 
@@ -169,6 +181,7 @@ impl ToggleAction {
             ToggleAction::SpeedBrake => "speedbrake",
             ToggleAction::Reverse => "reverse",
             ToggleAction::Approach => "approach",
+            ToggleAction::Master => "master",
         }
     }
 
@@ -191,6 +204,7 @@ impl ToggleAction {
             "speedbrake" => ToggleAction::SpeedBrake,
             "reverse" => ToggleAction::Reverse,
             "approach" => ToggleAction::Approach,
+            "master" => ToggleAction::Master,
             _ => return None,
         })
     }
@@ -330,6 +344,22 @@ fn brake(action: Action, property: &'static str) -> BindingSpec {
         pos: KeyCode::KeyB,
         neg: None,
         rate: 4.0,
+        min: 0.0,
+        max: 1.0,
+        initial: 0.0,
+    }
+}
+
+/// The starter crank. Unpaired (crank is one-way); the fast ramp reaches the
+/// firing speed after roughly a second of holding the key with a live spark.
+fn starter() -> BindingSpec {
+    BindingSpec {
+        action: Action::Starter,
+        property: "propulsion/engine[0]/starter-cmd-norm",
+        axis: Axis::Hold,
+        pos: KeyCode::KeyI,
+        neg: None,
+        rate: 3.0,
         min: 0.0,
         max: 1.0,
         initial: 0.0,
@@ -480,11 +510,25 @@ pub fn profile(id: &str) -> Profile {
                 t
             },
         },
+        // The C172 plus every unknown id: keyboard feel, no autopilot. The
+        // cold-start set rides along; on a running spawn the pilot simply
+        // never touches M/I.
         _ => Profile {
             has_autopilot: false,
             has_arcade: false,
-            bindings: core_bindings(KeyCode::ShiftLeft),
-            toggles: core_toggles(),
+            bindings: {
+                let mut b = core_bindings(KeyCode::ShiftLeft);
+                b.push(starter());
+                b
+            },
+            toggles: {
+                let mut t = core_toggles();
+                t.push(ToggleSpec {
+                    action: ToggleAction::Master,
+                    key: KeyCode::KeyM,
+                });
+                t
+            },
         },
     }
 }

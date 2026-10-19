@@ -144,6 +144,8 @@ fn c172(keymap: &Keymap) -> Vec<String> {
 
     p.heading("GAME CONTROLS (your current keys)");
     fixed_wing_rows(&mut p, &b);
+    p.row("Starter crank", axis(&b, Action::Starter, "crank", ""));
+    p.row("Master switch", toggle(&b, ToggleAction::Master));
     p.row("Fine control", "Space (hold)");
     common_tail_rows(&mut p, &b);
 
@@ -168,8 +170,28 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  PAPI is left of the runway: 2 red / 2 white on a 3-degree");
     p.line("  path, all white high, all red low. The windsock is on the");
     p.line("  right. Taxiway, apron, hangar and tower are east of the runway.");
-    p.line("  Both 36 and 18 have PAPI. After touchdown a report card shows");
-    p.line("  rate, centreline, speed, point, bank, bounces and a 0-100 score.");
+    p.line("  Both 36 and 18 have PAPI. The orange fuel pump stands on the");
+    p.line("  apron: stop the aircraft within a few metres of it and the");
+    p.line("  tanks fill to full (370 lb total). After touchdown a report");
+    p.line("  card shows rate, centreline, speed, point, bank, bounces and");
+    p.line("  a 0-100 score.");
+
+    p.heading("COLD START (GAME, SETTINGS ENGINE = COLD)");
+    p.line("  ENGINE AUTO (the default) spawns running at 60% power, as the");
+    p.line("  tutorial flow below assumes. ENGINE = COLD hands you a truly");
+    p.line("  shut-down Cessna and the start flow becomes real:");
+    p.line("  1. M turns the master on (watch the status block's MASTER");
+    p.line("     / ENGINE line for feedback).");
+    p.line("  2. Hold I: the starter cranks the prop. Two seconds in, the");
+    p.line("     engine catches, spooling on its own inertia.");
+    p.line("  3. Release I once she runs. She keeps running without a");
+    p.line("     starter, like a real magneto engine.");
+    p.line("  4. Running out of fuel in flight flames out (RPM winds down,");
+    p.line("     thrust zero). Restart: taxi to the pump (it tops the");
+    p.line("     tanks), then M + hold I. A normal flight never sees this");
+    p.line("     - the tanks last hours of full-power flying even from the");
+    p.line("     200-lb spawn load - so the pump is for discipline, not");
+    p.line("     emergencies.");
 
     p.heading("FIRST FLIGHT (GAME)");
     p.line("  1. You start parked on the runway with 60% power. Hold Ctrl");
@@ -205,11 +227,15 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  brakes. Carb heat cold, mixture idle cutoff, master off.");
 
     p.heading("NOT MODELLED YET (TODO)");
-    p.line("  TODO fuel selector, mixture, primer, magnetos, carb heat.");
-    p.line("  TODO engine start/shutdown and oil-temperature limits.");
+    p.line("  TODO fuel selector (the two tanks burn symmetrically),");
+    p.line("       mixture, primer, separate magneto checks, carb heat.");
+    p.line("  TODO oil-temperature limits and shutdown checks.");
+    p.line("  TODO payload presets changing weight and balance.");
+    p.line("  TODO density altitude (temperature setting) and mixture");
+    p.line("       power loss - they matter together at high fields.");
     p.line("  TODO nosewheel steering and differential braking.");
     p.line("  TODO flap detents: the sim's flap lever is continuous.");
-    p.line("  TODO stall warning, spins, carb icing and weight balance.");
+    p.line("  TODO stall warning, spins and carb icing.");
     p.line("  TODO ATC, traffic and a real navigation stack.");
 
     p.0

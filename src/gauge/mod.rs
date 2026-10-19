@@ -16,6 +16,7 @@
 mod airspeed;
 mod altimeter;
 mod attitude;
+mod fuel;
 mod heading;
 mod tach;
 mod turn;
@@ -76,6 +77,7 @@ pub(crate) enum PanelKey {
     Heading,
     Turn,
     Attitude,
+    Fuel,
 }
 
 /// Where a painted dial sits on the panel, in the airframe (`view::AircraftRoot`)
@@ -128,6 +130,12 @@ impl PanelKey {
                 [0.0389, 0.0000, 0.0000],
                 [-0.0004, 0.0381, -0.0031],
             ),
+            // Right of the tach, the model's blank panel at the top row's end.
+            PanelKey::Fuel => (
+                [0.0450, 0.1537, -0.6833],
+                [0.0389, 0.0000, 0.0000],
+                [0.0004, 0.0388, -0.0031],
+            ),
         };
         PanelDial {
             anchor: a.into(),
@@ -152,6 +160,7 @@ impl Plugin for GaugePlugin {
                     heading::setup,
                     turn::setup,
                     attitude::setup,
+                    fuel::setup,
                 ),
             )
             .add_systems(
@@ -165,6 +174,7 @@ impl Plugin for GaugePlugin {
                         heading::update_card,
                         turn::update,
                         attitude::update,
+                        fuel::update_needles,
                     )
                         .run_if(in_state(AppState::Flying)),
                     sync_visibility,

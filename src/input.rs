@@ -441,6 +441,9 @@ fn read_input(
             // expose the properties; the realistic helicopter ignores them.
             ToggleAction::HeliHover => toggle_prop(&mut sim, "fcs/heli-hover-enable"),
             ToggleAction::HeliBalance => toggle_prop(&mut sim, "fcs/heli-balance-enable"),
+            // C172 cold start: the master switch. Spark alone never fires an
+            // engine — the starter crank (hold I) does the rest of the job.
+            ToggleAction::Master => toggle_prop(&mut sim, "propulsion/ignition-enable"),
         }
     }
 

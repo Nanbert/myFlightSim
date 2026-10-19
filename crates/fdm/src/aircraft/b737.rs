@@ -446,4 +446,6 @@ pub const B737: Aircraft = Aircraft {
     has_speedbrake: true,
     // CFM56 max reverse, per engine: ~45% of forward military thrust.
     max_reverse_lbs: 0.45 * 20000.0,
+    // TODO(fuel): the 737's real tanks; the turbine path has no burn model yet.
+    fuel: None,
 };

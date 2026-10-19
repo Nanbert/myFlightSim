@@ -27,6 +27,19 @@ pub struct PointMass {
     pub pos_in: Vec3,
 }
 
+/// Fuel in the wing tanks. The tank point masses in [`MassSpec::points`] get
+/// their `weight_lb` overridden by the current contents, so burning fuel
+/// genuinely moves the CG and the inertia. Only airframes that declare a
+/// `FuelSpec` carry consumable fuel (`propulsion/tank-*-contents-lbs`).
+pub struct FuelSpec {
+    /// Indexes into `MassSpec::points` — the left and right wing tanks.
+    pub tank_points: [usize; 2],
+    /// Tank capacity, per tank (lb) — the model's `<capacity>`.
+    pub capacity_lb: f64,
+    /// Contents at spawn, per tank (lb) — the model's `<contents>`.
+    pub initial_lb: f64,
+}
+
 /// Mass & balance. `empty_inertia` and `cg_in` come straight from the model's
 /// `<mass_balance>`; `points` (pilot, fuel, ...) are added about the CG at load.
 pub struct MassSpec {
@@ -67,9 +80,26 @@ pub struct Aircraft {
     /// Maximum reverse thrust **per engine** (lbf), applied only while the
     /// wheels carry weight. 0 = no thrust reverse.
     pub max_reverse_lbs: f64,
+    /// Consumable wing-tank fuel, if the airframe models it (c172p). Turbines
+    /// and tankless airframes leave this `None` and fly at the spec mass.
+    pub fuel: Option<FuelSpec>,
 }
 
 impl Aircraft {
+    /// Point weights after an optional fuel override: the fuel-spec tank points
+    /// carry the given contents (lb) instead of the model's static `<contents>`.
+    pub fn point_weights(&self, fuel: Option<&[f64; 2]>) -> Vec<f64> {
+        let mut w: Vec<f64> = self.mass.points.iter().map(|p| p.weight_lb).collect();
+        if let (Some(spec), Some(contents)) = (self.fuel.as_ref(), fuel) {
+            for (i, lb) in spec.tank_points.iter().zip(contents) {
+                if *i < w.len() {
+                    w[*i] = *lb;
+                }
+            }
+        }
+        w
+    }
+
     /// Total weight (lb): empty plus every point mass.
     pub fn total_weight_lb(&self) -> f64 {
         self.mass.empty_weight_lb + self.mass.points.iter().map(|p| p.weight_lb).sum::<f64>()
@@ -84,30 +114,36 @@ impl Aircraft {
     /// each point mass, weight-weighted. This is what the moments and inertia
     /// are taken about, not the empty CG.
     pub fn loaded_cg_in(&self) -> Vec3 {
+        self.loaded_mass(None).cg_in
+    }
+
+    /// Everything the dynamics need about the loaded airframe: total mass, CG
+    /// and the inertia about that CG — with the fuel tanks at `fuel` contents
+    /// (or the spec defaults when `None`).
+    pub fn loaded_mass(&self, fuel: Option<&[f64; 2]>) -> LoadedMass {
+        let weights = self.point_weights(fuel);
         let mut w = self.mass.empty_weight_lb;
-        let mut m = [
+        let mut cg = [
             w * self.mass.cg_in[0],
             w * self.mass.cg_in[1],
             w * self.mass.cg_in[2],
         ];
-        for p in self.mass.points {
-            w += p.weight_lb;
-            m[0] += p.weight_lb * p.pos_in[0];
-            m[1] += p.weight_lb * p.pos_in[1];
-            m[2] += p.weight_lb * p.pos_in[2];
+        for (p, lb) in self.mass.points.iter().zip(&weights) {
+            w += lb;
+            cg[0] += lb * p.pos_in[0];
+            cg[1] += lb * p.pos_in[1];
+            cg[2] += lb * p.pos_in[2];
         }
-        [m[0] / w, m[1] / w, m[2] / w]
-    }
+        let cg = [cg[0] / w, cg[1] / w, cg[2] / w];
 
-    /// Inertia about the loaded CG: the empty inertia plus each point mass's
-    /// parallel-axis contribution. Products of inertia are taken from the empty
-    /// tensor (the c172's loading is near symmetric about the roll/pitch planes).
-    pub fn inertia(&self) -> Inertia {
+        // Inertia about the loaded CG: the empty tensor plus each point mass's
+        // parallel-axis contribution. Products of inertia are taken from the
+        // empty tensor (the c172's loading is near symmetric about the
+        // roll/pitch planes).
         let e = self.mass.empty_inertia;
-        let cg = self.loaded_cg_in();
         let (mut ixx, mut iyy, mut izz) = (e[0], e[1], e[2]);
-        for p in self.mass.points {
-            let m = p.weight_lb * LB_TO_SLUG;
+        for (p, lb) in self.mass.points.iter().zip(&weights) {
+            let m = lb * LB_TO_SLUG;
             let dx = (p.pos_in[0] - cg[0]) * INCH_TO_FT;
             let dy = (p.pos_in[1] - cg[1]) * INCH_TO_FT;
             let dz = (p.pos_in[2] - cg[2]) * INCH_TO_FT;
@@ -115,6 +151,24 @@ impl Aircraft {
             iyy += m * (dx * dx + dz * dz);
             izz += m * (dx * dx + dy * dy);
         }
-        Inertia::new(ixx, iyy, izz, e[3], e[4], e[5])
+        LoadedMass {
+            mass_slug: w * LB_TO_SLUG,
+            cg_in: cg,
+            inertia: Inertia::new(ixx, iyy, izz, e[3], e[4], e[5]),
+        }
     }
+
+    /// Inertia about the loaded CG: the empty inertia plus each point mass's
+    /// parallel-axis contribution. Products of inertia are taken from the empty
+    /// tensor (the c172's loading is near symmetric about the roll/pitch planes).
+    pub fn inertia(&self) -> Inertia {
+        self.loaded_mass(None).inertia
+    }
+}
+
+/// A loaded mass snapshot: what `Fdm` caches between fuel-state changes.
+pub struct LoadedMass {
+    pub mass_slug: f64,
+    pub cg_in: Vec3,
+    pub inertia: Inertia,
 }

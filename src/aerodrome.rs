@@ -145,7 +145,37 @@ impl Plugin for AerodromePlugin {
         .add_systems(
             Update,
             (update_papi, update_windsock).run_if(in_state(AppState::Flying)),
+        )
+        .add_systems(
+            FixedUpdate,
+            update_pump.run_if(in_state(AppState::Flying)),
         );
+    }
+}
+
+/// Marker on the apron's fuel pump entity.
+#[derive(Component)]
+struct FuelPump;
+
+/// Where the pump stands (world m), and the parked-capture radius around it.
+const PUMP_POS: Vec3 = Vec3::new(90.0, 1.0, APRON_Z - 40.0);
+const PUMP_RADIUS_M: f64 = 12.0;
+
+/// Stopping on the apron beside the pump tops the C172's tanks back up. Pure
+/// convenience with honest framing: the pump only moves fuel, never an engine
+/// state — a refuelled-but-stopped engine still needs the M/I start flow.
+fn update_pump(mut sim: ResMut<Sim>) {
+    // Only the Rust-backend C172 has a fuel model to fill.
+    if sim.model.get("propulsion/tank-capacity-lbs") <= 0.0 {
+        return;
+    }
+    let (pos, _, _) = sim.pose();
+    let dx = (pos.x - PUMP_POS.x) as f64;
+    let dz = (pos.z - PUMP_POS.z) as f64;
+    // Actually parked: weight on the wheels and essentially stopped.
+    let parked = sim.model.get("gear/wow") > 0.5 && sim.model.get("velocities/vg-fps") < 3.4;
+    if dx * dx + dz * dz <= PUMP_RADIUS_M * PUMP_RADIUS_M && parked {
+        sim.model.set("propulsion/refuel-cmd", 1.0);
     }
 }
 
@@ -454,12 +484,14 @@ fn spawn_aerodrome(
         DespawnOnExit(AppState::Flying),
     ));
 
-    // A fuel pump on the apron.
+    // A fuel pump on the apron. Stopping on the apron next to it refuels the
+    // C172 automatically (see `update_pump`).
     let pump = box_mesh(&mut meshes, 1.2, 2.0, 0.9);
     commands.spawn((
         Mesh3d(pump),
         MeshMaterial3d(orange.clone()),
-        Transform::from_xyz(90.0, 1.0, APRON_Z - 40.0),
+        Transform::from_xyz(PUMP_POS.x, PUMP_POS.y, PUMP_POS.z),
+        FuelPump,
         DespawnOnExit(AppState::Flying),
     ));
 

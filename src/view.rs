@@ -1555,6 +1555,29 @@ fn update_hud(
         ));
     }
 
+    // Engine/fuel status, only for airframes with the fuel model (Rust C172):
+    // the cold-start flow's feedback line — master, engine state and tanks.
+    if state.fuel_capacity_lb > 0.0 {
+        let master = if state.master_on {
+            "MASTER  ON "
+        } else {
+            "MASTER -OFF"
+        };
+        let eng = if state.engine_running {
+            "RUNNING"
+        } else {
+            "STOPPED"
+        };
+        let refuelling = state.fuel_left_lb + state.fuel_right_lb >= state.fuel_capacity_lb;
+        let tag = if refuelling { " (FULL)" } else { "" };
+        out.push_str(&format!(
+            "\n{}  {eng:>7}\nFUEL L {:>4.0} lb   R {:>4.0} lb{tag}",
+            master,
+            state.fuel_left_lb,
+            state.fuel_right_lb,
+        ));
+    }
+
     // Optional control-input overlay. A real cockpit hides this because the
     // pilot feels the forces; a keyboard has no force feedback, so we show it.
     if ui.show_inputs {

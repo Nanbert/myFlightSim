@@ -901,4 +901,5 @@ pub const F22: Aircraft = Aircraft {
     // The F-22's dive-brake is part of the welded airframe in this model.
     has_speedbrake: false,
     max_reverse_lbs: 0.0,
+    fuel: None,
 };

@@ -47,6 +47,24 @@
 //!   the write and always answer 0.
 //! - `velocities/vtrue-kts`, `velocities/mach` — air-relative true airspeed and
 //!   Mach (the pitot never reads the wind, even though the vehicle drifts)
+//! - `propulsion/engine[0]/fuel-flow-pph` — lb/hr from the last piston step
+//! - `propulsion/tank-{0,1}-contents-lbs` — wing-tank contents (lb); only the
+//!   Rust c172p publishes these (it carries a `FuelSpec`). JSBSim's own tanks
+//!   live under its native `propulsion/tank[N]/...`
+//! - `propulsion/tank-capacity-lbs` — total usable capacity, for gauge scaling
+//! - `propulsion/engine[0]/has-fuel` — 1.0 only when the backend publishes the
+//!   fuel bookkeeping above (the app gates its fuel UI on this)
+//! - `propulsion/ignition-enable` — write: spark present (master + mags folded
+//!   together); read: the same, for the status line
+//! - `propulsion/engine[0]/starter-cmd-norm` — write: the held starter crank,
+//!   0..1. Cranks against the prop drag; fires at ~200 rpm with spark+fuel
+//! - `propulsion/set-running` — write: the spawn shortcut that lights and spools
+//!   a piston engine (JSBSim's convention). Refused when the tanks are dry
+//! - `propulsion/engine[0]/set-stopped` — write: any non-zero shuts the running
+//!   engine down (the ENGINE = COLD toggle's mirror action)
+//! - `propulsion/engine[0]/running` — read: 1.0 while the engine makes power
+//! - `propulsion/refuel-cmd` — write: any non-zero fills the wing tanks to
+//!   capacity (the apron pump; never relights a stopped engine)
 
 /// A flight dynamics model driven through a named-property bus.
 pub trait FlightModel: Send + Sync {

@@ -517,4 +517,5 @@ pub const AH1S: Aircraft = Aircraft {
     rest_h_ft: 6.0,
     has_speedbrake: false,
     max_reverse_lbs: 0.0,
+    fuel: None,
 };

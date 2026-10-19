@@ -60,6 +60,9 @@ pub struct Sim {
     /// Smoothed rate of change of KCAS (kt/s), for the HUD's accel/decel caret.
     speed_trend: f64,
     last_cas_kts: f64,
+    /// ENGINE = COLD start mode (c172p only): resets hand the pilot a shut-down
+    /// aircraft — no spark, prop stopped — and the start flow is on them.
+    pub engine_cold: bool,
 }
 
 /// The aircraft the app starts with: `AIRCRAFT=f22` overrides the c172 default.
@@ -100,6 +103,7 @@ impl Sim {
             max_g: 0.0,
             speed_trend: 0.0,
             last_cas_kts: 0.0,
+            engine_cold: false,
         };
         // Hard sea floor for gear-up flight: the model has no belly contact, so
         // without it a dive can pass through the water plane. Enforced by the
@@ -125,7 +129,7 @@ impl Sim {
         self.model.set("gear/gear-cmd-norm", 1.0);
         self.model.set("gear/gear-pos-norm", 1.0);
         // Light the engine; without this the throttle commands produce no thrust.
-        self.model.set("propulsion/set-running", -1.0);
+        self.light_engine();
         self.reset_hud_memory();
         self.origin_lat = self.model.get("position/lat-gc-deg");
         self.origin_lon = self.model.get("position/long-gc-deg");
@@ -143,7 +147,7 @@ impl Sim {
         // the solver seats the (much draggier) gear-down jet.
         self.model.set("gear/gear-cmd-norm", 0.0);
         self.model.set("gear/gear-pos-norm", 0.0);
-        self.model.set("propulsion/set-running", -1.0);
+        self.light_engine();
         self.model.trim(vc_kts, alt_ft);
         self.reset_hud_memory();
         self.origin_lat = self.model.get("position/lat-gc-deg");
@@ -194,11 +198,36 @@ impl Sim {
         self.model.set("gear/gear-cmd-norm", 1.0);
         self.model.apply_ic();
         self.model.set("gear/gear-pos-norm", 1.0);
-        self.model.set("propulsion/set-running", -1.0);
+        self.light_engine();
         self.model.trim(155.0, 1300.0);
         self.reset_hud_memory();
         self.origin_lat = 0.0;
         self.origin_lon = 0.0;
+    }
+
+    /// Spawn the engine per the ENGINE setting: running (the tutorial flow's
+    /// 60 %-throttle hands-on start) or cold and dark when ENGINE = COLD —
+    /// spark off, prop stopped, and the start flow is the pilot's.
+    pub fn light_engine(&mut self) {
+        if self.engine_cold {
+            self.model.set("propulsion/ignition-enable", 0.0);
+        } else {
+            self.model.set("propulsion/set-running", -1.0);
+        }
+    }
+
+    /// Flip the ENGINE = COLD setting for this flight. Only the piston C172
+    /// carries the cold-start flow; other aircraft ignore the switch entirely.
+    /// Turning COLD on while the engine is already running shuts it down now —
+    /// the toggle is an instruction to start flying from the checklist.
+    pub fn set_engine_cold(&mut self, cold: bool) {
+        let piston =
+            crate::aircraft_profile::normalized(&self.name) == "c172p"
+                && self.model.get("propulsion/engine[0]/has-fuel") > 0.5;
+        self.engine_cold = cold && piston;
+        if self.engine_cold {
+            self.model.set("propulsion/engine[0]/set-stopped", 1.0);
+        }
     }
 
     /// World-space position (meters) and orientation for the aircraft mesh.
@@ -328,6 +357,17 @@ pub struct AircraftState {
     /// Wind velocity components (`atmosphere/wind-{north,east}-fps`), fps.
     pub wind_north_fps: f64,
     pub wind_east_fps: f64,
+
+    // --- fuel & cold start (c172p, Rust backend with a FuelSpec) ---
+    /// Wing-tank contents per tank (lb). Zeros on backends without a fuel model.
+    pub fuel_left_lb: f64,
+    pub fuel_right_lb: f64,
+    /// Total usable capacity (lb), for gauge scaling.
+    pub fuel_capacity_lb: f64,
+    /// Spark available (`propulsion/ignition-enable`): the master/mags state.
+    pub master_on: bool,
+    /// Engine making power (`propulsion/engine[0]/running`).
+    pub engine_running: bool,
 }
 
 /// The two most recent *fixed-step* poses. The FDM advances at 120 Hz while the
@@ -362,8 +402,15 @@ impl Plugin for SimPlugin {
                     .chain()
                     .run_if(in_state(AppState::Flying)),
             )
-            .add_systems(Update, publish_state.run_if(in_state(AppState::Flying)));
+            .add_systems(Update, publish_state.run_if(in_state(AppState::Flying)))
+            .add_systems(Startup, apply_engine_cold_start);
     }
+}
+
+/// Startup: hand the boot aircraft the persisted ENGINE setting (other spawns
+/// re-read it through the menu path). Fluent after the Sim exists.
+pub fn apply_engine_cold_start(mut sim: ResMut<Sim>, config: Res<crate::config::GameConfig>) {
+    sim.set_engine_cold(config.engine_cold);
 }
 
 fn advance_fdm(
@@ -538,6 +585,11 @@ fn publish_state(mut sim: ResMut<Sim>, time: Res<Time>, mut state: ResMut<Aircra
         beta_deg: m.get("aero/beta-deg"),
         wind_north_fps: m.get("atmosphere/wind-north-fps"),
         wind_east_fps: m.get("atmosphere/wind-east-fps"),
+        fuel_left_lb: m.get("propulsion/tank-0-contents-lbs"),
+        fuel_right_lb: m.get("propulsion/tank-1-contents-lbs"),
+        fuel_capacity_lb: m.get("propulsion/tank-capacity-lbs"),
+        master_on: m.get("propulsion/ignition-enable") > 0.5,
+        engine_running: m.get("propulsion/engine[0]/running") > 0.5,
     };
 }
 
