@@ -732,11 +732,20 @@ fn approach_distance(side: PapiSide, light_z: f32, aircraft_z: f32) -> f32 {
 
 /// PAPI: white above the unit's angle, red below. On a 3-degree approach the
 /// four units read 2 red / 2 white.
+///
+/// Only the home airfield builds the field (`spawn_aerodrome` early-returns
+/// for the F-22 and the missions, which lay down their own terrain), and with
+/// it the PAPI paints they recolour — so the mats arrive behind an `Option`
+/// and a flight without an airfield simply skips the pass instead of
+/// panicking its first frame in it.
 fn update_papi(
     state: Res<AircraftState>,
-    mats: Res<PapiMats>,
+    mats: Option<Res<PapiMats>>,
     mut q: Query<(&PapiLight, &mut MeshMaterial3d<StandardMaterial>)>,
 ) {
+    let Some(mats) = mats else {
+        return;
+    };
     for (light, mut material) in &mut q {
         let distance = approach_distance(light.side, light.z, state.pos.z);
         let angle = if distance > 1.0 {
