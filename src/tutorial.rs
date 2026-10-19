@@ -162,6 +162,14 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  A cyan BANK or COORD label appears on the matching disc when");
     p.line("  the assist is working. Real C172 has neither; these are aids.");
 
+    p.heading("HOME FIELD (GAME)");
+    p.line("  MYFS has runway 36/18, 1200 m. R puts you on the runway,");
+    p.line("  heading 360, about 140 m past the 36 threshold.");
+    p.line("  PAPI is left of the runway: 2 red / 2 white on a 3-degree");
+    p.line("  path, all white high, all red low. The windsock is on the");
+    p.line("  right. Taxiway, apron, hangar and tower are east of the runway.");
+    p.line("  Landing scoring is not modelled yet; it is the next step.");
+
     p.heading("FIRST FLIGHT (GAME)");
     p.line("  1. You start parked on the runway with 60% power. Hold Ctrl");
     p.line("     to pull the throttle back before taxiing.");

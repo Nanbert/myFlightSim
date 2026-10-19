@@ -1523,11 +1523,12 @@ fn update_hud(
         ""
     };
 
-    // Mission name, when flying a map.
-    let place = map
-        .0
-        .map(|m| format!("   [{}]", m.label()))
-        .unwrap_or_default();
+    // Mission name, or the home field for the default C172 scene.
+    let place = match map.0 {
+        Some(m) => format!("   [{}]", m.label()),
+        None if aircraft_profile::normalized(&sim.name) == "c172p" => "   [MYFS RWY 36]".to_owned(),
+        None => String::new(),
+    };
 
     // Instrument readings — what a real panel shows (RPM, not "throttle %").
     let mut out = format!(
@@ -1595,9 +1596,18 @@ fn update_hud(
     text.0 = out;
 }
 
-fn draw_grid(state: Res<AircraftState>, map: Res<crate::map::ActiveMap>, mut gizmos: Gizmos) {
-    // The mission terrain replaces the training grid.
-    if map.0.is_some() {
+fn draw_grid(
+    state: Res<AircraftState>,
+    map: Res<crate::map::ActiveMap>,
+    sim: Res<Sim>,
+    app: Res<State<AppState>>,
+    mut gizmos: Gizmos,
+) {
+    // The mission terrain replaces the training grid; the C172's airfield does
+    // too, so the runway does not fight grid lines at y = 0.
+    if map.0.is_some()
+        || (*app.get() == AppState::Flying && aircraft_profile::normalized(&sim.name) == "c172p")
+    {
         return;
     }
     const STEP: f32 = 100.0;

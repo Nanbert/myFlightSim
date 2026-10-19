@@ -1,3 +1,4 @@
+mod aerodrome;
 mod aircraft_profile;
 mod app_state;
 mod assist;
@@ -76,6 +77,7 @@ fn main() {
         .add_plugins(cockpit::CockpitPlugin)
         .add_plugins(controls::ControlPlugin)
         .add_plugins(assist::AssistPlugin)
+        .add_plugins(aerodrome::AerodromePlugin)
         .init_resource::<ShotTimer>()
         .add_systems(Update, auto_shot)
         .run();
