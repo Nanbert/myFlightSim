@@ -6,20 +6,32 @@
 mod aircraft_profile;
 #[path = "../src/app_state.rs"]
 mod app_state;
+#[path = "../src/aerodrome.rs"]
+mod aerodrome;
 #[path = "../src/autopilot.rs"]
 mod autopilot;
 #[path = "../src/cloud_camera.rs"]
 mod cloud_camera;
 #[path = "../src/config.rs"]
 mod config;
+#[path = "../src/ils.rs"]
+mod ils;
 #[path = "../src/input.rs"]
 mod input;
+#[path = "../src/lights.rs"]
+mod lights;
+#[path = "../src/map.rs"]
+mod map;
 #[path = "../src/mcp_ui.rs"]
 mod mcp_ui;
 #[path = "../src/pfd.rs"]
 mod pfd;
 #[path = "../src/sim.rs"]
 mod sim;
+#[path = "../src/sky.rs"]
+mod sky;
+#[path = "../src/taxi.rs"]
+mod taxi;
 #[path = "../src/view.rs"]
 mod view;
 #[path = "../src/weather.rs"]
@@ -84,6 +96,7 @@ fn main() {
         .insert_resource(state)
         .insert_resource(ap)
         .insert_resource(mcp)
+        .insert_resource(ils::Ils::default())
         .init_resource::<view::Ui>()
         .add_plugins(pfd::PfdPlugin)
         .insert_state(app_state::AppState::Flying)
