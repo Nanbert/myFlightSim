@@ -26,6 +26,7 @@ use bevy::render::render_resource::ShaderType;
 use bevy::render::RenderApp;
 use bevy::shader::ShaderRef;
 
+use crate::aircraft_profile;
 use crate::app_state::AppState;
 use crate::sim::{AircraftState, Sim};
 use crate::view::Ui;
@@ -395,9 +396,18 @@ fn rain_coverage(rain: f32, flow: f32) -> f32 {
 /// Airframe condensation that can deposit on the glass: the same high-alpha /
 /// transonic pressure drop that feeds the vapor, gated by humidity and by there
 /// being enough flow to put the moisture onto the glass. `flying` is false in
-/// the menu, where the aircraft state is stale.
-fn condensation_source(alpha_deg: f32, mach: f32, cas_kts: f32, rain: f32, flying: bool) -> f32 {
-    if !flying {
+/// the menu, where the aircraft state is stale. The condensation speed-feel is
+/// the F-22's privilege — `fighter` false zeroes the source, so the airliner
+/// and light planes only see water when it is actually raining.
+fn condensation_source(
+    alpha_deg: f32,
+    mach: f32,
+    cas_kts: f32,
+    rain: f32,
+    fighter: bool,
+    flying: bool,
+) -> f32 {
+    if !flying || !fighter {
         return 0.0;
     }
     let humidity = 0.55 + 0.45 * rain;
@@ -466,13 +476,15 @@ fn manage_lens(
         0.0
     };
 
-    // Rain supplies the whole glass; condensation is a lighter, finer film.
+    // Rain supplies the whole glass; condensation is a lighter, finer film,
+    // and only the F-22 lays it on a dry day.
     let rain_supply = rain_coverage(weather.rain, flow);
     let cond = condensation_source(
         state.alpha_deg as f32,
         state.mach as f32,
         state.cas_kts as f32,
         weather.rain,
+        aircraft_profile::normalized(&sim.name) == "f22",
         flying,
     );
     let source = rain_supply.max(cond);
@@ -636,24 +648,41 @@ mod tests {
 
     #[test]
     fn clear_level_flight_condenses_nothing() {
-        assert_eq!(condensation_source(2.0, 0.5, 300.0, 0.0, true), 0.0);
+        assert_eq!(condensation_source(2.0, 0.5, 300.0, 0.0, true, true), 0.0);
         // The menu's stale state must not wet the showcase camera.
-        assert_eq!(condensation_source(25.0, 1.0, 400.0, 1.0, false), 0.0);
+        assert_eq!(
+            condensation_source(25.0, 1.0, 400.0, 1.0, true, false),
+            0.0
+        );
     }
 
     #[test]
     fn hard_pull_and_transonic_flight_condense() {
-        let pull = condensation_source(24.0, 0.5, 300.0, 0.0, true);
+        let pull = condensation_source(24.0, 0.5, 300.0, 0.0, true, true);
         assert!(pull > 0.2, "a hard pull should condense, got {pull}");
-        let sonic = condensation_source(2.0, 1.0, 390.0, 0.0, true);
+        let sonic = condensation_source(2.0, 1.0, 390.0, 0.0, true, true);
         assert!(sonic > 0.2, "Mach 1 should condense, got {sonic}");
         // Below the flow gate nothing is deposited.
-        assert_eq!(condensation_source(24.0, 1.0, 40.0, 0.0, true), 0.0);
+        assert_eq!(condensation_source(24.0, 1.0, 40.0, 0.0, true, true), 0.0);
         // Humid (raining) air condenses more readily.
         assert!(
-            condensation_source(20.0, 0.5, 300.0, 1.0, true)
-                > condensation_source(20.0, 0.5, 300.0, 0.0, true)
+            condensation_source(20.0, 0.5, 300.0, 1.0, true, true)
+                > condensation_source(20.0, 0.5, 300.0, 0.0, true, true)
         );
+    }
+
+    /// The condensation speed-feel is the F-22's alone: the airliner and the
+    /// light planes stay dry until it actually rains.
+    #[test]
+    fn non_fighters_condense_nothing_even_at_pace() {
+        for fighter in [true, false] {
+            let hard = condensation_source(24.0, 1.0, 400.0, 0.0, fighter, true);
+            if fighter {
+                assert!(hard > 0.0);
+            } else {
+                assert_eq!(hard, 0.0);
+            }
+        }
     }
 
     #[test]
