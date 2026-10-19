@@ -504,6 +504,9 @@ fn b737(keymap: &Keymap) -> Vec<String> {
     p.line("  flaps up in the climb. There is nothing to click - it reads the");
     p.line("  airframe directly, and a touch-and-go rolls the ground card");
     p.line("  back open by itself.");
+    p.line("  Leaving the ground with the roll established another card");
+    p.line("  grades the takeoff: liftoff speed against the PFD's VR line,");
+    p.line("  the rotation attitude, bank, and how fast the gear came up.");
 
     p.heading("REAL 737 PROCEDURE (PUBLIC INFO)");
     p.line("  Preflight: walk-around, fuel, oil, hydraulics, tires and");

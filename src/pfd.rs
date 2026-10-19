@@ -354,8 +354,9 @@ fn update_params(
 
 /// Rotation speed for the current flap setting, from the takeoff probe in this
 /// sim: clean ≈185 kt, flap 0.25 ≈171 kt, flap 0.5 ≈160 kt. Linear in the
-/// flap handle between those points.
-fn vr_for_flaps(flap_norm: f64) -> f64 {
+/// flap handle between those points. The takeoff report card grades the
+/// liftoff speed against this same line.
+pub(crate) fn vr_for_flaps(flap_norm: f64) -> f64 {
     (185.0 - 50.0 * flap_norm).clamp(135.0, 185.0)
 }
 
