@@ -174,8 +174,13 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  Both 36 and 18 have PAPI. The orange fuel pump stands on the");
     p.line("  apron: stop the aircraft within a few metres of it and the");
     p.line("  tanks fill to full (370 lb total). After touchdown a report");
-    p.line("  card shows rate, centreline, speed, point, bank, bounces and");
-    p.line("  a 0-100 score.");
+    p.line("  card shows rate, centreline, speed, point, bank, bounces, a");
+    p.line("  0-100 score and the crosswind. In wind the card also grades");
+    p.line("  your crab: land crabbed into the wind (the drift wants about");
+    p.line("  asin(xwind/65) degrees of nose offset) and a perfect card");
+    p.line("  stays perfect; a straight or crosswise landing loses points.");
+    p.line("  The status block always shows the wind: x.kt levels blow at");
+    p.line("  300 deg, so runway 36 takes 0.87 x kt from the left.");
 
     p.heading("COLD START (GAME, SETTINGS ENGINE = COLD)");
     p.line("  ENGINE AUTO (the default) spawns running at 60% power, as the");
@@ -269,9 +274,6 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  TODO OBS course selector: the CDI card follows the beam");
     p.line("       course instead of the pilot-set one.");
     p.line("  TODO stall warning, spins and carb icing.");
-    p.line("  TODO crosswind scoring: the wind is in the FDM and the");
-    p.line("       report card works, but there is no wind-technique");
-    p.line("       grade or drift/crab feedback yet.");
     p.line("  TODO gamified checklists: the cold start and ILS flows on");
     p.line("       this page could tick themselves off as you fly them.");
     p.line("  TODO taxi guidance: spawn on the apron, follow the blue");

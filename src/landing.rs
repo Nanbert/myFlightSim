@@ -31,6 +31,12 @@ struct Touchdown {
     lateral: f64,
     along: f64,
     bank: f64,
+    /// Nose heading at contact, degrees true. In a crosswind the correct
+    /// landing attitude is crabbed (or wing-low) into the wind, so the
+    /// heading-vs-runway error graded only when it's actually blowing.
+    hdg_deg: f64,
+    /// Signed crosswind at contact in knots, + = from the pilot's right.
+    xwind_kt: f64,
     flap_norm: f64,
     owner: Kind,
     on_runway: bool,
@@ -121,6 +127,7 @@ fn update_landing(
     time: Res<Time>,
     sim: Res<Sim>,
     map: Res<ActiveMap>,
+    weather: Res<crate::weather::Weather>,
     aircraft: Res<AircraftState>,
     mut state: ResMut<LandingState>,
     mut report: Query<(&mut Text, &mut Node), With<LandingReport>>,
@@ -158,12 +165,25 @@ fn update_landing(
                 state.bounces += 1;
             }
         } else if state.air_time > TOUCHDOWN_MIN_AIR {
+            let runway = if aircraft.heading_deg.to_radians().cos() >= 0.0 {
+                "36"
+            } else {
+                "18"
+            };
+            let rwy_hdg = if runway == "36" { 0.0_f32 } else { 180.0 };
+            let (xwind, _headwind) = crate::weather::Weather::components(
+                weather.wind_kts,
+                crate::weather::WIND_FROM_DEG,
+                rwy_hdg,
+            );
             state.touchdown = Some(Touchdown {
                 fpm: state.vs_smooth,
                 cas: speed,
                 lateral: runway_lateral(aircraft.pos.x) as f64,
                 along: runway_along(aircraft.heading_deg as f32, aircraft.pos.z) as f64,
                 bank: aircraft.roll_deg,
+                hdg_deg: aircraft.heading_deg,
+                xwind_kt: xwind as f64,
                 flap_norm: (aircraft.flap_deg / 40.0).clamp(0.0, 1.0),
                 owner: if aircraft_profile::normalized(&sim.name) == "737" {
                     Kind::B737
@@ -171,11 +191,7 @@ fn update_landing(
                     Kind::C172
                 },
                 on_runway: on_runway(aircraft.pos.x, aircraft.pos.z),
-                runway: if aircraft.heading_deg.to_radians().cos() >= 0.0 {
-                    "36"
-                } else {
-                    "18"
-                },
+                runway,
                 at: now,
             });
             state.bounces = 0;
@@ -209,6 +225,7 @@ fn update_landing(
                  SPEED   {:>5.0} kt\n\
                  POINT   {:>5.0} m\n\
                  BANK    {:>5.1} deg\n\
+                 XWIND   {:>5.1} {}\n\
                  BOUNCES {:>5}\n\
                  SCORE   {:>3}  {}\n\
                  BEST    {:>3}",
@@ -218,6 +235,14 @@ fn update_landing(
                 td.cas,
                 td.along,
                 td.bank,
+                td.xwind_kt.abs(),
+                if td.xwind_kt.abs() < 0.5 {
+                    "CALM"
+                } else if td.xwind_kt > 0.0 {
+                    "KT RIGHT"
+                } else {
+                    "KT LEFT"
+                },
                 state.bounces,
                 score,
                 grade,
@@ -241,6 +266,12 @@ fn update_landing(
 /// target and the rate budget differ per airframe: the 172 greases on at 65 kt
 /// with a 400-fpm budget, the jet flies a flap-scheduled Vref and only half
 /// that budget.
+///
+/// Once the wind is actually blowing (3 kt of crosswind or more), the
+/// wind-technique error is graded too: the nose must be aligned with the
+/// runway within the crab a steady crosswind justifies before touchdown.
+/// Lining up straight in a 13-kt gust is free on a calm day, judged hard in
+/// the real thing.
 fn score(td: Touchdown, bounces: u32) -> (u32, &'static str) {
     if !td.on_runway {
         return (0, "OFF-FIELD");
@@ -256,7 +287,31 @@ fn score(td: Touchdown, bounces: u32) -> (u32, &'static str) {
     let speed = (1.0 - (td.cas - speed_target).abs() / speed_spread).clamp(0.0, 1.0);
     let point = (1.0 - (td.along - 300.0).abs() / 300.0).clamp(0.0, 1.0);
     let raw = 100.0 * (0.40 * vertical + 0.30 * centre + 0.20 * speed + 0.10 * point);
-    let score = (raw - 10.0 * bounces as f64).round().clamp(0.0, 100.0) as u32;
+    let mut score = (raw - 10.0 * bounces as f64).round().clamp(0.0, 100.0) as u32;
+    // Wind-technique penalty: the heading-vs-runway error at contact. The
+    // textbook crosswind landing arrives crabbed (or wing-low) into the wind,
+    // so the expected nose error is the crab angle the drift demands,
+    // asin(xwind / contact speed) — `asin` is odd, so the sign carries over:
+    // wind from the left wants the nose left of the runway. Only graded once
+    // the wind is actually blowing (3 kt of crosswind or more); touchdown
+    // speed carries the same normalization the speed grade already used.
+    if td.xwind_kt.abs() >= 3.0 {
+        let rwy_hdg = if td.runway == "36" { 0.0_f64 } else { 180.0 };
+        let err = ((td.hdg_deg - rwy_hdg).rem_euclid(360.0) + 180.0)
+            .rem_euclid(360.0)
+            - 180.0;
+        let ideal_crab = (td.xwind_kt / td.cas.max(20.0)).asin().to_degrees();
+        let delta = (err - ideal_crab).abs();
+        score -= if delta <= 6.0 {
+            0
+        } else if delta <= 12.0 {
+            5
+        } else if delta <= 20.0 {
+            10
+        } else {
+            20
+        };
+    }
     let grade = if score >= 90 {
         "GREASE"
     } else if score >= 75 {
@@ -290,6 +345,8 @@ mod tests {
             lateral,
             along,
             bank: 0.0,
+            hdg_deg: 0.0,
+            xwind_kt: 0.0,
             flap_norm: 0.0,
             owner: Kind::C172,
             on_runway: true,
@@ -318,6 +375,92 @@ mod tests {
         let mut td = touchdown(80.0, 65.0, 0.0, 300.0);
         td.on_runway = false;
         assert_eq!(score(td, 0), (0, "OFF-FIELD"));
+    }
+
+    #[test]
+    fn a_crabbed_touchdown_is_free_but_a_skewed_one_costs_in_wind() {
+        // 13 kt of crosswind from the left, textbook crab: nose 8 deg left of
+        // the runway (asin(13/65) wants 11.5), inside the gust tolerance.
+        let (grease, grade) = score(
+            Touchdown {
+                xwind_kt: -13.0,
+                hdg_deg: 352.0,
+                ..touchdown(80.0, 65.0, 0.0, 300.0)
+            },
+            0,
+        );
+        assert_eq!(grease, 100);
+        assert_eq!(grade, "GREASE");
+        // Landing perfectly straight in the same wind (no crab at all): only
+        // -5, a drifty but survivable landing.
+        let (drifty, _) = score(
+            Touchdown {
+                xwind_kt: -13.0,
+                hdg_deg: 0.0,
+                ..touchdown(80.0, 65.0, 0.0, 300.0)
+            },
+            0,
+        );
+        assert_eq!(drifty, 95);
+        // Crabbed the wrong way, into the downwind: -20.
+        let (skewed, _) = score(
+            Touchdown {
+                xwind_kt: -13.0,
+                hdg_deg: 15.0,
+                ..touchdown(80.0, 65.0, 0.0, 300.0)
+            },
+            0,
+        );
+        assert_eq!(skewed, 80);
+        // Crosswise: the maximum -20 as well.
+        let (crab_90, _) = score(
+            Touchdown {
+                xwind_kt: -13.0,
+                hdg_deg: 90.0,
+                ..touchdown(80.0, 65.0, 0.0, 300.0)
+            },
+            0,
+        );
+        assert_eq!(crab_90, 80);
+        // On a calm day the same skew is free: no technique penalty.
+        let (calm, _) = score(
+            Touchdown {
+                xwind_kt: 0.0,
+                hdg_deg: 90.0,
+                ..touchdown(80.0, 65.0, 0.0, 300.0)
+            },
+            0,
+        );
+        assert_eq!(calm, 100);
+    }
+
+    #[test]
+    fn runway_18_judges_the_southern_heading() {
+        // Landing toward the south, the wind from 300 now comes from the
+        // pilot's right (+ sign): the ideal crab is a rightward one, and a
+        // nose 11 deg right of 180 is exactly that crab.
+        let (eighteen, _) = score(
+            Touchdown {
+                runway: "18",
+                xwind_kt: 13.0,
+                hdg_deg: 191.0,
+                ..touchdown(80.0, 65.0, 0.0, 300.0)
+            },
+            0,
+        );
+        assert_eq!(eighteen, 100);
+        // Landing south while still pointing north: judged against 180, so a
+        // 180 deg error takes the maximum -20.
+        let (backwards, _) = score(
+            Touchdown {
+                runway: "18",
+                xwind_kt: 13.0,
+                hdg_deg: 0.0,
+                ..touchdown(80.0, 65.0, 0.0, 300.0)
+            },
+            0,
+        );
+        assert_eq!(backwards, 80);
     }
 
     #[test]
@@ -354,6 +497,7 @@ mod tests {
         app.insert_resource(Time::<()>::default());
         app.insert_resource(crate::sim::Sim::new("c172p"));
         app.insert_resource(crate::map::ActiveMap::default());
+        app.insert_resource(crate::weather::Weather::default());
         app.insert_resource(super::LandingState::default());
         app.insert_resource(crate::sim::AircraftState {
             on_ground: true,
@@ -415,6 +559,7 @@ mod tests {
         app.insert_resource(Time::<()>::default());
         app.insert_resource(crate::sim::Sim::new("c172p"));
         app.insert_resource(crate::map::ActiveMap::default());
+        app.insert_resource(crate::weather::Weather::default());
         app.insert_resource(super::LandingState::default());
         app.insert_resource(crate::sim::AircraftState {
             on_ground: true,

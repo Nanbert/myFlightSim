@@ -1556,8 +1556,17 @@ fn update_hud(
     };
 
     // Instrument readings — what a real panel shows (RPM, not "throttle %").
+    let wind = if weather.wind_kts > 0.5 {
+        format!(
+            "  WIND {:.0} KT FROM {:.0}",
+            weather.wind_kts,
+            crate::weather::WIND_FROM_DEG
+        )
+    } else {
+        String::new()
+    };
     let mut out = format!(
-        "myFlightSim — {}  {mode}{tvc}{gear}{place}   WX: {}\n\
+        "myFlightSim — {}  {mode}{tvc}{gear}{place}   WX: {}{wind}\n\
          ALT {:>4.0} ft   IAS {:>3.0} kt   RPM {:>4.0}   FLAP {:>4.1}°   TRIM {:+.2}\n\
          HDG {:>3.0}°   PITCH {:>5.1}°   ROLL {:>5.1}°",
         sim.label,

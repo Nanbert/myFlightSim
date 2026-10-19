@@ -94,7 +94,6 @@ impl Weather {
             .position(|&l| (l - self.wind_kts).abs() < 1e-3)
             .unwrap_or(0)
     }
-
     /// Set the wind speed to level `i` (clamped, wrapping) and return the new
     /// index. Used by the menu's settings page.
     pub fn set_wind_level(&mut self, i: isize) -> usize {
@@ -107,6 +106,19 @@ impl Weather {
     /// Where the wind blows *toward*, degrees true (the sock's deflection).
     pub fn wind_toward_deg(&self) -> f32 {
         WIND_FROM_DEG + 180.0
+    }
+
+    /// Signed crosswind component (+ = blowing *from the pilot's right* when
+    /// facing the runway heading) and headwind component (- = tailwind) in
+    /// knots. Runway 36 with the WNW levels on: the wind comes 60° off the
+    /// nose from the left, so the crosswind goes into the report card as
+    /// "FROM LEFT" and pushes the drift to the right.
+    ///
+    /// Free function because it is judged against a chosen runway heading,
+    /// not the weather's own state.
+    pub fn components(wind_kts: f32, wind_from_deg: f32, rwy_hdg_deg: f32) -> (f32, f32) {
+        let delta = (wind_from_deg - rwy_hdg_deg).to_radians();
+        (wind_kts * delta.sin(), wind_kts * delta.cos())
     }
 
     /// Wind velocity as NED components in *feet per second*, the FDM/JSBSim
@@ -514,6 +526,27 @@ mod tests {
         // Magnitude: 10 kt in ft/s.
         let expected = 10.0 * 1.68781;
         assert!((north.hypot(east) - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn crosswind_components_split_head_and_cross() {
+        // Runway 36, wind from 300 at 15 kt: 60 deg off the nose -> 13 kt
+        // from the left (negative) and 7.5 kt of headwind.
+        let (xw, hw) = Weather::components(15.0, 300.0, 0.0);
+        assert!((xw - -15.0 * (60_f32).to_radians().sin()).abs() < 1e-4);
+        assert!((xw + 12.99).abs() < 0.01, "from the left: {xw}");
+        assert!((hw - 7.5).abs() < 1e-4);
+        // Facing runway 18 the same breeze arrives from the right and from
+        // behind: sign flips, headwind becomes tailwind.
+        let (xw18, hw18) = Weather::components(15.0, 300.0, 180.0);
+        assert!((xw18 - 12.99).abs() < 0.01, "from the right: {xw18}");
+        assert!((hw18 + 7.5).abs() < 1e-4);
+        // Dead downwind / dead headwind carry no crosswind (within float
+        // noise off the exact 60-degree angle).
+        let (head_xw, _) = Weather::components(10.0, 0.0, 0.0);
+        assert!(head_xw.abs() < 1e-4);
+        let (tail_xw, _) = Weather::components(10.0, 180.0, 0.0);
+        assert!(tail_xw.abs() < 1e-4);
     }
 
     #[test]
