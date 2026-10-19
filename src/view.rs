@@ -1264,15 +1264,6 @@ pub(crate) fn follow_camera(
     };
     chase.offset = Some(offset);
     t.translation = pos + offset;
-    if std::env::var("CAMDEBUG").is_ok() {
-        println!(
-            "CAM t={:.2} pos={:?} off={:?} rot={:?}",
-            time.elapsed_secs(),
-            t.translation,
-            offset,
-            t.rotation,
-        );
-    }
     // Take on a fraction of the airframe's bank, blended toward world-up so an
     // inverted jet still gives a usable view. Without any coupling a hard roll
     // reads as the world pivoting around a static jet; with all of it the view
