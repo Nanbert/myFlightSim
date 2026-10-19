@@ -5,6 +5,7 @@ mod assist;
 mod autopilot;
 mod cloud_camera;
 mod cockpit;
+mod checklist;
 mod config;
 mod controls;
 mod fx;
@@ -82,6 +83,7 @@ fn main() {
         .add_plugins(assist::AssistPlugin)
         .add_plugins(aerodrome::AerodromePlugin)
         .add_plugins(landing::LandingPlugin)
+        .add_plugins(checklist::ChecklistPlugin)
         .add_plugins(lights::LightsPlugin)
         .init_resource::<ShotTimer>()
         .add_systems(Update, auto_shot)

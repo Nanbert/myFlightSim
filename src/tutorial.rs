@@ -186,18 +186,20 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  ENGINE AUTO (the default) spawns running at 60% power, as the");
     p.line("  tutorial flow below assumes. ENGINE = COLD hands you a truly");
     p.line("  shut-down Cessna and the start flow becomes real:");
-    p.line("  1. M turns the master on (watch the status block's MASTER");
-    p.line("     / ENGINE line for feedback).");
+    p.line("  1. M turns the master on. The COLD START CHECKLIST panel in");
+    p.line("     the bottom-left corner ticks the steps off as you do them.");
     p.line("  2. Hold I: the starter cranks the prop. Two seconds in, the");
     p.line("     engine catches, spooling on its own inertia.");
     p.line("  3. Release I once she runs. She keeps running without a");
-    p.line("     starter, like a real magneto engine.");
+    p.line("     starter, like a real magneto engine. The panel then hands");
+    p.line("     you the BEFORE TAKEOFF list: flaps 10, throttle full, and");
+    p.line("     it closes when the wheels leave.");
     p.line("  4. Running out of fuel in flight flames out (RPM winds down,");
-    p.line("     thrust zero). Restart: taxi to the pump (it tops the");
-    p.line("     tanks), then M + hold I. A normal flight never sees this");
-    p.line("     - the tanks last hours of full-power flying even from the");
-    p.line("     200-lb spawn load - so the pump is for discipline, not");
-    p.line("     emergencies.");
+    p.line("     thrust zero). The start checklist re-opens by itself.");
+    p.line("     Restart: taxi to the pump (it tops the tanks), then M +");
+    p.line("     hold I. A normal flight never sees this - the tanks last");
+    p.line("     hours of full-power flying even from the 200-lb spawn");
+    p.line("     load - so the pump is for discipline, not emergencies.");
 
     p.heading("NIGHT FLIGHT (GAME, SETTINGS TIME OF DAY)");
     p.line("  GLOBAL settings has a TIME OF DAY row: DAY, DUSK or NIGHT.");
@@ -274,8 +276,6 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  TODO OBS course selector: the CDI card follows the beam");
     p.line("       course instead of the pilot-set one.");
     p.line("  TODO stall warning, spins and carb icing.");
-    p.line("  TODO gamified checklists: the cold start and ILS flows on");
-    p.line("       this page could tick themselves off as you fly them.");
     p.line("  TODO taxi guidance: spawn on the apron, follow the blue");
     p.line("       edge lights, park on the centreline and get scored");
     p.line("       next to the pump.");
