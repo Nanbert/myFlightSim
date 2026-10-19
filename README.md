@@ -72,7 +72,7 @@ cargo run
 | `Q` / `E` | 偏航（左偏 / 右偏） | `fcs/rudder-cmd-norm` |
 | `Shift` / `Ctrl` | 油门（固定翼）或总距（直升机） | `fcs/throttle-cmd-norm` / `fcs/collective-cmd-norm` |
 | `Z` / `X` | 俯仰配平 | `fcs/pitch-trim-cmd-norm` |
-| `F` / `V` | 襟翼放下 / 收起（固定翼） | `fcs/flap-cmd-norm` |
+| `F` / `V` | 襟翼放下 / 收起（固定翼；c172 四档 UP/10°/20°/30°） | `fcs/flap-cmd-norm` |
 | `B` | 机轮刹车（松开回位） | `fcs/{left,right}-brake-cmd-norm` |
 | `T` | 按当前状态重新配平（保留空速与位置） | — |
 | `Y` | 重启到巡航（离地并按巡航配平） | — |

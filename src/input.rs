@@ -123,6 +123,9 @@ pub struct Binding {
     axis: Axis,
     min: f64,
     max: f64,
+    /// Detent stops for a lever with fixed positions (the C172's flap lever),
+    /// ascending `min..max` values. Empty = the axis slews continuously.
+    detents: &'static [f64],
     /// The axis's starting setting, e.g. cruise throttle. Also the cruise anchor
     /// the arcade auto-throttle falls back to under a hard manoeuvre.
     initial: f64,
@@ -198,13 +201,17 @@ impl Binding {
             Axis::Hold => {
                 if dir != 0.0 {
                     if self.last_dir != dir {
-                        self.value = (self.value + dir * feel.step_for(self.action) * scale)
-                            .clamp(self.min, self.max);
+                        if self.detents.is_empty() {
+                            self.value = (self.value + dir * feel.step_for(self.action) * scale)
+                                .clamp(self.min, self.max);
+                        } else {
+                            self.value = self.next_detent(dir);
+                        }
                         self.held_for = 0.0;
                     }
                     self.held_for += dt;
                     self.since_input = 0.0;
-                    if self.held_for >= feel.hold_for(self.action) {
+                    if self.detents.is_empty() && self.held_for >= feel.hold_for(self.action) {
                         let target = if dir > 0.0 { self.max } else { self.min };
                         ramp(&mut self.value, target, self.rate * scale * dt);
                     }
@@ -215,6 +222,30 @@ impl Binding {
                 self.last_dir = dir;
             }
         }
+    }
+
+    /// The detent a press of `dir` (+1 forward / −1 back) selects, relative to
+    /// the current command. Already at the last stop in that direction? Stay
+    /// there and wait for the surface to catch up.
+    fn next_detent(&self, dir: f64) -> f64 {
+        let eps = 1e-4;
+        let mut picked = self.value;
+        if dir > 0.0 {
+            for stop in self.detents {
+                if *stop > self.value + eps {
+                    picked = *stop;
+                    break;
+                }
+            }
+        } else {
+            for stop in self.detents.iter().rev() {
+                if *stop < self.value - eps {
+                    picked = *stop;
+                    break;
+                }
+            }
+        }
+        picked.clamp(self.min, self.max)
     }
 }
 
@@ -266,6 +297,7 @@ impl Bindings {
                     axis: s.axis,
                     min: s.min,
                     max: s.max,
+                    detents: s.detents,
                     initial: s.initial,
                     value: s.initial,
                     trim: 0.0,
@@ -556,6 +588,7 @@ mod tests {
             axis: Axis::Spring,
             min: -1.0,
             max: 1.0,
+            detents: &[],
             initial: 0.0,
             value: 0.0,
             trim: 0.0,
@@ -941,5 +974,75 @@ mod tests {
         assert_eq!(Feel::C172.hold_for(Action::BrakeLeft), 0.0);
         assert_eq!(Feel::C172.hold_for(Action::Flap), 0.0);
         assert_eq!(Feel::C172.hold_for(Action::Elevator), Feel::C172.hold_delay);
+    }
+
+    #[test]
+    fn c172_flap_keys_step_between_detents() {
+        let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+        let feel = bindings.feel;
+        let mut keys = ButtonInput::<KeyCode>::default();
+        let flap_value = |b: &Bindings| axis_value(b, Action::Flap);
+
+        // One tap of F: UP -> 10°.
+        keys.press(KeyCode::KeyF);
+        for b in &mut bindings.list {
+            b.update(&keys, 1.0 / 60.0, feel, false);
+        }
+        assert!((flap_value(&bindings) - 10.0 / 30.0).abs() < 1e-9);
+
+        // Holding the key must not keep slewing past the stop.
+        for _ in 0..120 {
+            for b in &mut bindings.list {
+                b.update(&keys, 1.0 / 60.0, feel, false);
+            }
+        }
+        assert!((flap_value(&bindings) - 10.0 / 30.0).abs() < 1e-9);
+
+        // Two more taps: 10 -> 20 -> 30.
+        keys.release(KeyCode::KeyF);
+        for b in &mut bindings.list {
+            b.update(&keys, 1.0 / 60.0, feel, false);
+        }
+        keys.press(KeyCode::KeyF);
+        for b in &mut bindings.list {
+            b.update(&keys, 1.0 / 60.0, feel, false);
+        }
+        keys.release(KeyCode::KeyF);
+        for _ in 0..3 {
+            for b in &mut bindings.list {
+                b.update(&keys, 1.0 / 60.0, feel, false);
+            }
+        }
+        keys.press(KeyCode::KeyF);
+        for b in &mut bindings.list {
+            b.update(&keys, 1.0 / 60.0, feel, false);
+        }
+        assert!((flap_value(&bindings) - 1.0).abs() < 1e-9, "full detent");
+
+        // Past the last stop, F stays at FULL...
+        keys.release(KeyCode::KeyF);
+        for _ in 0..3 {
+            for b in &mut bindings.list {
+                b.update(&keys, 1.0 / 60.0, feel, false);
+            }
+        }
+        keys.press(KeyCode::KeyF);
+        for b in &mut bindings.list {
+            b.update(&keys, 1.0 / 60.0, feel, false);
+        }
+        assert!((flap_value(&bindings) - 1.0).abs() < 1e-9);
+
+        // ...and V steps back down to 20°.
+        keys.release(KeyCode::KeyF);
+        for _ in 0..3 {
+            for b in &mut bindings.list {
+                b.update(&keys, 1.0 / 60.0, feel, false);
+            }
+        }
+        keys.press(KeyCode::KeyV);
+        for b in &mut bindings.list {
+            b.update(&keys, 1.0 / 60.0, feel, false);
+        }
+        assert!((flap_value(&bindings) - 20.0 / 30.0).abs() < 1e-9);
     }
 }

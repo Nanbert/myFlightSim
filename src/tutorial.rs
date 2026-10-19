@@ -229,8 +229,9 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("     to pull the throttle back before taxiing.");
     p.line("  2. Taxi with a little power (tap Shift). Steer with Q/E and");
     p.line("     hold B to brake. The brake is spring-loaded.");
-    p.line("  3. Line up, press F for about 10 degrees of flap, then hold");
-    p.line("     Shift for full power.");
+    p.line("  3. Line up, press F once for 10 degrees of flap (the flap");
+    p.line("     lever has four detents: F/V step UP/10/20/30 deg), then");
+    p.line("     hold Shift for full power.");
     p.line("  4. At 55-60 kt, tap W to raise the nose. Keep the runway");
     p.line("     centreline with small Q/E inputs.");
     p.line("  5. Climb at 70-80 kt. At about 1000 ft AGL, lower the nose");
@@ -267,7 +268,6 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  TODO nosewheel steering and differential braking.");
     p.line("  TODO OBS course selector: the CDI card follows the beam");
     p.line("       course instead of the pilot-set one.");
-    p.line("  TODO flap detents: the sim's flap lever is continuous.");
     p.line("  TODO stall warning, spins and carb icing.");
     p.line("  TODO crosswind scoring: the wind is in the FDM and the");
     p.line("       report card works, but there is no wind-technique");

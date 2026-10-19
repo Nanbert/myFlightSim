@@ -234,6 +234,10 @@ pub struct BindingSpec {
     pub max: f64,
     /// Starting value (throttle/collective may begin raised).
     pub initial: f64,
+    /// Discrete stop positions (normalized, ascending). Empty = a continuous
+    /// lever. The C172's flap lever has four detents; the jet levers stay
+    /// continuous.
+    pub detents: &'static [f64],
 }
 
 /// One press-type control.
@@ -266,6 +270,7 @@ fn elevator() -> BindingSpec {
         min: -1.0,
         max: 1.0,
         initial: 0.0,
+        detents: &[],
     }
 }
 fn aileron() -> BindingSpec {
@@ -279,6 +284,7 @@ fn aileron() -> BindingSpec {
         min: -1.0,
         max: 1.0,
         initial: 0.0,
+        detents: &[],
     }
 }
 fn rudder() -> BindingSpec {
@@ -292,6 +298,7 @@ fn rudder() -> BindingSpec {
         min: -1.0,
         max: 1.0,
         initial: 0.0,
+        detents: &[],
     }
 }
 fn throttle(pos: KeyCode) -> BindingSpec {
@@ -305,6 +312,7 @@ fn throttle(pos: KeyCode) -> BindingSpec {
         min: 0.0,
         max: 1.0,
         initial: 0.6,
+        detents: &[],
     }
 }
 fn collective() -> BindingSpec {
@@ -318,6 +326,7 @@ fn collective() -> BindingSpec {
         min: 0.0,
         max: 1.0,
         initial: 0.0,
+        detents: &[],
     }
 }
 fn pitch_trim() -> BindingSpec {
@@ -331,6 +340,7 @@ fn pitch_trim() -> BindingSpec {
         min: -1.0,
         max: 1.0,
         initial: 0.0,
+        detents: &[],
     }
 }
 fn flap() -> BindingSpec {
@@ -344,8 +354,13 @@ fn flap() -> BindingSpec {
         min: 0.0,
         max: 1.0,
         initial: 0.0,
+        detents: &[],
     }
 }
+
+/// The C172 flap lever's stops as normalized `flap-cmd-norm` values. The wing's
+/// full-flap deflection is 30°, so the mid detents land on 10° and 20° exactly.
+pub const C172_FLAP_DETENTS: &[f64] = &[0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0];
 fn brake(action: Action, property: &'static str) -> BindingSpec {
     BindingSpec {
         action,
@@ -357,6 +372,7 @@ fn brake(action: Action, property: &'static str) -> BindingSpec {
         min: 0.0,
         max: 1.0,
         initial: 0.0,
+        detents: &[],
     }
 }
 
@@ -373,6 +389,7 @@ fn starter() -> BindingSpec {
         min: 0.0,
         max: 1.0,
         initial: 0.0,
+        detents: &[],
     }
 }
 
@@ -528,6 +545,15 @@ pub fn profile(id: &str) -> Profile {
             has_arcade: false,
             bindings: {
                 let mut b = core_bindings(KeyCode::ShiftLeft);
+                // The flap lever is a real four-detent lever: UP / 10° / 20° /
+                // 30°. `F` and `V` step between stops instead of slewing a
+                // continuous command; the surface still travels at its own
+                // (slow, electric) rate.
+                for spec in &mut b {
+                    if spec.action == Action::Flap {
+                        spec.detents = C172_FLAP_DETENTS;
+                    }
+                }
                 b.push(starter());
                 b
             },
@@ -667,6 +693,26 @@ mod tests {
         assert!(!profile("c172p").has_autopilot);
         assert!(!profile("f22").has_autopilot);
         assert!(!profile("ah1s").has_autopilot);
+    }
+
+    #[test]
+    fn the_c172_flap_lever_has_four_detents_and_the_jets_do_not() {
+        let flap = |id| {
+            profile(id)
+                .bindings
+                .iter()
+                .find(|b| b.action == Action::Flap)
+                .map(|b| b.detents)
+                .unwrap_or(&[])
+        };
+        let detents = flap("c172p");
+        assert_eq!(detents.len(), 4, "UP / 10 / 20 / 30");
+        assert_eq!(detents[0], 0.0);
+        assert!((detents[1] - 10.0 / 30.0).abs() < 1e-9);
+        assert!((detents[2] - 20.0 / 30.0).abs() < 1e-9);
+        assert_eq!(detents[3], 1.0);
+        assert!(flap("737").is_empty());
+        assert!(flap("f22").is_empty());
     }
 
     #[test]

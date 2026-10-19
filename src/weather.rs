@@ -505,7 +505,6 @@ mod tests {
     /// NED components are east-strong and north-negative (blowing away from
     /// the north).
     #[test]
-    #[test]
     fn wind_ned_components_match_the_from_direction() {
         let mut w = Weather::default();
         w.wind_kts = 10.0;
