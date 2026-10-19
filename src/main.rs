@@ -11,6 +11,7 @@ mod config;
 mod controls;
 mod fx;
 mod gauge;
+mod hop;
 mod hud;
 mod ils;
 mod input;
@@ -88,6 +89,7 @@ fn main() {
         .add_plugins(landing::LandingPlugin)
         .add_plugins(takeoff::TakeoffPlugin)
         .add_plugins(approach::ApproachPlugin)
+        .add_plugins(hop::HopPlugin)
         .add_plugins(checklist::ChecklistPlugin)
         .add_plugins(taxi::TaxiPlugin)
         .add_plugins(lights::LightsPlugin)

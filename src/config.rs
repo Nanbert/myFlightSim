@@ -355,12 +355,19 @@ impl Default for FileStore {
 }
 
 fn default_path() -> PathBuf {
+    app_dir().join("config.cfg")
+}
+
+/// The directory persisted app files live in (`<XDG config>/myflightsim`, or
+/// `~/.config/myflightsim`). Shared by anything else that wants a save file —
+/// the hop ledger keeps its `ledger.cfg` here too.
+pub fn app_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("myflightsim").join("config.cfg")
+    base.join("myflightsim")
 }
 
 impl ConfigStore for FileStore {

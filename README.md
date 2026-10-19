@@ -304,6 +304,9 @@ gear = KeyU
 │   ├── assist.rs      # C172 可选键盘辅助：bank hold / turn coordination
 │   ├── aerodrome.rs   # C172 默认机场：跑道、滑行道、PAPI、风向袋
 │   ├── landing.rs     # C172 落地评分：接地率/中线/速度/接地点/侧风技术
+│   ├── takeoff.rs     # 737 起飞评分：抬轮速度对 PFD VR 线、姿态、收轮时机
+│   ├── approach.rs    # 737 稳定进近门：1000 ft 廊道稳定标准告警
+│   ├── hop.rs         # 737 航程账本：单元 hop 总分持久化（ledger.cfg）
 │   ├── checklist.rs   # C172 检查单：冷启动 / 起飞前，随状态自动打勾
 │   ├── taxi.rs        # C172 滑行引导：引入线偏移 + 停机评级
 │   ├── aircraft_profile.rs # 每机型的控制键位档案（数据表）

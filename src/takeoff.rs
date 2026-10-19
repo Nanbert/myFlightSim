@@ -56,11 +56,13 @@ struct Liftoff {
     gear_up_s: Option<f32>,
     on_runway: bool,
     runway: &'static str,
+    /// When it happened, for future replay bookkeeping.
+    #[allow(dead_code)]
     at: f32,
 }
 
 #[derive(Resource, Default)]
-struct TakeoffState {
+pub(crate) struct TakeoffState {
     was_ground: bool,
     lift: Option<Liftoff>,
     /// Seconds accumulated airborne since the liftoff frame, for the gear
@@ -68,6 +70,8 @@ struct TakeoffState {
     since_lift: f32,
     report_until: f32,
     best: Option<u32>,
+    /// The last graded takeoff score, for the hop ledger to read.
+    pub(crate) last: Option<u32>,
 }
 
 #[derive(Component)]
@@ -179,6 +183,7 @@ fn update_takeoff(
             if state.best.map_or(true, |b| score > b) {
                 state.best = Some(score);
             }
+            state.last = Some(score);
             let vr = crate::pfd::vr_for_flaps(lift.flap_norm);
             let gear = lift
                 .gear_up_s

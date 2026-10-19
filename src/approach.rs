@@ -70,9 +70,9 @@ pub fn criteria(gear_pos: f64, flap_deg: f64, cas: f64, vs_fpm: f64, flap_norm: 
 }
 
 #[derive(Resource, Default)]
-struct ApproachState {
+pub(crate) struct ApproachState {
     /// Verdict of the most recent crossing, for the hop ledger to read.
-    stable: Option<bool>,
+    pub(crate) stable: Option<bool>,
     armed: bool,
     banner_until: f32,
 }
