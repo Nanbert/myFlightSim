@@ -328,6 +328,13 @@ fn update(
         node.display = Display::None;
         return;
     }
+    // The 737's corner PFDs share the bottom-left corner: lift the panel
+    // above the overlay (400×430 at 12 px margins) while they are showing.
+    // The C172 has no PFD, so the panel keeps its original perch.
+    let perch = if jet_737 { 462.0 } else { 370.0 };
+    if node.bottom != Val::Px(perch) {
+        node.bottom = Val::Px(perch);
+    }
     let title = match phase {
         Phase::ColdStart => "COLD START CHECKLIST",
         Phase::AfterTakeoff => "AFTER TAKEOFF",
