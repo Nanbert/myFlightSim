@@ -269,6 +269,14 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("       course instead of the pilot-set one.");
     p.line("  TODO flap detents: the sim's flap lever is continuous.");
     p.line("  TODO stall warning, spins and carb icing.");
+    p.line("  TODO crosswind scoring: the wind is in the FDM and the");
+    p.line("       report card works, but there is no wind-technique");
+    p.line("       grade or drift/crab feedback yet.");
+    p.line("  TODO gamified checklists: the cold start and ILS flows on");
+    p.line("       this page could tick themselves off as you fly them.");
+    p.line("  TODO taxi guidance: spawn on the apron, follow the blue");
+    p.line("       edge lights, park on the centreline and get scored");
+    p.line("       next to the pump.");
     p.line("  TODO ATC, traffic and a real navigation stack.");
 
     p.0
