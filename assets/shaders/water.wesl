@@ -28,6 +28,8 @@ struct WaterParams {
     tune: vec4<f32>,
     // x = cloud base, y = cloud top, z = coverage, w = wind (m/s)
     cloud: vec4<f32>,
+    // Night factor (0 day .. 1 deep night)
+    night: f32,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> u: WaterParams;
@@ -367,6 +369,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let sun_col = vec3<f32>(1.0, 0.95, 0.86) * (1.0 - 0.55 * rain);
     let glitter = specular(n, sun, v, max(u.tune.w, 1.0)) * max(u.tune.z, 0.0);
     col += sun_col * glitter * shadow * (1.0 - 0.75 * rain);
+
+    // Night: dim the whole surface like the night sky does.
+    let night = clamp(u.night, 0.0, 1.0);
+    col = (col + vec3<f32>(0.004, 0.006, 0.014) * night) * (1.0 - 0.88 * night);
 
     // Aerial perspective, same falloff as the terrain (fog.w carries density).
     let haze = 1.0 - exp(-dist * u.fog.w);

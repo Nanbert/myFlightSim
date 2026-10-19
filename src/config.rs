@@ -74,6 +74,8 @@ pub struct GameConfig {
     pub weather_level: usize,
     /// Index into [`crate::weather::WIND_LEVELS`].
     pub wind_level: usize,
+    /// Index into [`crate::weather::TIME_LABELS`].
+    pub time_level: usize,
     /// ENGINE = COLD: spawn the C172 shut down and let the pilot run the start
     /// flow (master M, crank I). Ignored by every other aircraft.
     pub engine_cold: bool,
@@ -170,6 +172,7 @@ impl Plugin for ConfigPlugin {
 fn apply_weather(config: Res<GameConfig>, mut weather: ResMut<Weather>) {
     weather.set_level(config.weather_level as isize);
     weather.set_wind_level(config.wind_level as isize);
+    weather.set_time_level(config.time_level as isize);
 }
 
 // --- text format -------------------------------------------------------------
@@ -199,6 +202,7 @@ fn truthy(value: &str) -> bool {
 fn serialize(config: &GameConfig) -> String {
     let mut out = format!("weather = {}\n", config.weather_level);
     out.push_str(&format!("wind = {}\n", config.wind_level));
+    out.push_str(&format!("time = {}\n", config.time_level));
     if config.engine_cold {
         out.push_str("engine_cold = 1\n");
     }
@@ -283,6 +287,12 @@ fn parse(text: &str) -> GameConfig {
                 if key == "wind" {
                     if let Ok(n) = value.parse::<usize>() {
                         config.wind_level = n;
+                    }
+                }
+                if key == "time" {
+                    if let Ok(n) = value.parse::<usize>() {
+                        // Clamp to the known presets, not just accept any int.
+                        config.time_level = n.min(crate::weather::TIME_LABELS.len() - 1);
                     }
                 }
                 if key == "engine_cold" {
@@ -450,6 +460,13 @@ mod tests {
     fn weather_is_read_from_the_header() {
         let cfg = parse("weather = 3\n");
         assert_eq!(cfg.weather_level, 3);
+    }
+
+    #[test]
+    fn time_of_day_parses_and_clamps() {
+        assert_eq!(parse("time = 2\n").time_level, 2);
+        // Out of range: clamp to the last preset instead of panicking later.
+        assert_eq!(parse("time = 7\n").time_level, 2);
     }
 
     #[test]

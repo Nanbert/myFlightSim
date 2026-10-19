@@ -334,6 +334,8 @@ fn read_input(
     mut mcp: ResMut<Mcp>,
     config: Res<GameConfig>,
     map: Res<crate::map::ActiveMap>,
+    weather: Res<crate::weather::Weather>,
+    mut lights: ResMut<crate::lights::AircraftLights>,
 ) {
     let dt = time.delta_secs_f64();
     // Fine control: C172 only for now. `Space` is free on the Cessna and is
@@ -436,6 +438,12 @@ fn read_input(
             ToggleAction::RotorTrim => {
                 sim.trim_now();
                 adopt_trim(&mut bindings, &sim);
+            }
+            // C172 exterior lights pack (nav + beacon + strobe + landing
+            // light). Manual `L` overrides the time-of-day default; the pack
+            // itself reacts in `lights.rs`.
+            ToggleAction::Lights => {
+                lights.toggle(&weather);
             }
             // AH-64D arcade helpers. Both are no-ops on models that don't
             // expose the properties; the realistic helicopter ignores them.

@@ -89,7 +89,10 @@ impl Action {
 
     /// Whether the control has a second (negative-direction) key slot.
     pub fn is_paired(self) -> bool {
-        !matches!(self, Action::BrakeLeft | Action::BrakeRight | Action::Starter)
+        !matches!(
+            self,
+            Action::BrakeLeft | Action::BrakeRight | Action::Starter
+        )
     }
 }
 
@@ -135,6 +138,10 @@ pub enum ToggleAction {
     /// ignition-enable`, c172p OFF until the pilot turns it on for the cold
     /// start; with the engine already running the mags keep it alive anyway).
     Master,
+    /// Exterior lights pack (nav + beacon + strobe + landing light, c172p).
+    /// Defaults on at night; the key overrides for day ops or a night run
+    /// with the lights off.
+    Lights,
 }
 
 impl ToggleAction {
@@ -158,6 +165,7 @@ impl ToggleAction {
             ToggleAction::Reverse => "reverse",
             ToggleAction::Approach => "APP",
             ToggleAction::Master => "master",
+            ToggleAction::Lights => "lights",
         }
     }
 
@@ -182,6 +190,7 @@ impl ToggleAction {
             ToggleAction::Reverse => "reverse",
             ToggleAction::Approach => "approach",
             ToggleAction::Master => "master",
+            ToggleAction::Lights => "lights",
         }
     }
 
@@ -205,6 +214,7 @@ impl ToggleAction {
             "reverse" => ToggleAction::Reverse,
             "approach" => ToggleAction::Approach,
             "master" => ToggleAction::Master,
+            "lights" => ToggleAction::Lights,
             _ => return None,
         })
     }
@@ -526,6 +536,13 @@ pub fn profile(id: &str) -> Profile {
                 t.push(ToggleSpec {
                     action: ToggleAction::Master,
                     key: KeyCode::KeyM,
+                });
+                // Exterior lights: nav + beacon + strobe + landing spotlight in
+                // one switch. `L` is free here (the 737 spends it on the
+                // speedbrake).
+                t.push(ToggleSpec {
+                    action: ToggleAction::Lights,
+                    key: KeyCode::KeyL,
                 });
                 t
             },

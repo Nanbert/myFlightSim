@@ -1391,15 +1391,40 @@ fn toggle_ui(keys: Res<ButtonInput<KeyCode>>, sim: Res<Sim>, mut ui: ResMut<Ui>)
 /// its own, in `sky.rs`). Idempotent, so it just runs every frame.
 fn dim_lights(
     weather: Res<Weather>,
-    mut sun: Query<&mut DirectionalLight>,
+    pose: Res<crate::map::SunPose>,
+    mut sun: Query<(&mut DirectionalLight, &mut Transform), With<DirectionalLight>>,
     mut ambient: Query<&mut AmbientLight>,
 ) {
-    let k = 1.0 - 0.55 * weather.rain;
-    for mut light in &mut sun {
-        light.illuminance = 8_000.0 * k;
+    // Rain keeps its daytime dimming; the time-of-day preset sets the sun's
+    // colour, strength and pose. DAY keeps the mission's own elevation from
+    // `SunPose`; below DAY the elevation drops to the preset's horizon line
+    // while the azimuth rides along, so the sun keeps its quarter.
+    let (elev, color, lux, amb_bright, amb_color) = match weather.time_level {
+        0 => (pose.rot.0, Color::WHITE, 8000.0, 250.0, Color::WHITE),
+        1 => (
+            -0.085, // sun 5 deg above the horizon: sunset glow in the shaders
+            Color::srgb(1.0, 0.72, 0.50),
+            4000.0,
+            170.0,
+            Color::srgb(1.0, 0.90, 0.82),
+        ),
+        _ => (
+            -0.95, // moonlight from high up
+            Color::srgb(0.62, 0.72, 0.95),
+            80.0,
+            30.0,
+            Color::srgb(0.60, 0.68, 1.0),
+        ),
+    };
+    let k = (1.0 - 0.55 * weather.rain).max(0.15);
+    for (mut light, mut tf) in &mut sun {
+        light.illuminance = lux * k;
+        light.color = color;
+        tf.rotation = Quat::from_euler(EulerRot::XYZ, elev, pose.rot.1, 0.0);
     }
     for mut amb in &mut ambient {
-        amb.brightness = 250.0 * k;
+        amb.brightness = amb_bright * k;
+        amb.color = amb_color;
     }
 }
 
@@ -1572,9 +1597,7 @@ fn update_hud(
         let tag = if refuelling { " (FULL)" } else { "" };
         out.push_str(&format!(
             "\n{}  {eng:>7}\nFUEL L {:>4.0} lb   R {:>4.0} lb{tag}",
-            master,
-            state.fuel_left_lb,
-            state.fuel_right_lb,
+            master, state.fuel_left_lb, state.fuel_right_lb,
         ));
     }
 

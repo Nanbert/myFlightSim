@@ -170,6 +170,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let shadow = cloud_shadow(p, sun);
     col *= sun_col * (0.22 + 1.05 * ndl * shadow) + amb * 0.34;
 
+    // Night: the same scalar the sky sweeps by wipes the palette toward a
+    // navy floor that keeps a whisper of relief under the "moonlight".
+    let night = clamp(u.rules.w, 0.0, 1.0);
+    col = (col + vec3<f32>(0.006, 0.010, 0.020) * night) * (1.0 - 0.88 * night);
+
     // Aerial perspective into the sky horizon.
     let dist = length(p - u.camera.xyz);
     let haze = 1.0 - exp(-dist * u.rules.z);

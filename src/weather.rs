@@ -31,12 +31,23 @@ pub const WIND_LABELS: [&str; 4] = ["CALM", "5 KT", "10 KT", "15 KT"];
 /// matters for both the takeoff roll and the crab down final.
 pub const WIND_FROM_DEG: f32 = 300.0;
 
+/// Time-of-day presets selectable from the menu's global settings page.
+pub const TIME_LABELS: [&str; 3] = ["DAY", "DUSK", "NIGHT"];
+
+/// How "night" each preset is, 0 (full day) .. 1 (deep night). Every
+/// light-eating piece of the scene — the sun, the sky/terrain/water shaders,
+/// the aircraft lights' default state — reads this one scalar. Dusk keeps just
+/// enough ambient to fly pattern work by; night is for the lights.
+pub const NIGHT_FACTORS: [f32; 3] = [0.0, 0.5, 1.0];
+
 /// Current weather. `rain` is 0 (clear) … 1 (downpour); `wind_kts` is the
-/// ambient wind speed at surface level.
+/// ambient wind speed at surface level; `time_level` indexes the time-of-day
+/// presets.
 #[derive(Resource)]
 pub struct Weather {
     pub rain: f32,
     pub wind_kts: f32,
+    pub time_level: usize,
 }
 
 impl Default for Weather {
@@ -44,6 +55,7 @@ impl Default for Weather {
         Weather {
             rain: 0.0,
             wind_kts: 0.0,
+            time_level: 0,
         }
     }
 }
@@ -104,6 +116,26 @@ impl Weather {
         let to = (self.wind_toward_deg() as f64).to_radians();
         let v = self.wind_kts as f64 * KTS_TO_FPS;
         (v * to.cos(), v * to.sin())
+    }
+
+    /// Short HUD label for the current time-of-day preset.
+    pub fn time_label(&self) -> &'static str {
+        TIME_LABELS[self.time_level.min(TIME_LABELS.len() - 1)]
+    }
+
+    /// 0 (full day) .. 1 (deep night) for the current preset — the single
+    /// scalar every light-eating consumer dims by.
+    pub fn night_factor(&self) -> f32 {
+        NIGHT_FACTORS[self.time_level.min(NIGHT_FACTORS.len() - 1)]
+    }
+
+    /// Set the time-of-day to level `i` (wrapping) and return the new index.
+    /// Used by the menu's settings page.
+    pub fn set_time_level(&mut self, i: isize) -> usize {
+        let n = TIME_LABELS.len() as isize;
+        let level = (i % n + n) % n;
+        self.time_level = level as usize;
+        self.time_level
     }
 }
 
@@ -378,6 +410,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn night_factor_follows_the_time_level() {
+        let mut w = Weather::default();
+        assert_eq!(w.night_factor(), 0.0);
+        assert_eq!(w.set_time_level(1), 1);
+        assert_eq!(w.time_label(), "DUSK");
+        assert_eq!(w.night_factor(), 0.5);
+        assert_eq!(w.set_time_level(3), 0); // wraps into range, DAY again
+        assert_eq!(w.set_time_level(4), 1);
+        assert_eq!(w.set_time_level(-1), 2); // negatives wrap too
+        assert_eq!(w.time_label(), "NIGHT");
+    }
+
+    #[test]
     fn wrap_maps_into_the_half_open_interval() {
         assert_eq!(wrap(0.0, 10.0), 0.0);
         assert!((wrap(15.0, 10.0) - -5.0).abs() < 1e-5);
@@ -406,7 +451,8 @@ mod tests {
         assert_eq!(
             Weather {
                 rain: 0.0,
-                wind_kts: 0.0
+                wind_kts: 0.0,
+                time_level: 0
             }
             .label(),
             "CLEAR"
@@ -414,7 +460,8 @@ mod tests {
         assert_eq!(
             Weather {
                 rain: 0.3,
-                wind_kts: 0.0
+                wind_kts: 0.0,
+                time_level: 0
             }
             .label(),
             "LIGHT RAIN"
@@ -422,7 +469,8 @@ mod tests {
         assert_eq!(
             Weather {
                 rain: 0.6,
-                wind_kts: 0.0
+                wind_kts: 0.0,
+                time_level: 0
             }
             .label(),
             "RAIN"
@@ -430,7 +478,8 @@ mod tests {
         assert_eq!(
             Weather {
                 rain: 0.9,
-                wind_kts: 0.0
+                wind_kts: 0.0,
+                time_level: 0
             }
             .label(),
             "STORM"

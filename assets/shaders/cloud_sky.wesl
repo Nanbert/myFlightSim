@@ -21,7 +21,8 @@ struct CloudParams {
     // x = mode (0 raymarch, 1 composite), y = temporal weight of this frame,
     // z = frame index (dither rotation), w = history valid
     misc: vec4<f32>,
-    // xy = full-resolution target size in physical pixels, zw unused
+    // xy = full-resolution target size in physical pixels,
+    //     z = night factor (0 day .. 1 deep night), w unused
     screen: vec4<f32>,
     // Previous frame's clip-from-world, for reprojecting the cloud target.
     prev_clip_from_world: mat4x4<f32>,
@@ -254,7 +255,7 @@ fn phase(c: f32, trans: f32) -> f32 {
 // extinguished within metres, but multiple scattering keeps a dense interior
 // bright. Deriving this from the local sun transmittance alone collapses the
 // veil to the black of single scattering, which reads as a dark grey wall.
-fn in_cloud_color(h: f32, rain: f32, toward_sun: f32) -> vec3<f32> {
+fn in_cloud_color(h: f32, rain: f32, toward_sun: f32, day: f32) -> vec3<f32> {
     let trans = 0.35;
     let sun_col = vec3<f32>(1.0, 0.93, 0.80) * 3.2 * (1.0 - 0.45 * rain);
     let amb = mix(
@@ -266,7 +267,7 @@ fn in_cloud_color(h: f32, rain: f32, toward_sun: f32) -> vec3<f32> {
     // Overcast: desaturate and darken, matching the deck above the camera.
     let l = dot(c, vec3<f32>(0.299, 0.587, 0.114));
     c = mix(c, vec3<f32>(l), 0.45 * rain) * (1.0 - 0.18 * rain);
-    return c;
+    return c * day;
 }
 
 // The scattering term is HDR: a forward-lit edge reaches ~10x white. The game
@@ -280,7 +281,7 @@ fn tonemap_cloud(c: vec3<f32>) -> vec3<f32> {
     return x / (vec3<f32>(1.0) + x);
 }
 
-fn cloud_color(trans: f32, ph: f32, h: f32, rain: f32) -> vec3<f32> {
+fn cloud_color(trans: f32, ph: f32, h: f32, rain: f32, day: f32) -> vec3<f32> {
     let ms = multi_scatter(trans);
     let sun_col = vec3<f32>(1.0, 0.93, 0.80) * 3.2 * (1.0 - 0.45 * rain);
     // Sky light leaks into the shadowed side: dim and blue at the base, bright
@@ -293,10 +294,12 @@ fn cloud_color(trans: f32, ph: f32, h: f32, rain: f32) -> vec3<f32> {
     // Overcast: desaturate toward luminance, then darken.
     let l = dot(c, vec3<f32>(0.299, 0.587, 0.114));
     c = mix(c, vec3<f32>(l), 0.55 * rain) * (1.0 - 0.22 * rain);
-    return c;
+    return c * day;
 }
 
-fn sky_color(rd: vec3<f32>, sun: vec3<f32>, rain: f32) -> vec3<f32> {
+// The night factor sweeps the gradient to deep navy, kills the sun glow and
+// sprinkles a cheap hash star field (overcast knocks it out).
+fn sky_color(rd: vec3<f32>, sun: vec3<f32>, rain: f32, night: f32) -> vec3<f32> {
     // Linear-light approximations of the old sRGB gradient.
     let zenith = vec3<f32>(0.008, 0.072, 0.49);
     let horizon = vec3<f32>(0.55, 0.70, 0.87);
@@ -310,7 +313,7 @@ fn sky_color(rd: vec3<f32>, sun: vec3<f32>, rain: f32) -> vec3<f32> {
 
     // Sun glow and a small disk; both wash out in overcast.
     let s = clamp(dot(rd, sun), 0.0, 1.0);
-    let clear = 1.0 - 0.85 * rain;
+    let clear = (1.0 - 0.85 * rain) * (1.0 - night);
     col += vec3<f32>(1.0, 0.55, 0.22) * pow(s, 8.0) * 0.22 * clear;
     col += vec3<f32>(1.0, 0.78, 0.45) * pow(s, 256.0) * 1.1 * clear;
 
@@ -318,16 +321,27 @@ fn sky_color(rd: vec3<f32>, sun: vec3<f32>, rain: f32) -> vec3<f32> {
     let l = dot(col, vec3<f32>(0.299, 0.587, 0.114));
     let grey = vec3<f32>(l * 0.96, l, l * 1.04);
     col = mix(col, grey, 0.85 * rain) * (1.0 - 0.38 * rain);
+
+    // Night: toward navy, then stars on the clear eyeball cells.
+    col = col * (1.0 - 0.90 * night) + vec3<f32>(0.010, 0.014, 0.032) * night;
+    if (night > 0.02 && rain < 0.5) {
+        let d2 = normalize(rd) * 130.0;
+        let cell = floor(d2);
+        let h = fract(sin(dot(cell, vec3<f32>(12.9898, 78.233, 37.719))) * 43758.5453);
+        let twinkle = 0.75 + 0.25 * fract(sin(h * 91.17) * 43758.5453);
+        col += vec3<f32>(0.90, 0.93, 1.0)
+            * smoothstep(0.9965, 1.0, h) * 2.2 * twinkle * night * (1.0 - 0.9 * rain);
+    }
     return col;
 }
 
 // Composite the half-resolution cloud buffer over the full-resolution sky.
 // The dome still supplies the depth test, so terrain and the cockpit occlude
 // clouds exactly as before; only the raymarch moved to the offscreen target.
-fn composite(rd: vec3<f32>, uv: vec2<f32>, sun: vec3<f32>, rain: f32) -> vec4<f32> {
+fn composite(rd: vec3<f32>, uv: vec2<f32>, sun: vec3<f32>, rain: f32, night: f32) -> vec4<f32> {
     let cloud = textureSampleLevel(cloud_tex, cloud_samp, uv, 0.0);
     let trans = clamp(cloud.a, 0.0, 1.0);
-    return vec4<f32>(cloud.rgb + sky_color(rd, sun, rain) * trans, 1.0);
+    return vec4<f32>(cloud.rgb + sky_color(rd, sun, rain, night) * trans, 1.0);
 }
 
 // Reproject the previous frame's cloud radiance. The march is jittered, so
@@ -382,15 +396,19 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let rd = normalize(in.world_position.xyz - ro);
     let sun = normalize(u.sun.xyz);
     let rain = u.sun.w;
+    let night = clamp(u.screen.z, 0.0, 1.0);
+    // Cloud day factor: night sweeps to near-black, and a low sun (dusk)
+    // half-lights the deck exactly like it half-lights the terrain.
+    let day = (0.55 + 0.45 * clamp(2.0 * sun.y, 0.0, 1.0)) * mix(1.0, 0.06, night);
 
     // The main camera's sky dome samples the half-resolution target; the
     // offscreen camera (same pose) runs the march below.
     if (u.misc.x > 0.5) {
         let screen = max(u.screen.xy, vec2<f32>(1.0));
-        return composite(rd, in.position.xy / screen, sun, rain);
+        return composite(rd, in.position.xy / screen, sun, rain, night);
     }
 
-    let sky = sky_color(rd, sun, rain);
+    let sky = sky_color(rd, sun, rain, night);
     let frame = u.misc.z;
 
     // Slab intersection in world space. If the ray never crosses the layer,
@@ -453,7 +471,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
                 let powder = 1.0 - exp(-2.0 * d);
                 let ph = phase(dot(rd, sun), sun_trans) * mix(1.0, powder, 0.25);
                 let alpha = 1.0 - exp(-d * step * EXTINCTION);
-                let cc = tonemap_cloud(cloud_color(sun_trans, ph, h, rain));
+                let cc = tonemap_cloud(cloud_color(sun_trans, ph, h, rain, day));
                 // Aerial perspective: distant cloud fades into the sky.
                 let haze = 1.0 - exp(-t * 0.000045);
                 let c = mix(cc, sky, haze * 0.45);
@@ -492,7 +510,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let veil = 1.0 - exp(-tau);
         if (veil > 0.002) {
             let veil_h = h_sum / max(d_sum, 1e-4);
-            var veil_col = in_cloud_color(veil_h, rain, dot(rd, sun));
+            var veil_col = in_cloud_color(veil_h, rain, dot(rd, sun), day);
             // Near-field wisps: a dense interior would otherwise be one flat
             // colour. This octave is small enough to sweep past the aircraft,
             // which is what sells the speed once the camera is inside.

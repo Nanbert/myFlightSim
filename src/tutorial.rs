@@ -146,6 +146,7 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     fixed_wing_rows(&mut p, &b);
     p.row("Starter crank", axis(&b, Action::Starter, "crank", ""));
     p.row("Master switch", toggle(&b, ToggleAction::Master));
+    p.row("Exterior lights", toggle(&b, ToggleAction::Lights));
     p.row("Fine control", "Space (hold)");
     common_tail_rows(&mut p, &b);
 
@@ -192,6 +193,19 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("     - the tanks last hours of full-power flying even from the");
     p.line("     200-lb spawn load - so the pump is for discipline, not");
     p.line("     emergencies.");
+
+    p.heading("NIGHT FLIGHT (GAME, SETTINGS TIME OF DAY)");
+    p.line("  GLOBAL settings has a TIME OF DAY row: DAY, DUSK or NIGHT.");
+    p.line("  Dusk parks the sun on the horizon; night trades it for");
+    p.line("  moonlight and a starfield, and the ground goes dark around");
+    p.line("  the field lights: white runway edges, green thresholds, red");
+    p.line("  end bars, blue taxiway lines, apron floods and the tower");
+    p.line("  beacon. The setting is live - flip it mid-flight.");
+    p.line("  L is the exterior-lights switch: nav tips, tail light,");
+    p.line("  flashing beacon and strobes, plus a landing spotlight. At");
+    p.line("  dusk/night they switch on by themselves; L overrides. The");
+    p.line("  landing beam is real light - outside its cone you only have");
+    p.line("  the runway lights, so keep them centred.");
 
     p.heading("ILS APPROACH (GAME)");
     p.line("  Both runways have a full ILS: localizer plus 3-degree");

@@ -146,10 +146,7 @@ impl Plugin for AerodromePlugin {
             Update,
             (update_papi, update_windsock).run_if(in_state(AppState::Flying)),
         )
-        .add_systems(
-            FixedUpdate,
-            update_pump.run_if(in_state(AppState::Flying)),
-        );
+        .add_systems(FixedUpdate, update_pump.run_if(in_state(AppState::Flying)));
     }
 }
 
@@ -258,6 +255,19 @@ fn spawn_aerodrome(
     let green = materials.add(StandardMaterial {
         base_color: Color::srgb(0.2, 1.0, 0.35),
         emissive: LinearRgba::rgb(0.2, 3.0, 0.5),
+        ..default()
+    });
+    // Taxiway edge lights: quiet blue, a step dimmer than the runway stuff.
+    let blue = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.2, 0.5, 1.0),
+        emissive: LinearRgba::rgb(0.25, 0.9, 3.4),
+        ..default()
+    });
+    // Threshold bars run a step dimmer than the beacon green: from five miles
+    // out the five-bulb bar still blooms into one blob, just a smaller one.
+    let green_dim = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.2, 1.0, 0.35),
+        emissive: LinearRgba::rgb(0.15, 2.0, 0.4),
         ..default()
     });
 
@@ -513,11 +523,96 @@ fn spawn_aerodrome(
         for i in 0..5 {
             commands.spawn((
                 Mesh3d(light_mesh.clone()),
-                MeshMaterial3d(green.clone()),
+                MeshMaterial3d(green_dim.clone()),
                 Transform::from_xyz(-12.0 + i as f32 * 6.0, 0.22, z),
                 DespawnOnExit(AppState::Flying),
             ));
         }
+    }
+
+    // Red runway end bars, just outside each end: whichever direction is in
+    // use, the landing pilot sees green at the threshold and red where the
+    // pavement gives out.
+    for z in [THRESHOLD_Z + 4.0, RUNWAY_END_Z - 4.0] {
+        for i in 0..5 {
+            commands.spawn((
+                Mesh3d(light_mesh.clone()),
+                MeshMaterial3d(red.clone()),
+                Transform::from_xyz(-12.0 + i as f32 * 6.0, 0.22, z),
+                DespawnOnExit(AppState::Flying),
+            ));
+        }
+    }
+    // Blue taxiway edge lights: along the parallel strip and the two stubs
+    // the C172 actually taxies (threshold connector and apron connector).
+    for x in [TAXI_X - 7.0, TAXI_X + 7.0] {
+        let mut z = TAXI_Z1 + 4.0;
+        while z < TAXI_Z0 {
+            commands.spawn((
+                Mesh3d(light_mesh.clone()),
+                MeshMaterial3d(blue.clone()),
+                Transform::from_xyz(x, 0.20, z),
+                DespawnOnExit(AppState::Flying),
+            ));
+            z += 65.0;
+        }
+    }
+    for z in [TAXI_Z0, APRON_Z] {
+        for x in [18.0, 27.0, 36.0, TAXI_X + 7.0] {
+            for dz in [-6.6, 6.6] {
+                commands.spawn((
+                    Mesh3d(light_mesh.clone()),
+                    MeshMaterial3d(blue.clone()),
+                    Transform::from_xyz(x, 0.20, z + dz),
+                    DespawnOnExit(AppState::Flying),
+                ));
+            }
+        }
+    }
+
+    // Apron floodlights: two warm point lights over the parking area so a
+    // night C172 can find its parking spot (and the fuel pump) by itself.
+    let pole_mesh = meshes.add(Cuboid::new(0.15, 5.5, 0.15));
+    let head_mesh = meshes.add(Cuboid::new(0.8, 0.35, 0.8));
+    let flood_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.9, 0.7),
+        emissive: LinearRgba::rgb(6.0, 5.0, 3.2),
+        ..default()
+    });
+    for z in [APRON_Z + 30.0, APRON_Z - 60.0] {
+        commands.spawn((
+            Mesh3d(pole_mesh.clone()),
+            MeshMaterial3d(concrete.clone()),
+            Transform::from_xyz(100.0, 2.75, z),
+            DespawnOnExit(AppState::Flying),
+        ));
+        commands.spawn((
+            Mesh3d(head_mesh.clone()),
+            MeshMaterial3d(flood_mat.clone()),
+            Transform::from_xyz(100.0, 5.6, z),
+            DespawnOnExit(AppState::Flying),
+        ));
+        commands.spawn((
+            PointLight {
+                color: Color::srgb(1.0, 0.92, 0.78),
+                intensity: 14_000.0,
+                range: 80.0,
+                ..default()
+            },
+            Transform::from_xyz(100.0, 5.3, z),
+        ));
+    }
+
+    // Tower beacon: a steady green-white pair on the mast, so the field has a
+    // landmark that survives the dark.
+    let beacon_mesh = meshes.add(Sphere::new(0.2));
+    for (i, mat) in [green.clone(), white.clone()].into_iter().enumerate() {
+        commands.spawn((
+            Mesh3d(beacon_mesh.clone()),
+            MeshMaterial3d(mat),
+            Transform::from_xyz(70.0, 14.0 + i as f32 * 0.5, APRON_Z - 110.0),
+            DespawnOnExit(AppState::Flying),
+        ));
     }
 
     // --- PAPI, both directions ------------------------------------------

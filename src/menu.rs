@@ -118,7 +118,7 @@ enum Page {
 }
 
 /// Rows on the global settings page. Weather, wind and the engine start mode.
-const SETTINGS_ROWS: usize = 3;
+const SETTINGS_ROWS: usize = 4;
 
 /// Cursor within the global settings page.
 #[derive(Resource, Default)]
@@ -646,7 +646,11 @@ fn aircraft_label(id: &str) -> &'static str {
 
 /// The global settings page: one row per setting, the selected one marked and
 /// its value in `< >` brackets.
-fn global_settings_text(weather: &Weather, settings: &SettingsState, config: &GameConfig) -> String {
+fn global_settings_text(
+    weather: &Weather,
+    settings: &SettingsState,
+    config: &GameConfig,
+) -> String {
     let mut out = String::from("GLOBAL SETTINGS\n\n");
     for i in 0..SETTINGS_ROWS {
         let cursor = if i == settings.row { ">" } else { " " };
@@ -663,6 +667,10 @@ fn global_settings_text(weather: &Weather, settings: &SettingsState, config: &Ga
                 let mode = if config.engine_cold { "COLD" } else { "AUTO" };
                 out.push_str(&format!("{cursor} ENGINE         < {mode} >\n"));
             }
+            3 => out.push_str(&format!(
+                "{cursor} TIME OF DAY    < {} >\n",
+                weather.time_label()
+            )),
             _ => {}
         }
     }
@@ -744,6 +752,11 @@ fn menu_input(
                             // run the checklist); persists for later spawns.
                             config.engine_cold = !config.engine_cold;
                             sim.set_engine_cold(config.engine_cold);
+                            config::save(&config, &sink);
+                        }
+                        3 => {
+                            let level = weather.time_level as isize + dir;
+                            config.time_level = weather.set_time_level(level);
                             config::save(&config, &sink);
                         }
                         _ => {}
@@ -1134,7 +1147,7 @@ mod tests {
     #[test]
     fn editor_lists_a_row_per_key_slot() {
         // c172p: 6 paired axes (12) + 2 brakes + 1 starter axis + 3 toggles.
-        assert_eq!(editor_slots("c172p", &Keymap::default()).len(), 18);
+        assert_eq!(editor_slots("c172p", &Keymap::default()).len(), 19);
         // ah1s: 5 paired axes (10) + 4 toggles (rotor-trim, trim, hover, balance).
         assert_eq!(editor_slots("ah1s", &Keymap::default()).len(), 14);
         // 737: c172p's slots + autopilot, gear, the six MCP toggles, the

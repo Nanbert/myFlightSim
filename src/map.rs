@@ -52,6 +52,24 @@ const NOISE_SIZE: u32 = 256;
 
 const DEFAULT_SUN: (f32, f32) = (-0.5, -0.6);
 
+/// Where the sun sits, as the rotation euler pair the [DirectionalLight]'s
+/// transform carries: (elevation-rotation, azimuth-rotation). The map owns the
+/// pose — each mission picks its own afternoon light, and leaving resets the
+/// default — but [`crate::view::dim_lights`] is the only system that actually
+/// writes the transform (Bevy panics on two writers), so the pose travels here
+/// as a resource. `dim_lights` rewards this every frame from the current
+/// time-of-day preset.
+#[derive(Resource, Clone, Copy)]
+pub(crate) struct SunPose {
+    pub(crate) rot: (f32, f32),
+}
+
+impl Default for SunPose {
+    fn default() -> Self {
+        SunPose { rot: DEFAULT_SUN }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapId {
     Archipelago,
@@ -172,7 +190,7 @@ struct TerrainParams {
     deep: Vec4,
     /// Haze colour, the sky horizon under the current weather.
     fog: Vec4,
-    /// x = rock/snow line, y = palette mode, z = haze density, w = unused.
+    /// x = rock/snow line, y = palette mode, z = haze density, w = night factor.
     rules: Vec4,
     /// x = cloud base, y = cloud top, z = coverage, w = wind (m/s).
     cloud: Vec4,
@@ -220,6 +238,8 @@ struct WaterParams {
     tune: Vec4,
     /// x = cloud base, y = cloud top, z = coverage, w = wind (m/s).
     cloud: Vec4,
+    /// Night factor (0 day .. 1 deep night); dims the sea like the sky does.
+    night: f32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
@@ -258,6 +278,7 @@ impl Plugin for MapPlugin {
         .init_resource::<PendingMission>()
         .init_resource::<ActiveMap>()
         .init_resource::<MapHandles>()
+        .init_resource::<SunPose>()
         .add_systems(OnEnter(AppState::Flying), enter_mission.after(StartFlight))
         .add_systems(OnExit(AppState::Flying), leave_mission)
         .add_systems(Update, update_map_params.run_if(in_state(AppState::Flying)));
@@ -276,7 +297,7 @@ fn enter_mission(
     mut water_mats: ResMut<Assets<WaterMaterial>>,
     weather: Res<crate::weather::Weather>,
     cloud: Res<CloudField>,
-    mut lights: Query<&mut Transform, With<DirectionalLight>>,
+    mut pose: ResMut<SunPose>,
 ) {
     let Some(map) = pending.0.take() else {
         return;
@@ -284,7 +305,7 @@ fn enter_mission(
     active.0 = Some(map);
 
     let pal = map.palette();
-    let fog = fog_color(0.0);
+    let fog = fog_color(0.0, weather.night_factor());
     let cloud_params = Vec4::new(
         cloud.base,
         cloud.top,
@@ -324,6 +345,7 @@ fn enter_mission(
                 // LOD, so the sea keeps the detail of the near-surface renders.
                 tune: Vec4::new(0.6, 1.05, 1.1, 65.0),
                 cloud: cloud_params,
+                night: weather.night_factor(),
             },
             cloud_noise: cloud.noise.clone(),
         });
@@ -345,22 +367,17 @@ fn enter_mission(
     }
 
     let (el, az) = map.sun();
-    for mut t in &mut lights {
-        t.rotation = Quat::from_euler(EulerRot::XYZ, -el, az, 0.0);
-    }
+    pose.rot = (-el, az);
 }
 
 fn leave_mission(
     mut active: ResMut<ActiveMap>,
     mut handles: ResMut<MapHandles>,
-    mut lights: Query<&mut Transform, With<DirectionalLight>>,
+    mut pose: ResMut<SunPose>,
 ) {
     active.0 = None;
     *handles = MapHandles::default();
-    for mut t in &mut lights {
-        let (el, az) = (DEFAULT_SUN.0, DEFAULT_SUN.1);
-        t.rotation = Quat::from_euler(EulerRot::XYZ, -el, az, 0.0);
-    }
+    *pose = SunPose::default();
 }
 
 fn update_map_params(
@@ -379,7 +396,8 @@ fn update_map_params(
     let pos = cam.translation();
     let sun_dir = (sun.rotation() * Vec3::Z).normalize_or_zero();
     let rain = weather.rain as f32;
-    let fog = fog_color(rain);
+    let night = weather.night_factor();
+    let fog = fog_color(rain, night);
     let t = time.elapsed_secs();
     let cloud_params = Vec4::new(cloud.base, cloud.top, coverage_for(rain), cloud.wind);
 
@@ -388,6 +406,9 @@ fn update_map_params(
             mat.params.camera = Vec4::new(pos.x, pos.y, pos.z, t);
             mat.params.sun = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, rain);
             mat.params.fog = vec4_rgb(fog);
+            // rules.w is the shader's previously unused fourth slot, now the
+            // night factor: terrain sweeps to its navy night fill with it.
+            mat.params.rules.w = night;
             mat.params.cloud = cloud_params;
         }
     }
@@ -396,6 +417,7 @@ fn update_map_params(
             mat.params.camera = Vec4::new(pos.x, pos.y, pos.z, t);
             mat.params.sun = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, rain);
             mat.params.fog = Vec4::new(fog[0], fog[1], fog[2], HAZE);
+            mat.params.night = night;
             mat.params.cloud = cloud_params;
         }
     }
@@ -407,11 +429,15 @@ fn vec4_rgb(rgb: [f32; 3]) -> Vec4 {
 
 /// Linear-light horizon colour for the current weather, matching
 /// `sky_color` in `cloud_sky.wesl` so haze and sky meet seamlessly.
-fn fog_color(rain: f32) -> [f32; 3] {
+fn fog_color(rain: f32, night: f32) -> [f32; 3] {
     let horizon = Vec3::new(0.55, 0.70, 0.87);
     let l = 0.299 * horizon.x + 0.587 * horizon.y + 0.114 * horizon.z;
     let grey = Vec3::new(l * 0.96, l, l * 1.04);
-    (horizon.lerp(grey, 0.85 * rain) * (1.0 - 0.38 * rain)).to_array()
+    let mut fog = horizon.lerp(grey, 0.85 * rain) * (1.0 - 0.38 * rain);
+    // Night: the haze follows the sky down to near-black with a blue nod,
+    // exactly like the shader side of the world does.
+    fog = fog * (1.0 - 0.88 * night) + Vec3::new(0.006, 0.010, 0.020) * night;
+    fog.to_array()
 }
 
 // --- terrain height field ---------------------------------------------------

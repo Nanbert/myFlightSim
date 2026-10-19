@@ -66,7 +66,8 @@ struct CloudParams {
     /// x = mode (0 raymarch, 1 composite), y = temporal weight of the current
     /// frame, z = frame index, w = history valid.
     misc: Vec4,
-    /// xy = full-resolution target size in physical pixels, zw unused.
+    /// xy = full-resolution target size in physical pixels; z carries the
+    /// night factor (0 day .. 1 deep night).
     screen: Vec4,
     /// Previous frame's clip-from-world, for reprojecting the cloud target.
     prev_clip_from_world: Mat4,
@@ -410,7 +411,7 @@ fn update_cloud_params(
             (index % 64) as f32,
             if history_valid { 1.0 } else { 0.0 },
         ),
-        screen: Vec4::new(screen.x, screen.y, 0.0, 0.0),
+        screen: Vec4::new(screen.x, screen.y, weather.night_factor(), 0.0),
         // The shader projects a world point into *last* frame's screen.
         prev_clip_from_world,
     };
