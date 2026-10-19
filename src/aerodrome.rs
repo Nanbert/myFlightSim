@@ -31,6 +31,14 @@ const TAXI_Z0: f32 = THRESHOLD_Z - 6.0;
 const TAXI_Z1: f32 = RUNWAY_END_Z + 36.0;
 const APRON_X: f32 = 111.0;
 const APRON_Z: f32 = -150.0;
+/// The C172 ramp stand on the lead-in line: the `P` spawn parks at (75, -150)
+/// facing the taxiway. Far enough from the pump that spawning cold doesn't
+/// auto-fill the tanks, aligned with the connector at the apron's own level.
+pub(crate) const STAND_X: f32 = 75.0;
+/// The lead-in line runs along the apron's connector (the z = -150 stub).
+pub(crate) const STAND_Z: f32 = APRON_Z;
+/// Where the refuelling lane leaves the lead-in line for the pump.
+const PUMP_LANE_X: f32 = PUMP_POS.x;
 
 /// PAPI units sit left of runway 36, 300 m down the runway from the threshold.
 const PAPI_Z: f32 = THRESHOLD_Z - 300.0;
@@ -425,6 +433,39 @@ fn spawn_aerodrome(
         TAXI_Z0 - TAXI_Z1,
         TAXI_X,
         (TAXI_Z0 + TAXI_Z1) * 0.5,
+        PAINT_Y + 0.002,
+    );
+    // Apron taxi guidance: a lead-in line along z = -150 from the pump lane
+    // west to the taxiway centreline, a stub lane from the pump north onto
+    // it, and a stop bar where the C172's ramp stand sits (the `P` spawn).
+    // The blue edge lights and this one yellow line make a dark-apron taxi a
+    // matter of following the paint.
+    slab(
+        &mut commands,
+        &yellow,
+        PUMP_LANE_X - TAXI_X,
+        0.4,
+        (PUMP_LANE_X + TAXI_X) * 0.5,
+        STAND_Z,
+        PAINT_Y + 0.002,
+    );
+    slab(
+        &mut commands,
+        &yellow,
+        0.4,
+        PUMP_POS.z - STAND_Z,
+        PUMP_LANE_X,
+        (PUMP_POS.z + STAND_Z) * 0.5,
+        PAINT_Y + 0.002,
+    );
+    // The stand's stop bar: taxi until the tail crosses it, then stop.
+    slab(
+        &mut commands,
+        &yellow,
+        0.4,
+        3.0,
+        STAND_X,
+        STAND_Z,
         PAINT_Y + 0.002,
     );
     for z in [TAXI_Z0, TAXI_Z1, APRON_Z] {

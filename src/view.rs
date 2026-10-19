@@ -1479,6 +1479,7 @@ fn control_hints(
         entries.push("Space fine".to_string());
     }
     entries.push("R reset".to_string());
+    entries.push("P ramp".to_string());
     entries.push("C view".to_string());
     if f22_hud {
         entries.push("O hud".to_string());
@@ -1511,6 +1512,7 @@ fn update_hud(
     bindings: Res<Bindings>,
     ap: Res<Autopilot>,
     map: Res<crate::map::ActiveMap>,
+    taxi: Res<crate::taxi::Taximeter>,
     mut q: Query<&mut Text, With<Hud>>,
 ) {
     let Ok(mut text) = q.single_mut() else {
@@ -1591,8 +1593,7 @@ fn update_hud(
 
     // Engine/fuel status, only for airframes with the fuel model (Rust C172):
     // the cold-start flow's feedback line — master, engine state and tanks.
-    if state.fuel_capacity_lb > 0.0 {
-        let master = if state.master_on {
+    if state.fuel_capacity_lb > 0.0 {        let master = if state.master_on {
             "MASTER  ON "
         } else {
             "MASTER -OFF"
@@ -1608,6 +1609,14 @@ fn update_hud(
             "\n{}  {eng:>7}\nFUEL L {:>4.0} lb   R {:>4.0} lb{tag}",
             master, state.fuel_left_lb, state.fuel_right_lb,
         ));
+    }
+
+    // Apron taxi guidance: the live offset while rolling the lead-in line,
+    // the frozen grade once parked (see taxi.rs).
+    if let Some(offset) = taxi.offset {
+        out.push_str(&format!("\nTAXI {offset:+.1} m"));
+    } else if let Some((avg, grade)) = taxi.grade {
+        out.push_str(&format!("\nTAXI AVG {avg:.1} m  {}", grade.label()));
     }
 
     // Optional control-input overlay. A real cockpit hides this because the

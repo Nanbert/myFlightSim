@@ -508,6 +508,25 @@ fn read_input(
         sim.model.set("fcs/speedbrake-cmd-norm", 0.0);
         sim.model.set("fcs/reverse-cmd-norm", 0.0);
     }
+
+    // Global: P respawns on the apron stand (home field only) — taxi school.
+    if keys.just_pressed(KeyCode::KeyP) {
+        if map.0.is_some() {
+            // Out on a mission map there is no stand; park where we are.
+            sim.reset_ground();
+        } else {
+            sim.reset_stand();
+            let mut rebuilt = Bindings::for_aircraft(&sim.name, &config.keymap(&sim.name));
+            if arcade {
+                rebuilt.enable_arcade(&sim.name);
+            }
+            *bindings = rebuilt;
+            ap.reset();
+            mcp.reset();
+            sim.model.set("fcs/speedbrake-cmd-norm", 0.0);
+            sim.model.set("fcs/reverse-cmd-norm", 0.0);
+        }
+    }
 }
 
 /// Flip a 0/1 property (`1 - current`), used by the gear and TVC toggles.

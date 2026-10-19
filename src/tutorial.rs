@@ -182,6 +182,17 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  The status block always shows the wind: x.kt levels blow at");
     p.line("  300 deg, so runway 36 takes 0.87 x kt from the left.");
 
+    p.heading("TAXI (GAME, PRESS P)");
+    p.line("  P spawns you on the apron stand, nose west on the yellow");
+    p.line("  lead-in line - warm and running, or cold and dark with");
+    p.line("  ENGINE = COLD, which is the full taxi drill from the ramp.");
+    p.line("  Follow the line west, join the taxiway, hold short of 36 at");
+    p.line("  the yellow bars, then line up. At night the blue edge lights");
+    p.line("  tell the same story the paint does. Rolling near the line,");
+    p.line("  the status block shows TAXI +/- m; come to rest on the paint");
+    p.line("  within a metre and the meter grades the stop GOOD. The pump");
+    p.line("  lane branches off the lead-in line to the refueller.");
+
     p.heading("COLD START (GAME, SETTINGS ENGINE = COLD)");
     p.line("  ENGINE AUTO (the default) spawns running at 60% power, as the");
     p.line("  tutorial flow below assumes. ENGINE = COLD hands you a truly");
@@ -276,9 +287,6 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  TODO OBS course selector: the CDI card follows the beam");
     p.line("       course instead of the pilot-set one.");
     p.line("  TODO stall warning, spins and carb icing.");
-    p.line("  TODO taxi guidance: spawn on the apron, follow the blue");
-    p.line("       edge lights, park on the centreline and get scored");
-    p.line("       next to the pump.");
     p.line("  TODO ATC, traffic and a real navigation stack.");
 
     p.0

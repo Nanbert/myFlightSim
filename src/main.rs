@@ -22,6 +22,7 @@ mod menu;
 mod pfd;
 mod sim;
 mod sky;
+mod taxi;
 mod tutorial;
 mod vapor;
 mod view;
@@ -84,6 +85,7 @@ fn main() {
         .add_plugins(aerodrome::AerodromePlugin)
         .add_plugins(landing::LandingPlugin)
         .add_plugins(checklist::ChecklistPlugin)
+        .add_plugins(taxi::TaxiPlugin)
         .add_plugins(lights::LightsPlugin)
         .init_resource::<ShotTimer>()
         .add_systems(Update, auto_shot)

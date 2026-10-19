@@ -1040,6 +1040,9 @@ fn start_flight(
         // Seat the IC with arcade dynamics already on, so the trim solver
         // seats the arcade jet rather than the realistic one.
         sim.reset_air(map.spawn_alt_ft(), map.spawn_kts());
+    } else if std::env::var("RAMP").is_ok_and(|v| v == "1") {
+        // Dev hook alongside AIRBORNE: the taxi-lesson spawn (`P`).
+        sim.reset_stand();
     } else {
         sim.reset_ground();
     }

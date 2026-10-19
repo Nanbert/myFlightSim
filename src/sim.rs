@@ -116,6 +116,34 @@ impl Sim {
         sim
     }
 
+    /// Parked on the apron stand, at rest, nose west along the lead-in line.
+    /// The `P` ramp spawn: taxi school starts here, with the yellow paint (and
+    /// at night the blue edge lights) leading out to the runway. Engine state
+    /// follows the ENGINE setting, like every other ground spawn.
+    ///
+    /// Like `reset_final` this keeps the aerodrome's own anchor (app origin 0)
+    /// — the stand coordinates are scenery-frame positions, and re-anchoring
+    /// would carry the runway along with us.
+    pub fn reset_stand(&mut self) {
+        self.model.set("ic/vc-kts", 0.0);
+        self.model.set("ic/h-sl-ft", self.model.rest_h_ft());
+        self.model.set("ic/psi-true-deg", 270.0);
+        let north_m = crate::aerodrome::STAND_Z as f64;
+        let east_m = crate::aerodrome::STAND_X as f64;
+        self.model
+            .set("ic/lat-gc-deg", -(north_m / 0.3048) / fdm::FT_PER_DEG_LAT);
+        self.model
+            .set("ic/long-gc-deg", (east_m / 0.3048) / fdm::FT_PER_DEG_LAT);
+        self.model.apply_ic();
+        // Gear down on the ground — snapped, not commanded (see reset_ground).
+        self.model.set("gear/gear-cmd-norm", 1.0);
+        self.model.set("gear/gear-pos-norm", 1.0);
+        self.light_engine();
+        self.reset_hud_memory();
+        self.origin_lat = 0.0;
+        self.origin_lon = 0.0;
+    }
+
     /// Parked on the runway at the threshold, at rest, pointing north.
     pub fn reset_ground(&mut self) {
         self.model.set("ic/vc-kts", 0.0);
