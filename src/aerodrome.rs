@@ -17,13 +17,13 @@ use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim, StartFlight};
 
 /// Runway 36/18, metres.
-const RUNWAY_LENGTH: f32 = 1200.0;
-const RUNWAY_WIDTH: f32 = 30.0;
+pub(crate) const RUNWAY_LENGTH: f32 = 1200.0;
+pub(crate) const RUNWAY_WIDTH: f32 = 30.0;
 /// Threshold 36 sits well ahead of the aircraft's reset point (z = 0), so the
 /// starting view is not dominated by the threshold bars.
-const THRESHOLD_Z: f32 = 140.0;
+pub(crate) const THRESHOLD_Z: f32 = 140.0;
 const RUNWAY_CENTER_Z: f32 = THRESHOLD_Z - RUNWAY_LENGTH * 0.5;
-const RUNWAY_END_Z: f32 = THRESHOLD_Z - RUNWAY_LENGTH;
+pub(crate) const RUNWAY_END_Z: f32 = THRESHOLD_Z - RUNWAY_LENGTH;
 
 /// Taxiway and apron, east of the runway.
 const TAXI_X: f32 = 45.0;
@@ -34,7 +34,24 @@ const APRON_Z: f32 = -150.0;
 
 /// PAPI units sit left of runway 36, 300 m down the runway from the threshold.
 const PAPI_Z: f32 = THRESHOLD_Z - 300.0;
+/// And the reciprocal set, 300 m in from the 18 threshold.
+const PAPI_18_Z: f32 = RUNWAY_END_Z + 300.0;
 const PAPI_ANGLES: [f32; 4] = [3.5, 3.17, 2.83, 2.5];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PapiSide {
+    /// Runway 36: approach from +Z.
+    South,
+    /// Runway 18: approach from -Z.
+    North,
+}
+
+#[derive(Component)]
+struct PapiLight {
+    angle_deg: f32,
+    side: PapiSide,
+    z: f32,
+}
 
 const GRASS_Y: f32 = -0.04;
 const PAVE_Y: f32 = 0.0;
@@ -44,11 +61,6 @@ const PAINT_Y: f32 = 0.015;
 struct PapiMats {
     red: Handle<StandardMaterial>,
     white: Handle<StandardMaterial>,
-}
-
-#[derive(Component)]
-struct PapiLight {
-    angle_deg: f32,
 }
 
 #[derive(Component)]
@@ -293,6 +305,15 @@ fn spawn_aerodrome(
             z,
             PAINT_Y + 0.002,
         );
+        // Runway holding position: two solid lines, then two dashed lines.
+        for x in [18.0, 19.5] {
+            slab(&mut commands, &yellow, 0.3, 12.0, x, z, PAINT_Y + 0.004);
+        }
+        for x in [22.0, 23.5] {
+            for dz in [-4.0, 0.0, 4.0] {
+                slab(&mut commands, &yellow, 0.3, 3.0, x, z + dz, PAINT_Y + 0.004);
+            }
+        }
     }
 
     // --- hangar and buildings ------------------------------------------
@@ -341,6 +362,15 @@ fn spawn_aerodrome(
         DespawnOnExit(AppState::Flying),
     ));
 
+    // A fuel pump on the apron.
+    let pump = box_mesh(&mut meshes, 1.2, 2.0, 0.9);
+    commands.spawn((
+        Mesh3d(pump),
+        MeshMaterial3d(orange.clone()),
+        Transform::from_xyz(90.0, 1.0, APRON_Z - 40.0),
+        DespawnOnExit(AppState::Flying),
+    ));
+
     // --- runway edge / threshold lights ---------------------------------
     let light_mesh = meshes.add(Cuboid::new(0.28, 0.28, 0.28));
     for x in [-16.2, 16.2] {
@@ -366,10 +396,11 @@ fn spawn_aerodrome(
         }
     }
 
-    // --- PAPI, left of runway 36 ---------------------------------------
+    // --- PAPI, both directions ------------------------------------------
     let papi_housing = meshes.add(Cuboid::new(0.9, 0.5, 0.5));
     let papi_lamp = meshes.add(Cuboid::new(0.7, 0.35, 0.12));
     for (i, angle) in PAPI_ANGLES.iter().enumerate() {
+        // Runway 36: left of the approach is -X; the lamps face +Z.
         let x = -30.0 - i as f32 * 9.0;
         commands.spawn((
             Mesh3d(papi_housing.clone()),
@@ -378,10 +409,35 @@ fn spawn_aerodrome(
             DespawnOnExit(AppState::Flying),
         ));
         commands.spawn((
-            PapiLight { angle_deg: *angle },
+            PapiLight {
+                angle_deg: *angle,
+                side: PapiSide::South,
+                z: PAPI_Z,
+            },
             Mesh3d(papi_lamp.clone()),
             MeshMaterial3d(red.clone()),
             Transform::from_xyz(x, 0.28, PAPI_Z + 0.30),
+            DespawnOnExit(AppState::Flying),
+        ));
+    }
+    for (i, angle) in PAPI_ANGLES.iter().enumerate() {
+        // Runway 18: left of the approach is +X; the lamps face -Z.
+        let x = 30.0 + (3 - i) as f32 * 9.0;
+        commands.spawn((
+            Mesh3d(papi_housing.clone()),
+            MeshMaterial3d(dark.clone()),
+            Transform::from_xyz(x, 0.25, PAPI_18_Z),
+            DespawnOnExit(AppState::Flying),
+        ));
+        commands.spawn((
+            PapiLight {
+                angle_deg: *angle,
+                side: PapiSide::North,
+                z: PAPI_18_Z,
+            },
+            Mesh3d(papi_lamp.clone()),
+            MeshMaterial3d(red.clone()),
+            Transform::from_xyz(x, 0.28, PAPI_18_Z - 0.30),
             DespawnOnExit(AppState::Flying),
         ));
     }
@@ -406,6 +462,14 @@ fn spawn_aerodrome(
     ));
 }
 
+/// Distance from a PAPI unit to the aircraft, measured along the approach.
+fn approach_distance(side: PapiSide, light_z: f32, aircraft_z: f32) -> f32 {
+    match side {
+        PapiSide::South => aircraft_z - light_z,
+        PapiSide::North => light_z - aircraft_z,
+    }
+}
+
 /// PAPI: white above the unit's angle, red below. On a 3-degree approach the
 /// four units read 2 red / 2 white.
 fn update_papi(
@@ -414,7 +478,7 @@ fn update_papi(
     mut q: Query<(&PapiLight, &mut MeshMaterial3d<StandardMaterial>)>,
 ) {
     for (light, mut material) in &mut q {
-        let distance = state.pos.z - PAPI_Z;
+        let distance = approach_distance(light.side, light.z, state.pos.z);
         let angle = if distance > 1.0 {
             (state.pos.y / distance).atan().to_degrees()
         } else {
@@ -438,9 +502,35 @@ fn update_windsock(time: Res<Time>, mut q: Query<&mut Transform, With<Windsock>>
     }
 }
 
+/// Distance from the selected threshold, along the runway, in metres. `heading`
+/// is the aircraft's true heading: northbound uses the 36 threshold, southbound
+/// uses the 18 threshold.
+pub(crate) fn runway_along(heading_deg: f32, z: f32) -> f32 {
+    if heading_deg.to_radians().cos() >= 0.0 {
+        THRESHOLD_Z - z
+    } else {
+        z - RUNWAY_END_Z
+    }
+}
+
+/// Lateral distance from the centreline, metres.
+pub(crate) fn runway_lateral(x: f32) -> f32 {
+    x.abs()
+}
+
+/// Whether a world point is on the paved surface (with a small tolerance).
+pub(crate) fn on_runway(x: f32, z: f32) -> bool {
+    runway_lateral(x) <= RUNWAY_WIDTH * 0.5 + 1.0
+        && z <= THRESHOLD_Z + 1.0
+        && z >= RUNWAY_END_Z - 1.0
+}
+
 #[cfg(test)]
 mod tests {
-    use super::PAPI_ANGLES;
+    use super::{
+        approach_distance, on_runway, runway_along, PapiSide, PAPI_ANGLES, RUNWAY_END_Z,
+        THRESHOLD_Z,
+    };
 
     fn white(angle: f32, threshold: f32) -> bool {
         angle >= threshold
@@ -456,5 +546,31 @@ mod tests {
     fn papi_goes_all_white_high_and_all_red_low() {
         assert!(PAPI_ANGLES.iter().all(|a| white(5.0, *a)));
         assert!(PAPI_ANGLES.iter().all(|a| !white(1.5, *a)));
+    }
+
+    #[test]
+    fn runway_along_uses_the_active_threshold() {
+        // Runway 36: threshold at +THRESHOLD_Z, aiming point 300 m in.
+        assert!((runway_along(0.0, THRESHOLD_Z) - 0.0).abs() < 1e-3);
+        assert!((runway_along(0.0, THRESHOLD_Z - 300.0) - 300.0).abs() < 1e-3);
+        // Runway 18: threshold at RUNWAY_END_Z, aiming point 300 m in.
+        assert!((runway_along(180.0, RUNWAY_END_Z) - 0.0).abs() < 1e-3);
+        assert!((runway_along(180.0, RUNWAY_END_Z + 300.0) - 300.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn runway_contains_the_pavement_and_rejects_the_grass() {
+        assert!(on_runway(0.0, 0.0));
+        assert!(on_runway(14.0, -300.0));
+        assert!(!on_runway(20.0, -300.0));
+        assert!(!on_runway(0.0, THRESHOLD_Z + 10.0));
+    }
+
+    #[test]
+    fn papi_distance_is_positive_on_the_approach_side() {
+        // Runway 36: aircraft south of the 36 PAPI.
+        assert!(approach_distance(PapiSide::South, -160.0, 1000.0) > 0.0);
+        // Runway 18: aircraft north of the 18 PAPI.
+        assert!(approach_distance(PapiSide::North, -760.0, -2000.0) > 0.0);
     }
 }

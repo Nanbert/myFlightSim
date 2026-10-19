@@ -11,6 +11,7 @@ mod fx;
 mod gauge;
 mod hud;
 mod input;
+mod landing;
 mod lens;
 mod map;
 mod mcp_ui;
@@ -78,6 +79,7 @@ fn main() {
         .add_plugins(controls::ControlPlugin)
         .add_plugins(assist::AssistPlugin)
         .add_plugins(aerodrome::AerodromePlugin)
+        .add_plugins(landing::LandingPlugin)
         .init_resource::<ShotTimer>()
         .add_systems(Update, auto_shot)
         .run();

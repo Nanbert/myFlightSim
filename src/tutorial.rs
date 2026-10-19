@@ -168,7 +168,8 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  PAPI is left of the runway: 2 red / 2 white on a 3-degree");
     p.line("  path, all white high, all red low. The windsock is on the");
     p.line("  right. Taxiway, apron, hangar and tower are east of the runway.");
-    p.line("  Landing scoring is not modelled yet; it is the next step.");
+    p.line("  Both 36 and 18 have PAPI. After touchdown a report card shows");
+    p.line("  rate, centreline, speed, point, bank, bounces and a 0-100 score.");
 
     p.heading("FIRST FLIGHT (GAME)");
     p.line("  1. You start parked on the runway with 60% power. Hold Ctrl");
