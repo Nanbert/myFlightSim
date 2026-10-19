@@ -6,17 +6,20 @@
 //!
 //! Navigation: Left/Right switch the top row, Down/Up move focus between the top
 //! row and a sub-row, Enter activates, Escape closes a page / pops the focus.
+//! The aircraft TUTORIAL page scrolls with Up/Down (one line) and PgUp/PgDn
+//! (one screen).
 
 use bevy::prelude::*;
 use bevy::text::FontSize;
 
 use crate::aircraft_profile::{self, Action, ToggleAction};
 use crate::app_state::AppState;
+use crate::autopilot::{Autopilot, Mcp};
 use crate::config::{self, ConfigSink, GameConfig, Keymap};
 use crate::input::Bindings;
-use crate::autopilot::{Autopilot, Mcp};
 use crate::map::{self, MapId, PendingMission};
 use crate::sim::{RenderPose, Sim};
+use crate::tutorial;
 use crate::view::spawn_model_child;
 use crate::weather::Weather;
 
@@ -36,10 +39,34 @@ pub struct MenuAircraft {
 }
 
 pub const AIRCRAFT: [MenuAircraft; 4] = [
-    MenuAircraft { id: "c172p", label: "CESSNA 172", root_y: 1.4326, frame_dist: 16.0, frame_h: 1.6 },
-    MenuAircraft { id: "f22", label: "F-22", root_y: 1.6946, frame_dist: 24.0, frame_h: 2.0 },
-    MenuAircraft { id: "ah1s", label: "AH-1S", root_y: 1.8288, frame_dist: 22.0, frame_h: 2.4 },
-    MenuAircraft { id: "737", label: "737", root_y: 1.2446, frame_dist: 80.0, frame_h: 6.0 },
+    MenuAircraft {
+        id: "c172p",
+        label: "CESSNA 172",
+        root_y: 1.4326,
+        frame_dist: 16.0,
+        frame_h: 1.6,
+    },
+    MenuAircraft {
+        id: "f22",
+        label: "F-22",
+        root_y: 1.6946,
+        frame_dist: 24.0,
+        frame_h: 2.0,
+    },
+    MenuAircraft {
+        id: "ah1s",
+        label: "AH-64D",
+        root_y: 1.8288,
+        frame_dist: 24.0,
+        frame_h: 2.8,
+    },
+    MenuAircraft {
+        id: "737",
+        label: "737",
+        root_y: 1.2446,
+        frame_dist: 80.0,
+        frame_h: 6.0,
+    },
 ];
 /// Top-row entries after the aircraft: the arcade missions, global settings,
 /// then about.
@@ -50,8 +77,9 @@ const ABOUT_TOP: usize = AIRCRAFT.len() + 2;
 const TOP_COUNT: usize = AIRCRAFT.len() + EXTRA_TOP.len();
 /// The F-22's row, shown behind the MISSIONS entry.
 const F22_INDEX: usize = 1;
-/// Number of pooled sub-row slots (the widest sub-row: PLAY / INFO / SETTINGS).
-const SUB_SLOTS: usize = 3;
+/// Number of pooled sub-row slots (the widest sub-row:
+/// PLAY / TUTORIAL / INFO / SETTINGS).
+const SUB_SLOTS: usize = 4;
 /// World spacing between parked showcase models (m).
 const SPACING: f32 = 48.0;
 
@@ -81,6 +109,8 @@ enum Focus {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     About,
+    /// How to fly the selected aircraft, in the sim and in reality.
+    Tutorial,
     Info,
     Settings,
     /// The global, aircraft-independent settings page (weather, ...).
@@ -94,6 +124,13 @@ const SETTINGS_ROWS: usize = 1;
 #[derive(Resource, Default)]
 struct SettingsState {
     row: usize,
+}
+
+/// Scroll offset (in body lines) of the open aircraft tutorial. Reset whenever
+/// the page is opened or closed so each visit starts at the top.
+#[derive(Resource, Default)]
+struct TutorialState {
+    scroll: usize,
 }
 
 /// Cursor and capture mode for the per-aircraft keymap editor (the aircraft
@@ -144,11 +181,25 @@ fn has_flight_model_row(id: &str) -> bool {
     aircraft_profile::profile(id).has_arcade
 }
 
-/// Rows on the settings page: the flight-model switch (when present) plus the key
-/// slots. `editor.sel` indexes this whole list, so the key rows are offset by the
-/// header and `bind_key` never sees the synthetic row.
+/// C172-only keyboard-assist rows: bank hold and turn coordination.
+fn assist_row_count(id: &str) -> usize {
+    if aircraft_profile::normalized(id) == "c172p" {
+        2
+    } else {
+        0
+    }
+}
+
+/// Synthetic rows above the key slots (flight model + assists).
+fn synthetic_rows(id: &str) -> usize {
+    has_flight_model_row(id) as usize + assist_row_count(id)
+}
+
+/// Rows on the settings page: the flight-model switch (when present), the
+/// assist switches (C172), plus the key slots. `editor.sel` indexes this whole
+/// list, so key rows are offset by `synthetic_rows`.
 fn settings_row_count(id: &str, config: &GameConfig) -> usize {
-    editor_slots(id, &config.keymap(id)).len() + has_flight_model_row(id) as usize
+    editor_slots(id, &config.keymap(id)).len() + synthetic_rows(id)
 }
 
 /// Menu-navigation keys can never be bound, or the page would be unusable.
@@ -231,7 +282,7 @@ fn top_labels() -> [&'static str; TOP_COUNT] {
 fn sub_items(top: usize) -> &'static [&'static str] {
     match top {
         MISSIONS_TOP => &map::MAP_LABELS,
-        t if t < AIRCRAFT.len() => &["PLAY", "INFO", "SETTINGS"],
+        t if t < AIRCRAFT.len() => &["PLAY", "TUTORIAL", "INFO", "SETTINGS"],
         _ => &[],
     }
 }
@@ -251,10 +302,11 @@ impl Plugin for MenuPlugin {
             .init_resource::<MenuCamLook>()
             .init_resource::<SettingsState>()
             .init_resource::<EditorState>()
+            .init_resource::<TutorialState>()
             .add_systems(Startup, auto_start_mission)
             .add_systems(
                 OnEnter(AppState::Menu),
-                (enter_menu, spawn_hangar, setup_menu_ui).chain(),
+                (enter_menu, auto_start_aircraft, spawn_hangar, setup_menu_ui).chain(),
             )
             // `start_flight` must run before the mesh spawns, so the root picks
             // up the newly selected model. The set also lets other plugins'
@@ -293,10 +345,31 @@ fn auto_start_mission(mut pending: ResMut<PendingMission>, mut next: ResMut<Next
     }
 }
 
+/// Development hook: `AUTOFLY=ah1s` (or `ah64d`) boots straight into that
+/// aircraft, so screenshots and headless checks don't need to drive the menu.
+/// `COCKPIT=1` additionally opens the pilot-eye view.
+fn auto_start_aircraft(mut sel: ResMut<MenuSelection>, mut next: ResMut<NextState<AppState>>) {
+    let Ok(id) = std::env::var("AUTOFLY") else {
+        return;
+    };
+    let id = aircraft_profile::normalized(&id);
+    if let Some(i) = AIRCRAFT.iter().position(|a| a.id == id) {
+        sel.top = i;
+        sel.focus = Focus::Top;
+        sel.sub = 0;
+        sel.page = None;
+        next.set(AppState::Flying);
+    }
+}
+
 /// Select the aircraft matching the loaded sim (startup default or the one we
 /// just flew) and reset the cursor.
 fn enter_menu(mut sel: ResMut<MenuSelection>, sim: Res<Sim>) {
-    let cur = if sim.name == "b737" { "737" } else { sim.name.as_str() };
+    let cur = if sim.name == "b737" {
+        "737"
+    } else {
+        sim.name.as_str()
+    };
     let top = AIRCRAFT.iter().position(|a| a.id == cur).unwrap_or(0);
     *sel = MenuSelection {
         top,
@@ -439,8 +512,15 @@ fn update_menu_ui(
     settings: Res<SettingsState>,
     config: Res<GameConfig>,
     editor: Res<EditorState>,
-    mut tops: Query<(&TopLabel, &mut Text, &mut TextColor), (Without<SubLabel>, Without<PanelText>)>,
-    mut subs: Query<(&SubLabel, &mut Text, &mut TextColor), (Without<TopLabel>, Without<PanelText>)>,
+    tutorial_state: Res<TutorialState>,
+    mut tops: Query<
+        (&TopLabel, &mut Text, &mut TextColor),
+        (Without<SubLabel>, Without<PanelText>),
+    >,
+    mut subs: Query<
+        (&SubLabel, &mut Text, &mut TextColor),
+        (Without<TopLabel>, Without<PanelText>),
+    >,
     mut panel: Query<&mut Node, With<PanelRoot>>,
     mut ptext: Query<&mut Text, (With<PanelText>, Without<TopLabel>, Without<SubLabel>)>,
 ) {
@@ -488,6 +568,11 @@ fn update_menu_ui(
         text.0 = match sel.page {
             Some(Page::Global) => global_settings_text(&weather, &settings),
             Some(Page::Settings) => editor_text(sel.aircraft_id(), &config, &editor),
+            Some(Page::Tutorial) => tutorial::render(
+                sel.aircraft_id(),
+                &config.keymap(sel.aircraft_id()),
+                tutorial_state.scroll,
+            ),
             Some(p) => page_text(p, &sel),
             None => String::new(),
         };
@@ -500,16 +585,33 @@ fn update_menu_ui(
 fn editor_text(id: &str, config: &GameConfig, editor: &EditorState) -> String {
     let slots = editor_slots(id, &config.keymap(id));
     let header = has_flight_model_row(id) as usize;
-    let sel = editor.sel.min((header + slots.len()).saturating_sub(1));
+    let synth = synthetic_rows(id);
+    let sel = editor.sel.min((synth + slots.len()).saturating_sub(1));
 
     let mut out = format!("{} - SETTINGS\n\n", aircraft_label(id));
     if header == 1 {
         let cursor = if sel == 0 { ">" } else { " " };
-        let model = if config.arcade(id) { "Arcade" } else { "Realistic" };
+        let model = if config.arcade(id) {
+            "Arcade"
+        } else {
+            "Realistic"
+        };
         out.push_str(&format!("{cursor} {:<10} < {model} >\n", "flight model"));
     }
+    if assist_row_count(id) > 0 {
+        let a = config.assists(id);
+        for (i, (label, on)) in [("BANK HOLD", a.bank_hold), ("TURN COORD", a.turn_coord)]
+            .iter()
+            .enumerate()
+        {
+            let row = header + i;
+            let cursor = if row == sel { ">" } else { " " };
+            let value = if *on { "ON" } else { "OFF" };
+            out.push_str(&format!("{cursor} {label:<12} < {value} >\n"));
+        }
+    }
     for (i, (_, label, key)) in slots.iter().enumerate() {
-        let row = header + i;
+        let row = synth + i;
         let cursor = if row == sel { ">" } else { " " };
         let shown = if editor.capturing && row == sel {
             "...".to_owned()
@@ -522,7 +624,7 @@ fn editor_text(id: &str, config: &GameConfig, editor: &EditorState) -> String {
     out.push('\n');
     if editor.capturing {
         out.push_str("Press a key to bind   [Esc] cancel\n");
-    } else if header == 1 && sel == 0 {
+    } else if sel < synth {
         out.push_str("[Up/Down] select   [Left/Right] change   [Esc] close\n");
     } else {
         out.push_str("[Up/Down] select   [Enter] rebind   [Esc] close\n");
@@ -549,7 +651,10 @@ fn global_settings_text(weather: &Weather, settings: &SettingsState) -> String {
     for i in 0..SETTINGS_ROWS {
         let cursor = if i == settings.row { ">" } else { " " };
         match i {
-            0 => out.push_str(&format!("{cursor} WEATHER        < {} >\n", weather.label())),
+            0 => out.push_str(&format!(
+                "{cursor} WEATHER        < {} >\n",
+                weather.label()
+            )),
             _ => {}
         }
     }
@@ -564,16 +669,17 @@ fn page_text(page: Page, sel: &MenuSelection) -> String {
         Page::About => format!(
             "myFlightSim\n\n\
              A pure-Rust flight dynamics model driving Bevy-rendered aircraft.\n\
-             The Cessna 172, F-22, AH-1S and 737 fly the same neutral property bus,\n\
+             The Cessna 172, F-22, AH-64D and 737 fly the same neutral property bus,\n\
              with a JSBSim backend available as a drop-in alternative.\n\n\
              Developer: Nanbert{close}"
         ),
         // The built-in font is ASCII-only, so no em dashes here (they render as
         // missing-glyph boxes).
         Page::Info => format!("{label} - INFO\n\nAircraft info coming soon.{close}"),
-        // Rendered by `editor_text` / `global_settings_text`, which need live
-        // state; `page_text` never sees these.
-        Page::Settings | Page::Global => String::new(),
+        // Rendered by `tutorial::render`, `editor_text` and
+        // `global_settings_text`, which need live state; `page_text` never sees
+        // these.
+        Page::Tutorial | Page::Settings | Page::Global => String::new(),
     }
 }
 
@@ -585,6 +691,7 @@ fn menu_input(
     mut weather: ResMut<Weather>,
     mut settings: ResMut<SettingsState>,
     mut editor: ResMut<EditorState>,
+    mut tutorial_state: ResMut<TutorialState>,
     mut config: ResMut<GameConfig>,
     mut pending: ResMut<PendingMission>,
     sink: Res<ConfigSink>,
@@ -627,6 +734,7 @@ fn menu_input(
             Page::Settings => {
                 let id = sel.aircraft_id();
                 let header = has_flight_model_row(id) as usize;
+                let synth = synthetic_rows(id);
                 let n = settings_row_count(id, &config).max(1);
                 editor.sel = editor.sel.min(n - 1);
 
@@ -645,14 +753,35 @@ fn menu_input(
                 } else if keys.just_pressed(KeyCode::ArrowDown) {
                     editor.sel = (editor.sel + 1) % n;
                     editor.msg.clear();
-                } else if editor.sel == 0 && header == 1 {
-                    // The flight-model row: Left/Right flip it, Enter does not
-                    // rebind. Persisted so the choice survives a restart.
+                } else if editor.sel < synth {
+                    // Synthetic rows: the flight-model switch or one of the
+                    // C172 assists. Left/Right change; Enter is not a rebind.
                     let dir = keys.just_pressed(KeyCode::ArrowRight) as isize
                         - keys.just_pressed(KeyCode::ArrowLeft) as isize;
                     if dir != 0 {
-                        let on = !config.arcade(id);
-                        config.set_arcade(id, on);
+                        if editor.sel == 0 && header == 1 {
+                            let on = !config.arcade(id);
+                            config.set_arcade(id, on);
+                        } else {
+                            let assist = editor.sel.saturating_sub(header);
+                            let a = config.assists(id);
+                            match assist {
+                                0 => {
+                                    config.set_bank_hold(id, !a.bank_hold);
+                                    editor.msg = format!(
+                                        "BANK HOLD {}",
+                                        if a.bank_hold { "OFF" } else { "ON" }
+                                    );
+                                }
+                                _ => {
+                                    config.set_turn_coord(id, !a.turn_coord);
+                                    editor.msg = format!(
+                                        "TURN COORD {}",
+                                        if a.turn_coord { "OFF" } else { "ON" }
+                                    );
+                                }
+                            }
+                        }
                         config::save(&config, &sink);
                     }
                     if esc {
@@ -663,6 +792,34 @@ fn menu_input(
                     editor.msg.clear();
                 } else if esc {
                     sel.page = None;
+                }
+            }
+            Page::Tutorial => {
+                let id = sel.aircraft_id();
+                let max = tutorial::max_scroll(id, &config.keymap(id));
+                let mut scroll = tutorial_state.scroll;
+                if keys.just_pressed(KeyCode::ArrowDown) {
+                    scroll += 1;
+                }
+                if keys.just_pressed(KeyCode::ArrowUp) {
+                    scroll = scroll.saturating_sub(1);
+                }
+                if keys.just_pressed(KeyCode::PageDown) {
+                    scroll += tutorial::ROWS;
+                }
+                if keys.just_pressed(KeyCode::PageUp) {
+                    scroll = scroll.saturating_sub(tutorial::ROWS);
+                }
+                if keys.just_pressed(KeyCode::Home) {
+                    scroll = 0;
+                }
+                if keys.just_pressed(KeyCode::End) {
+                    scroll = max;
+                }
+                tutorial_state.scroll = scroll.min(max);
+                if enter || esc {
+                    sel.page = None;
+                    tutorial_state.scroll = 0;
                 }
             }
             Page::Info | Page::About => {
@@ -728,6 +885,10 @@ fn menu_input(
             }
             Focus::Sub => match sub_items(sel.top).get(sel.sub).copied() {
                 Some("PLAY") => next.set(AppState::Flying),
+                Some("TUTORIAL") => {
+                    tutorial_state.scroll = 0;
+                    sel.page = Some(Page::Tutorial);
+                }
                 Some("INFO") => sel.page = Some(Page::Info),
                 Some("SETTINGS") => {
                     sel.page = Some(Page::Settings);
@@ -764,11 +925,11 @@ fn bind_key(
     }
 
     let slots = editor_slots(id, &config.keymap(id));
-    // The settings page may carry a flight-model row above the key slots; the
-    // cursor already excludes it (a capture can only target a key row).
+    // The settings page may carry synthetic rows above the key slots; the
+    // cursor already excludes them (a capture can only target a key row).
     let sel = editor
         .sel
-        .saturating_sub(has_flight_model_row(id) as usize)
+        .saturating_sub(synthetic_rows(id))
         .min(slots.len().saturating_sub(1));
     let victim = slots
         .iter()
@@ -832,9 +993,10 @@ fn start_flight(
         *sim = Sim::new(id);
     }
     // Arcade is the mission's baseline, and the per-aircraft setting the
-    // player saved decides for every other flight. Only the F-22 reads the
-    // property; every other model ignores it.
-    let arcade = mission.is_some() || config.arcade(id);
+    // player saved decides for every other flight. The F-22 and the AH-64D
+    // read the property; every other model ignores it.
+    let arcade =
+        mission.is_some() || config.arcade(id) || std::env::var("ARCADE").is_ok_and(|v| v == "1");
     sim.model.set("fcs/arcade-enable", arcade as i32 as f64);
     if let Some(map) = mission {
         // Seat the IC with arcade dynamics already on, so the trim solver
@@ -842,6 +1004,14 @@ fn start_flight(
         sim.reset_air(map.spawn_alt_ft(), map.spawn_kts());
     } else {
         sim.reset_ground();
+    }
+    // Development hooks for screenshots: start airborne and optionally engage
+    // the AH-64D auto-hover, without having to drive the menu/keys.
+    if std::env::var("AIRBORNE").is_ok() {
+        sim.reset_air(1500.0, 60.0);
+    }
+    if std::env::var("AHOVER").is_ok() {
+        sim.model.set("fcs/heli-hover-enable", 1.0);
     }
     let mut controls = Bindings::for_aircraft(id, &config.keymap(id));
     if arcade {
@@ -882,12 +1052,7 @@ fn menu_camera(
             // eye sits on the -Z side.
             let (az, el) = (0.5_f32, 0.30_f32);
             let horiz = a.frame_dist * el.cos();
-            let eye = p
-                + Vec3::new(
-                    horiz * az.sin(),
-                    a.frame_dist * el.sin(),
-                    -horiz * az.cos(),
-                );
+            let eye = p + Vec3::new(horiz * az.sin(), a.frame_dist * el.sin(), -horiz * az.cos());
             (eye, p + Vec3::Y * a.frame_h)
         }
         None => (WIDE_EYE, WIDE_TARGET),
@@ -924,20 +1089,34 @@ mod tests {
     }
 
     #[test]
+    fn aircraft_subrows_offer_play_tutorial_info_and_settings() {
+        for top in 0..AIRCRAFT.len() {
+            assert_eq!(
+                sub_items(top),
+                &["PLAY", "TUTORIAL", "INFO", "SETTINGS"],
+                "aircraft {top}"
+            );
+        }
+        // The pooled row must be wide enough for every sub-row.
+        assert!(SUB_SLOTS >= sub_items(0).len());
+    }
+
+    #[test]
     fn editor_lists_a_row_per_key_slot() {
         // c172p: 6 paired axes (12) + 2 brakes + 2 toggles.
         assert_eq!(editor_slots("c172p", &Keymap::default()).len(), 16);
-        // ah1s: 5 paired axes (10) + 2 toggles (rotor-trim, trim).
-        assert_eq!(editor_slots("ah1s", &Keymap::default()).len(), 12);
+        // ah1s: 5 paired axes (10) + 4 toggles (rotor-trim, trim, hover, balance).
+        assert_eq!(editor_slots("ah1s", &Keymap::default()).len(), 14);
         // 737: c172p's slots + autopilot, gear, and the six MCP toggles.
         assert_eq!(editor_slots("737", &Keymap::default()).len(), 24);
     }
 
     #[test]
-    fn only_the_f22_settings_page_gains_a_flight_model_row() {
+    fn arcade_capable_aircraft_gain_a_flight_model_row() {
         let config = GameConfig::default();
         // The row sits above the key slots, so the page has one more row.
         assert!(has_flight_model_row("f22"));
+        assert!(has_flight_model_row("ah1s"));
         assert_eq!(
             settings_row_count("f22", &config),
             editor_slots("f22", &Keymap::default()).len() + 1
@@ -956,12 +1135,20 @@ mod tests {
         // first key row (index 1, after the flight-model row) must land on
         // elevator+, not on some row off by one.
         let mut config = GameConfig::default();
-        let mut editor = EditorState { capturing: true, sel: 1, ..default() };
+        let mut editor = EditorState {
+            capturing: true,
+            sel: 1,
+            ..default()
+        };
         let s = sink();
         bind_key(&mut config, &s, &mut editor, "f22", KeyCode::Digit5);
 
         let b = Bindings::for_aircraft("f22", &config.keymap("f22"));
-        let elev = b.list.iter().find(|b| b.action == Action::Elevator).unwrap();
+        let elev = b
+            .list
+            .iter()
+            .find(|b| b.action == Action::Elevator)
+            .unwrap();
         assert_eq!(elev.pos, KeyCode::Digit5, "elevator+ takes the new key");
     }
 
@@ -984,9 +1171,49 @@ mod tests {
     }
 
     #[test]
+    fn the_c172_page_has_two_assist_rows_above_the_keys() {
+        let config = GameConfig::default();
+        assert_eq!(assist_row_count("c172p"), 2);
+        assert_eq!(assist_row_count("f22"), 0);
+        assert_eq!(
+            settings_row_count("c172p", &config),
+            editor_slots("c172p", &Keymap::default()).len() + 2
+        );
+
+        let editor = EditorState::default();
+        let text = editor_text("c172p", &config, &editor);
+        assert!(text.contains("BANK HOLD"), "{text}");
+        assert!(text.contains("TURN COORD"), "{text}");
+        assert!(text.contains("< OFF >"), "{text}");
+    }
+
+    #[test]
+    fn the_c172_assist_rows_do_not_shift_the_first_key_binding() {
+        let mut config = GameConfig::default();
+        let mut editor = EditorState {
+            capturing: true,
+            sel: 2, // after BANK HOLD and TURN COORD
+            ..default()
+        };
+        let s = sink();
+        bind_key(&mut config, &s, &mut editor, "c172p", KeyCode::Digit5);
+
+        let b = Bindings::for_aircraft("c172p", &config.keymap("c172p"));
+        let elev = b
+            .list
+            .iter()
+            .find(|b| b.action == Action::Elevator)
+            .unwrap();
+        assert_eq!(elev.pos, KeyCode::Digit5, "the assist rows must not offset");
+    }
+
+    #[test]
     fn binding_an_occupied_key_swaps_without_losing_or_duplicating() {
         let mut config = GameConfig::default();
-        let mut editor = EditorState { capturing: true, ..default() };
+        let mut editor = EditorState {
+            capturing: true,
+            ..default()
+        };
         let s = sink();
 
         // Row 0 is elevator+ (default S). Assign it aileron+'s default D.
@@ -1010,7 +1237,10 @@ mod tests {
     #[test]
     fn binding_to_a_free_key_keeps_the_old_one_released() {
         let mut config = GameConfig::default();
-        let mut editor = EditorState { capturing: true, ..default() };
+        let mut editor = EditorState {
+            capturing: true,
+            ..default()
+        };
         let s = sink();
 
         // Numpad5 is bindable (Digit5) but unused, so nothing is displaced.
@@ -1026,20 +1256,30 @@ mod tests {
     #[test]
     fn reserved_and_unbindable_keys_are_rejected() {
         let mut config = GameConfig::default();
-        let mut editor = EditorState { capturing: true, ..default() };
+        let mut editor = EditorState {
+            capturing: true,
+            ..default()
+        };
         let s = sink();
         let before = config.keymap("c172p");
 
         bind_key(&mut config, &s, &mut editor, "c172p", KeyCode::ArrowUp); // nav
         bind_key(&mut config, &s, &mut editor, "c172p", KeyCode::F12); // not in the table
-        assert_eq!(config.keymap("c172p"), before, "rejected keys change nothing");
+        assert_eq!(
+            config.keymap("c172p"),
+            before,
+            "rejected keys change nothing"
+        );
         assert!(!editor.msg.is_empty(), "a rejection is reported");
     }
 
     #[test]
     fn bindings_follow_the_edited_keymap() {
         let mut config = GameConfig::default();
-        let mut editor = EditorState { capturing: true, ..default() };
+        let mut editor = EditorState {
+            capturing: true,
+            ..default()
+        };
         let s = sink();
         // Move the 737's gear toggle.
         let rows = editor_slots("737", &config.keymap("737"));

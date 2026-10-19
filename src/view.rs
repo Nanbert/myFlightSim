@@ -11,6 +11,7 @@ use bevy::text::FontSize;
 use bevy::window::{CursorGrabMode, CursorOptions};
 use std::collections::{HashMap, HashSet};
 
+use crate::aircraft_profile;
 use crate::app_state::AppState;
 use crate::autopilot::Autopilot;
 use crate::input::Bindings;
@@ -83,17 +84,18 @@ fn model_spec(name: &str) -> ModelSpec {
             eye_yaw: 0.0,
             eye_pitch: 0.0,
         },
-        // Mi-24 Hind (AH-1S physics stand-in). Authored +Z-forward, so the same
-        // 180° yaw as the F-22 seats it on Bevy's -Z. `scale`/`drop` are fitted
-        // from the model's geometry (the whole tree is scaled 0.66 by its `Body`
-        // node; the skids sit ~0.037 model-units above the origin): drop =
-        // rest_h(6 ft) + 0.037·scale ≈ 1.87. Rotor spin lives in `drive_surfaces`.
+        // AH-64D Apache (AH-1S physics stand-in for now). The downloaded model
+        // is authored nose +X / up +Z, so it takes the F-22's +90° yaw. It is
+        // scaled 7.1× from the source units; `offset.z` puts the rotor mast on
+        // the FDM CG and `drop` seats the wheels at the AH-1S rest height
+        // (6 ft). `tools/prepare_apache.py` split the main/tail rotors out as
+        // `AH64_MainRotor` / `AH64_TailRotor` for `drive_surfaces`.
         "ah1s" => ModelSpec {
-            file: "mi-24_hind.glb",
-            scale: 1.0,
-            drop: 1.87,
-            offset: [0.0; 3],
-            yaw: std::f32::consts::PI,
+            file: "ah64d.glb",
+            scale: 7.1,
+            drop: -0.599,
+            offset: [0.0, 0.0, 1.917],
+            yaw: std::f32::consts::FRAC_PI_2,
             eye: None,
             eye_yaw: 0.0,
             eye_pitch: 0.0,
@@ -165,7 +167,24 @@ fn cockpit_spec(name: &str) -> Option<ModelSpec> {
         // with `examples/cockpit_eye_calib.rs`: the seat is forward enough that
         // the panel fills the view, with a slight right/level head-turn framing
         // the PFD and MCP together.
-        // `drop` lowers the section so the eye sits ~2.9 m above the runway.
+        // AH-64D pilot station. The cockpit GLB is authored eye-at-origin,
+        // nose +Z; `offset` is the pilot eye in the aircraft body frame
+        // (forward ~2 m of the rotor-mast CG, ~1 m above it), and the standard
+        // 180° yaw maps +Z onto the body -Z nose.
+        "ah1s" => Some(ModelSpec {
+            file: "ah64d_cockpit.glb",
+            scale: 1.0,
+            drop: 0.0,
+            offset: [0.0, 1.05, -2.0],
+            yaw: std::f32::consts::PI,
+            // Eye 0.18 m above the authored origin: enough to see the
+            // windscreen/skylights without craning, while the MPDs stay in
+            // view when looking down.
+            eye: Some([0.0, 0.18, 0.0]),
+            eye_yaw: 0.0,
+            eye_pitch: -5.0_f32.to_radians(),
+        }),
+        // `drop` lowers the 737 section so the eye sits ~2.9 m above the runway.
         "737" | "b737" => Some(ModelSpec {
             file: "b737_cockpit.glb",
             scale: 1.0,
@@ -228,25 +247,75 @@ enum SurfaceSrc {
 
 const C172_SURFACES: &[C172Surface] = &[
     // Rudder: hinge is swept back ~6° off vertical (per the measured axis).
-    C172Surface { node: "Cessna_Exterior_Body_MAT_0.008", hinge: [0.0, -16.254, 470.741], axis: [0.0, 0.9941, -0.1077], sign: 1.0, src: SurfaceSrc::Rudder },
+    C172Surface {
+        node: "Cessna_Exterior_Body_MAT_0.008",
+        hinge: [0.0, -16.254, 470.741],
+        axis: [0.0, 0.9941, -0.1077],
+        sign: 1.0,
+        src: SurfaceSrc::Rudder,
+    },
     // Elevators: hinge line along the span at the stabiliser trailing edge.
-    C172Surface { node: "Cessna_Exterior_Body_MAT_0.013", hinge: [0.0, -26.203, 452.426], axis: [1.0, 0.0, 0.0], sign: -1.0, src: SurfaceSrc::Elevator }, // left
-    C172Surface { node: "Cessna_Exterior_Body_MAT_0.012", hinge: [0.0, -26.206, 452.184], axis: [1.0, 0.0, 0.0], sign: -1.0, src: SurfaceSrc::Elevator }, // right
+    C172Surface {
+        node: "Cessna_Exterior_Body_MAT_0.013",
+        hinge: [0.0, -26.203, 452.426],
+        axis: [1.0, 0.0, 0.0],
+        sign: -1.0,
+        src: SurfaceSrc::Elevator,
+    }, // left
+    C172Surface {
+        node: "Cessna_Exterior_Body_MAT_0.012",
+        hinge: [0.0, -26.206, 452.184],
+        axis: [1.0, 0.0, 0.0],
+        sign: -1.0,
+        src: SurfaceSrc::Elevator,
+    }, // right
     // Ailerons (outboard) and flaps (inboard) on the wing trailing edge.
-    C172Surface { node: "Cessna_Exterior_Body_MAT_0.014", hinge: [0.0, -84.829, 41.878], axis: [1.0, 0.0, 0.0], sign: -1.0, src: SurfaceSrc::Aileron }, // left
-    C172Surface { node: "Cessna_Exterior_Body_MAT_0.015", hinge: [0.0, -84.463, 41.878], axis: [1.0, 0.0, 0.0], sign: 1.0, src: SurfaceSrc::Aileron },   // right
-    C172Surface { node: "Cessna_Exterior_Body_MAT_0.016", hinge: [0.0, -68.070, 56.418], axis: [1.0, 0.0, 0.0], sign: -1.0, src: SurfaceSrc::Flap },      // left
-    C172Surface { node: "Cessna_Exterior_Body_MAT_0.017", hinge: [0.0, -68.314, 58.158], axis: [1.0, 0.0, 0.0], sign: -1.0, src: SurfaceSrc::Flap },      // right
+    C172Surface {
+        node: "Cessna_Exterior_Body_MAT_0.014",
+        hinge: [0.0, -84.829, 41.878],
+        axis: [1.0, 0.0, 0.0],
+        sign: -1.0,
+        src: SurfaceSrc::Aileron,
+    }, // left
+    C172Surface {
+        node: "Cessna_Exterior_Body_MAT_0.015",
+        hinge: [0.0, -84.463, 41.878],
+        axis: [1.0, 0.0, 0.0],
+        sign: 1.0,
+        src: SurfaceSrc::Aileron,
+    }, // right
+    C172Surface {
+        node: "Cessna_Exterior_Body_MAT_0.016",
+        hinge: [0.0, -68.070, 56.418],
+        axis: [1.0, 0.0, 0.0],
+        sign: -1.0,
+        src: SurfaceSrc::Flap,
+    }, // left
+    C172Surface {
+        node: "Cessna_Exterior_Body_MAT_0.017",
+        hinge: [0.0, -68.314, 58.158],
+        axis: [1.0, 0.0, 0.0],
+        sign: -1.0,
+        src: SurfaceSrc::Flap,
+    }, // right
     // Propeller: spins about the disc normal (raw +Z) through the hub centre.
-    C172Surface { node: "Cessna_Exterior_Body_MAT_0.001", hinge: [0.0, 0.0, 0.0], axis: [0.0, 0.0, 1.0], sign: 1.0, src: SurfaceSrc::Prop },
+    C172Surface {
+        node: "Cessna_Exterior_Body_MAT_0.001",
+        hinge: [0.0, 0.0, 0.0],
+        axis: [0.0, 0.0, 1.0],
+        sign: 1.0,
+        src: SurfaceSrc::Prop,
+    },
 ];
 
-// --- AH-1S / Mi-24 rotor spin ---
-// Each rotor spins about its hub axis in the pivot node's LOCAL frame (found
-// from the mesh geometry: the main disc lies in XZ so its normal is local Y; the
-// tail disc lies in YZ so its normal is local X).
+// --- AH-64D rotor spin ---
+// Each rotor spins about its hub in the pivot node's LOCAL frame. The main
+// disc lies in the model XZ plane (normal local Y). The tail rotor is mounted
+// on the side of the fin: its disc lies in the model XY plane, so its normal is
+// local Z. The tail pivot is at y = +0.10 in model units, not on the fin
+// centreline; `tools/prepare_apache.py` puts the node origin there.
 const ROTOR_MAIN_AXIS: [f32; 3] = [0.0, 1.0, 0.0];
-const ROTOR_TAIL_AXIS: [f32; 3] = [1.0, 0.0, 0.0];
+const ROTOR_TAIL_AXIS: [f32; 3] = [0.0, 0.0, 1.0];
 /// Visual rotor-spin rate per RPM, same convention as `PROP_SPIN`. The rotor
 /// turns at ~324 rpm and the tail at ~1660, so the tail visibly outruns it.
 const ROTOR_SPIN: f32 = 0.04;
@@ -292,23 +361,113 @@ struct GearPart {
 /// missiles `Cube.068/069` are deliberately omitted.)
 const F22_GEAR: &[GearPart] = &[
     // Nose gear strut and its doors.
-    GearPart { name: "Empty.003_12", down_rot: [0.0, 0.0, 0.0, 1.0], up_rot: [-0.766, 0.0, 0.0, 0.643], down_trans: [0.0, 0.045, 0.466], up_trans: [0.0, 0.045, 0.466] },
-    GearPart { name: "Empty.004_16", down_rot: [0.0, 0.0, 0.0, 1.0], up_rot: [-0.200, 0.0, 0.0, 0.980], down_trans: [0.0, -0.042, 0.452], up_trans: [0.0, 0.055, 0.552] },
-    GearPart { name: "Empty.005_18", down_rot: [0.0, 0.0, 0.0, 1.0], up_rot: [-0.767, 0.0, 0.0, 0.642], down_trans: [0.0, 0.057, 0.426], up_trans: [0.0, 0.025, 0.441] },
-    GearPart { name: "Cube.048_91", down_rot: [0.0, 0.0, -0.468, 0.884], up_rot: [0.0, 0.0, 0.0, 1.0], down_trans: [-0.027, 0.032, 0.509], up_trans: [-0.027, 0.032, 0.509] },
-    GearPart { name: "Cube.049_92", down_rot: [0.0, 0.0, 0.468, 0.884], up_rot: [0.0, 0.0, 0.0, 1.0], down_trans: [0.027, 0.032, 0.509], up_trans: [0.027, 0.032, 0.509] },
+    GearPart {
+        name: "Empty.003_12",
+        down_rot: [0.0, 0.0, 0.0, 1.0],
+        up_rot: [-0.766, 0.0, 0.0, 0.643],
+        down_trans: [0.0, 0.045, 0.466],
+        up_trans: [0.0, 0.045, 0.466],
+    },
+    GearPart {
+        name: "Empty.004_16",
+        down_rot: [0.0, 0.0, 0.0, 1.0],
+        up_rot: [-0.200, 0.0, 0.0, 0.980],
+        down_trans: [0.0, -0.042, 0.452],
+        up_trans: [0.0, 0.055, 0.552],
+    },
+    GearPart {
+        name: "Empty.005_18",
+        down_rot: [0.0, 0.0, 0.0, 1.0],
+        up_rot: [-0.767, 0.0, 0.0, 0.642],
+        down_trans: [0.0, 0.057, 0.426],
+        up_trans: [0.0, 0.025, 0.441],
+    },
+    GearPart {
+        name: "Cube.048_91",
+        down_rot: [0.0, 0.0, -0.468, 0.884],
+        up_rot: [0.0, 0.0, 0.0, 1.0],
+        down_trans: [-0.027, 0.032, 0.509],
+        up_trans: [-0.027, 0.032, 0.509],
+    },
+    GearPart {
+        name: "Cube.049_92",
+        down_rot: [0.0, 0.0, 0.468, 0.884],
+        up_rot: [0.0, 0.0, 0.0, 1.0],
+        down_trans: [0.027, 0.032, 0.509],
+        up_trans: [0.027, 0.032, 0.509],
+    },
     // Main gear struts.
-    GearPart { name: "Cylinder.013_25", down_rot: [0.0, 0.0, 0.0, 1.0], up_rot: [0.0, 0.0, 0.869, 0.494], down_trans: [0.161, 0.037, -0.448], up_trans: [0.161, 0.037, -0.448] },
-    GearPart { name: "Cylinder.018_31", down_rot: [0.0, 0.0, 0.0, 1.0], up_rot: [0.0, 0.0, -0.869, 0.494], down_trans: [-0.161, 0.037, -0.448], up_trans: [-0.161, 0.037, -0.448] },
+    GearPart {
+        name: "Cylinder.013_25",
+        down_rot: [0.0, 0.0, 0.0, 1.0],
+        up_rot: [0.0, 0.0, 0.869, 0.494],
+        down_trans: [0.161, 0.037, -0.448],
+        up_trans: [0.161, 0.037, -0.448],
+    },
+    GearPart {
+        name: "Cylinder.018_31",
+        down_rot: [0.0, 0.0, 0.0, 1.0],
+        up_rot: [0.0, 0.0, -0.869, 0.494],
+        down_trans: [-0.161, 0.037, -0.448],
+        up_trans: [-0.161, 0.037, -0.448],
+    },
     // Main gear doors.
-    GearPart { name: "Cube.055_27", down_rot: [0.0, 0.0, 0.183, 0.983], up_rot: [0.0, 0.0, -0.494, 0.869], down_trans: [0.197, 0.041, -0.448], up_trans: [0.139, 0.066, -0.448] },
-    GearPart { name: "Cube.056_28", down_rot: [0.0, 0.0, 0.0, 1.0], up_rot: [0.0, 0.0, -0.667, 0.745], down_trans: [0.180, 0.089, -0.448], up_trans: [0.180, 0.089, -0.448] },
-    GearPart { name: "Cube.059_32", down_rot: [0.0, 0.0, 0.193, 0.981], up_rot: [0.0, 0.0, 0.783, 0.622], down_trans: [-0.197, 0.040, -0.448], up_trans: [-0.139, 0.067, -0.448] },
-    GearPart { name: "Cube.060_33", down_rot: [0.0, 0.0, -0.790, 0.614], up_rot: [0.0, 0.0, -0.214, 0.977], down_trans: [-0.179, 0.090, -0.448], up_trans: [-0.179, 0.090, -0.448] },
-    GearPart { name: "Cube.016_68", down_rot: [0.0, 0.0, 0.906, 0.423], up_rot: [0.0, 0.0, 0.0, 1.0], down_trans: [-0.172, 0.014, -0.444], up_trans: [-0.172, 0.014, -0.444] },
-    GearPart { name: "Cube.051_70", down_rot: [0.0, 0.0, -0.906, 0.423], up_rot: [0.0, 0.0, 0.0, 1.0], down_trans: [0.172, 0.014, -0.444], up_trans: [0.172, 0.014, -0.444] },
-    GearPart { name: "Cube.050_69", down_rot: [0.0, 0.0, -0.537, 0.843], up_rot: [0.0, 0.0, 0.0, 1.0], down_trans: [-0.300, 0.136, -0.420], up_trans: [-0.300, 0.136, -0.420] },
-    GearPart { name: "Cube.052_71", down_rot: [0.0, 0.0, 0.537, 0.843], up_rot: [0.0, 0.0, 0.0, 1.0], down_trans: [0.300, 0.136, -0.420], up_trans: [0.300, 0.136, -0.420] },
+    GearPart {
+        name: "Cube.055_27",
+        down_rot: [0.0, 0.0, 0.183, 0.983],
+        up_rot: [0.0, 0.0, -0.494, 0.869],
+        down_trans: [0.197, 0.041, -0.448],
+        up_trans: [0.139, 0.066, -0.448],
+    },
+    GearPart {
+        name: "Cube.056_28",
+        down_rot: [0.0, 0.0, 0.0, 1.0],
+        up_rot: [0.0, 0.0, -0.667, 0.745],
+        down_trans: [0.180, 0.089, -0.448],
+        up_trans: [0.180, 0.089, -0.448],
+    },
+    GearPart {
+        name: "Cube.059_32",
+        down_rot: [0.0, 0.0, 0.193, 0.981],
+        up_rot: [0.0, 0.0, 0.783, 0.622],
+        down_trans: [-0.197, 0.040, -0.448],
+        up_trans: [-0.139, 0.067, -0.448],
+    },
+    GearPart {
+        name: "Cube.060_33",
+        down_rot: [0.0, 0.0, -0.790, 0.614],
+        up_rot: [0.0, 0.0, -0.214, 0.977],
+        down_trans: [-0.179, 0.090, -0.448],
+        up_trans: [-0.179, 0.090, -0.448],
+    },
+    GearPart {
+        name: "Cube.016_68",
+        down_rot: [0.0, 0.0, 0.906, 0.423],
+        up_rot: [0.0, 0.0, 0.0, 1.0],
+        down_trans: [-0.172, 0.014, -0.444],
+        up_trans: [-0.172, 0.014, -0.444],
+    },
+    GearPart {
+        name: "Cube.051_70",
+        down_rot: [0.0, 0.0, -0.906, 0.423],
+        up_rot: [0.0, 0.0, 0.0, 1.0],
+        down_trans: [0.172, 0.014, -0.444],
+        up_trans: [0.172, 0.014, -0.444],
+    },
+    GearPart {
+        name: "Cube.050_69",
+        down_rot: [0.0, 0.0, -0.537, 0.843],
+        up_rot: [0.0, 0.0, 0.0, 1.0],
+        down_trans: [-0.300, 0.136, -0.420],
+        up_trans: [-0.300, 0.136, -0.420],
+    },
+    GearPart {
+        name: "Cube.052_71",
+        down_rot: [0.0, 0.0, 0.537, 0.843],
+        up_rot: [0.0, 0.0, 0.0, 1.0],
+        down_trans: [0.300, 0.136, -0.420],
+        up_trans: [0.300, 0.136, -0.420],
+    },
 ];
 
 #[derive(Component)]
@@ -350,6 +509,12 @@ pub(crate) struct Ui {
     /// the camera's *orientation* follows it — the pilot's eye stays put.
     pub(crate) look_yaw: f32,
     pub(crate) look_pitch: f32,
+    /// Seconds left to ignore mouse motion after entering the cockpit. Locking
+    /// the cursor can warp it once, which otherwise snaps the view to the roof.
+    pub(crate) look_settle: f32,
+    /// Drop the first non-zero mouse delta after the lock, too; some compositors
+    /// deliver the warp a little later than the grab.
+    pub(crate) look_ignore: bool,
     /// Cockpit only: the 2D MCP panel is floating over a dimmed scene, with
     /// the mouse released for direct clicks. Free-look and the crosshair are
     /// suspended while this is set.
@@ -440,7 +605,13 @@ pub(crate) fn spawn_model_child(
     parent: Entity,
     id: &str,
 ) -> Entity {
-    let model = spawn_model(commands, assets, parent, &model_spec(id), Visibility::Inherited);
+    let model = spawn_model(
+        commands,
+        assets,
+        parent,
+        &model_spec(id),
+        Visibility::Inherited,
+    );
     if id == "f22" {
         commands.entity(model).insert(MatteAirframe);
     }
@@ -525,11 +696,26 @@ pub(crate) fn spawn_flight_aircraft(
     assets: Res<AssetServer>,
     sim: Res<Sim>,
     mut ui: ResMut<Ui>,
+    mut tune: ResMut<CockpitTune>,
 ) {
     // A fresh flight opens with the cockpit head-look at its rest pose, and no
     // MCP focus left over from a previous cockpit visit.
     (ui.look_yaw, ui.look_pitch) = rest_look(&sim.name);
+    ui.cockpit = std::env::var("COCKPIT").is_ok_and(|v| v == "1");
+    ui.look_settle = if ui.cockpit { 1.0 } else { 0.0 };
+    ui.look_ignore = ui.cockpit;
     ui.mcp_focus = false;
+    // Development overrides for dialling the eye/FOV from a screenshot shell:
+    // COCKPIT_EYE=x,y,z (model frame, metres) and COCKPIT_FOV=degrees.
+    tune.eye = std::env::var("COCKPIT_EYE").ok().and_then(|v| {
+        let p: Vec<f32> = v.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+        (p.len() == 3).then(|| [p[0], p[1], p[2]])
+    });
+    tune.fov = std::env::var("COCKPIT_FOV")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .map(f32::to_radians)
+        .or_else(|| (sim.name == "ah1s").then(|| 65.0_f32.to_radians()));
     let root = commands
         .spawn((
             AircraftRoot,
@@ -544,8 +730,7 @@ pub(crate) fn spawn_flight_aircraft(
         // Models whose exterior file already carries the interior (the C172)
         // need no second spawn; the F-22's does.
         if spec.file != model_spec(&sim.name).file {
-            let cockpit =
-                spawn_model(&mut commands, &assets, root, &spec, Visibility::Hidden);
+            let cockpit = spawn_model(&mut commands, &assets, root, &spec, Visibility::Hidden);
             commands.entity(cockpit).insert(CockpitModel);
             if sim.name == "737" {
                 commands.entity(cockpit).insert(Hide737Yoke);
@@ -743,8 +928,8 @@ fn is_control_bone(name: &str) -> bool {
         "Cube.043_66" | "Cube.044_79"
         | "Empty.009_39" | "Empty.010_41" | "Empty.011_43" | "Empty.012_45"
         | "Empty.007_35" | "Empty.008_37"
-        // Mi-24 rotor hubs (spun in `drive_surfaces`).
-        | "Top_Rotor" | "Tail_Rotor"
+        // AH-64D rotor hubs (spun in `drive_surfaces`).
+        | "AH64_MainRotor" | "AH64_TailRotor"
     ) || C172_SURFACES.iter().any(|s| s.node == name)
 }
 
@@ -781,22 +966,27 @@ fn drive_surfaces(
         .rem_euclid(std::f32::consts::TAU);
     let prop_phase = rig.prop_phase;
     // Rotors spin likewise, each from its own rotor-rpm signal.
-    rig.main_rotor_phase =
-        (rig.main_rotor_phase + state.main_rotor_rpm as f32 * ROTOR_SPIN * time.delta_secs())
-            .rem_euclid(std::f32::consts::TAU);
-    rig.tail_rotor_phase =
-        (rig.tail_rotor_phase + state.tail_rotor_rpm as f32 * ROTOR_SPIN * time.delta_secs())
-            .rem_euclid(std::f32::consts::TAU);
+    rig.main_rotor_phase = (rig.main_rotor_phase
+        + state.main_rotor_rpm as f32 * ROTOR_SPIN * time.delta_secs())
+    .rem_euclid(std::f32::consts::TAU);
+    rig.tail_rotor_phase = (rig.tail_rotor_phase
+        + state.tail_rotor_rpm as f32 * ROTOR_SPIN * time.delta_secs())
+    .rem_euclid(std::f32::consts::TAU);
     let main_rotor_phase = rig.main_rotor_phase;
     let tail_rotor_phase = rig.tail_rotor_phase;
     for (name, e, mut tf) in &mut q {
-        let Some(base) = rig.rest.get(&e) else { continue };
+        let Some(base) = rig.rest.get(&e) else {
+            continue;
+        };
 
         // Baked (unrigged) models: hinge about a measured line, not the node's
         // origin, so the translation moves too.
         if let Some(s) = C172_SURFACES.iter().find(|s| s.node == name.as_str()) {
             let angle = match s.src {
-                SurfaceSrc::Elevator => s.sign * state.elevator as f32 * MAX_DEFLECT,
+                // The C172's elevator reads the actual surface angle, so a
+                // pitch trim that leaves the yoke centred still shows on the
+                // tail. Aileron/rudder have no cockpit trim on the real 172.
+                SurfaceSrc::Elevator => s.sign * state.elevator_pos_rad as f32,
                 SurfaceSrc::Aileron => s.sign * state.aileron as f32 * MAX_DEFLECT,
                 SurfaceSrc::Rudder => s.sign * state.rudder as f32 * MAX_DEFLECT,
                 SurfaceSrc::Flap => s.sign * (state.flap_deg as f32).to_radians(),
@@ -819,22 +1009,41 @@ fn drive_surfaces(
             // so left drops and right lifts for a positive roll); both v-tails
             // take rudder. (The real jet also rolls with differential tail and
             // vectors with TVC — neither is shown on the mesh.)
-            "Cube.043_66" => (F22_STAB_L.0, F22_STAB_L.1 * state.elevator as f32 * MAX_DEFLECT),
-            "Cube.044_79" => (F22_STAB_R.0, F22_STAB_R.1 * state.elevator as f32 * MAX_DEFLECT),
-            "Empty.009_39" => (F22_AIL_LI.0, F22_AIL_LI.1 * state.aileron as f32 * MAX_DEFLECT),
-            "Empty.010_41" => (F22_AIL_LO.0, F22_AIL_LO.1 * state.aileron as f32 * MAX_DEFLECT),
-            "Empty.011_43" => (F22_AIL_RI.0, F22_AIL_RI.1 * state.aileron as f32 * MAX_DEFLECT),
-            "Empty.012_45" => (F22_AIL_RO.0, F22_AIL_RO.1 * state.aileron as f32 * MAX_DEFLECT),
+            "Cube.043_66" => (
+                F22_STAB_L.0,
+                F22_STAB_L.1 * state.elevator as f32 * MAX_DEFLECT,
+            ),
+            "Cube.044_79" => (
+                F22_STAB_R.0,
+                F22_STAB_R.1 * state.elevator as f32 * MAX_DEFLECT,
+            ),
+            "Empty.009_39" => (
+                F22_AIL_LI.0,
+                F22_AIL_LI.1 * state.aileron as f32 * MAX_DEFLECT,
+            ),
+            "Empty.010_41" => (
+                F22_AIL_LO.0,
+                F22_AIL_LO.1 * state.aileron as f32 * MAX_DEFLECT,
+            ),
+            "Empty.011_43" => (
+                F22_AIL_RI.0,
+                F22_AIL_RI.1 * state.aileron as f32 * MAX_DEFLECT,
+            ),
+            "Empty.012_45" => (
+                F22_AIL_RO.0,
+                F22_AIL_RO.1 * state.aileron as f32 * MAX_DEFLECT,
+            ),
             "Empty.007_35" => (F22_RUD_R.0, F22_RUD_R.1 * state.rudder as f32 * MAX_DEFLECT),
             "Empty.008_37" => (F22_RUD_L.0, F22_RUD_L.1 * state.rudder as f32 * MAX_DEFLECT),
 
-            // Mi-24 rotors: a constant spin about each hub's local axis.
-            "Top_Rotor" => (ROTOR_MAIN_AXIS, main_rotor_phase),
-            "Tail_Rotor" => (ROTOR_TAIL_AXIS, tail_rotor_phase),
+            // AH-64D rotors: a constant spin about each hub's local axis.
+            "AH64_MainRotor" => (ROTOR_MAIN_AXIS, main_rotor_phase),
+            "AH64_TailRotor" => (ROTOR_TAIL_AXIS, tail_rotor_phase),
 
             _ => continue,
         };
-        tf.rotation = base.rotation * Quat::from_axis_angle(Vec3::from_array(axis).normalize(), angle);
+        tf.rotation =
+            base.rotation * Quat::from_axis_angle(Vec3::from_array(axis).normalize(), angle);
     }
 }
 
@@ -910,13 +1119,26 @@ fn apply_look_delta(ui: &mut Ui, delta: Vec2) {
 /// Cockpit free-look: mouse motion turns the pilot's head relative to the
 /// airframe. Position is untouched (that stays on `follow_camera`'s eye), so
 /// this only changes where you're looking. Inert unless in the cockpit view.
-fn cockpit_look(motion: Res<AccumulatedMouseMotion>, mut ui: ResMut<Ui>) {
+fn cockpit_look(time: Res<Time>, motion: Res<AccumulatedMouseMotion>, mut ui: ResMut<Ui>) {
     if !ui.cockpit || ui.mcp_focus {
+        return;
+    }
+    // Development screenshot hook: hold the rest gaze while the desktop mouse
+    // is being used by other work.
+    if std::env::var("LOOK_LOCK").is_ok() {
+        return;
+    }
+    if ui.look_settle > 0.0 {
+        ui.look_settle = (ui.look_settle - time.delta_secs()).max(0.0);
         return;
     }
     let d = motion.delta;
     if d != Vec2::ZERO {
-        apply_look_delta(&mut ui, d);
+        if ui.look_ignore {
+            ui.look_ignore = false;
+        } else {
+            apply_look_delta(&mut ui, d);
+        }
     }
 }
 
@@ -926,7 +1148,7 @@ fn cockpit_look(motion: Res<AccumulatedMouseMotion>, mut ui: ResMut<Ui>) {
 /// strand it).
 fn cockpit_cursor(
     state: Res<State<AppState>>,
-    ui: Res<Ui>,
+    mut ui: ResMut<Ui>,
     mut windows: Query<(&mut CursorOptions, &Window)>,
 ) {
     let cockpit = *state.get() == AppState::Flying && ui.cockpit;
@@ -939,6 +1161,13 @@ fn cockpit_cursor(
         };
         let visible = !free_look;
         if cursor.grab_mode != grab || cursor.visible != visible {
+            // The compositor warps the pointer when it locks it. Start the
+            // settle window here, even if the camera was already in cockpit
+            // mode for a frame or two.
+            if grab == CursorGrabMode::Locked {
+                ui.look_settle = ui.look_settle.max(1.0);
+                ui.look_ignore = true;
+            }
             cursor.grab_mode = grab;
             cursor.visible = visible;
         }
@@ -999,9 +1228,7 @@ pub(crate) fn follow_camera(
     // airframe's interpolated attitude, so the panel and horizon move with the
     // plane. Falls through to the chase view when the model has no interior.
     if ui.cockpit {
-        if let Some(eye) =
-            cockpit_spec(&sim.name).and_then(|spec| cockpit_eye(&spec, tune.eye))
-        {
+        if let Some(eye) = cockpit_spec(&sim.name).and_then(|spec| cockpit_eye(&spec, tune.eye)) {
             t.translation = pos + rot * eye;
             // Head-look turns the view *relative to the airframe*; the eye
             // offset above is unrotated by it, so the camera position is fixed.
@@ -1056,7 +1283,12 @@ fn buffet_weight(cas_kts: f64, alpha_deg: f64) -> f32 {
 /// Undo the parts of `camera_feel` that outlive a flight — the widened lens and
 /// the motion blur — so the menu isn't left looking like it's at 400 kt. The
 /// shake itself needs no cleanup: `follow_camera` rewrites the pose every frame.
-fn reset_camera_feel(mut q: Query<(&mut Projection, Option<&mut MotionBlur>), (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>) {
+fn reset_camera_feel(
+    mut q: Query<
+        (&mut Projection, Option<&mut MotionBlur>),
+        (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>),
+    >,
+) {
     let Ok((mut projection, blur)) = q.single_mut() else {
         return;
     };
@@ -1121,8 +1353,7 @@ fn camera_feel(
     };
 
     t.translation += Vec3::new(noise(0.0), noise(11.3), noise(21.7)) * (SHAKE_POS_M * amp);
-    let rot = Vec3::new(noise(31.1), noise(41.9), noise(51.7))
-        * (SHAKE_ROT_DEG.to_radians() * amp);
+    let rot = Vec3::new(noise(31.1), noise(41.9), noise(51.7)) * (SHAKE_ROT_DEG.to_radians() * amp);
     // `YXZ` takes (yaw, pitch, roll).
     t.rotation *= Quat::from_euler(EulerRot::YXZ, rot.y, rot.x, rot.z);
 
@@ -1144,8 +1375,11 @@ fn toggle_ui(keys: Res<ButtonInput<KeyCode>>, sim: Res<Sim>, mut ui: ResMut<Ui>)
     if keys.just_pressed(KeyCode::KeyC) {
         ui.mcp_focus = false;
         ui.cockpit = !ui.cockpit;
-        // Every entry into the cockpit starts looking at its rest pose.
+        // Every entry into the cockpit starts looking at its rest pose. Give
+        // the cursor grab a moment to settle before accepting mouse motion.
         (ui.look_yaw, ui.look_pitch) = rest_look(&sim.name);
+        ui.look_settle = if ui.cockpit { 1.0 } else { 0.0 };
+        ui.look_ignore = ui.cockpit;
     }
     // Recentre the cockpit head-look (a no-op in the chase view).
     if keys.just_pressed(KeyCode::KeyN) {
@@ -1193,7 +1427,13 @@ fn bar(v: f64) -> String {
 /// Per-aircraft key hints, generated from the active control set so they can't
 /// drift from the profile. Duplicates collapse (both brakes share one entry),
 /// and the list wraps a few entries per row.
-fn control_hints(bindings: &Bindings, cockpit: bool, f22_hud: bool, mcp: bool) -> String {
+fn control_hints(
+    bindings: &Bindings,
+    cockpit: bool,
+    f22_hud: bool,
+    mcp: bool,
+    c172: bool,
+) -> String {
     use crate::aircraft_profile::key_name;
     let mut entries: Vec<String> = Vec::new();
     for b in &bindings.list {
@@ -1210,6 +1450,9 @@ fn control_hints(bindings: &Bindings, cockpit: bool, f22_hud: bool, mcp: bool) -
         entries.push(format!("{} {}", key_name(t.key), t.action.label()));
     }
     entries.push("H inputs".to_string());
+    if c172 {
+        entries.push("Space fine".to_string());
+    }
     entries.push("R reset".to_string());
     entries.push("C view".to_string());
     if f22_hud {
@@ -1318,17 +1561,24 @@ fn update_hud(
             "\n\n\
              ELEV {} {:+.2}   AIL {} {:+.2}   RUD {} {:+.2}\n\
              THR  {}  {:.2}   TRM {} {:+.2}   FLP {}  {:.2}",
-            signed_bar(state.elevator), state.elevator,
-            signed_bar(state.aileron), state.aileron,
-            signed_bar(state.rudder), state.rudder,
-            bar(state.throttle), state.throttle,
-            signed_bar(state.elevator_trim), state.elevator_trim,
-            bar(state.flap_deg / 30.0), state.flap_deg / 30.0,
+            signed_bar(state.elevator),
+            state.elevator,
+            signed_bar(state.aileron),
+            state.aileron,
+            signed_bar(state.rudder),
+            state.rudder,
+            bar(state.throttle),
+            state.throttle,
+            signed_bar(state.elevator_trim),
+            state.elevator_trim,
+            bar(state.flap_deg / 30.0),
+            state.flap_deg / 30.0,
         ));
         if state.rotor_available {
             out.push_str(&format!(
                 "\nCOLL {} {:.2}",
-                bar(state.collective), state.collective,
+                bar(state.collective),
+                state.collective,
             ));
         }
     }
@@ -1339,16 +1589,13 @@ fn update_hud(
         ui.cockpit,
         sim.name == "f22",
         state.autopilot_available,
+        aircraft_profile::normalized(&sim.name) == "c172p",
     ));
 
     text.0 = out;
 }
 
-fn draw_grid(
-    state: Res<AircraftState>,
-    map: Res<crate::map::ActiveMap>,
-    mut gizmos: Gizmos,
-) {
+fn draw_grid(state: Res<AircraftState>, map: Res<crate::map::ActiveMap>, mut gizmos: Gizmos) {
     // The mission terrain replaces the training grid.
     if map.0.is_some() {
         return;
@@ -1379,8 +1626,8 @@ fn draw_grid(
 #[cfg(test)]
 mod tests {
     use super::{
-        LOOK_PITCH_LIMIT, SHAKE0_KT, SHAKE1_KT, Ui, apply_look_delta, bar, buffet_weight,
-        look_rotation, signed_bar,
+        apply_look_delta, bar, buffet_weight, look_rotation, signed_bar, Ui, LOOK_PITCH_LIMIT,
+        SHAKE0_KT, SHAKE1_KT,
     };
     use bevy::prelude::{Vec2, Vec3};
 
@@ -1459,7 +1706,10 @@ mod tests {
         // A slow, high-alpha hold: no speed ramp, but the airframe is still busy.
         let slow_high_alpha = buffet_weight(0.0, 30.0);
         assert!(slow_high_alpha > 0.0);
-        assert!(slow_high_alpha < 0.7, "alpha alone must not read as full speed");
+        assert!(
+            slow_high_alpha < 0.7,
+            "alpha alone must not read as full speed"
+        );
         // Below the buffet alpha it does nothing.
         assert_eq!(buffet_weight(100.0, 10.0), 0.0);
         // Speed still wins when it's the worse of the two.
@@ -1474,4 +1724,3 @@ mod tests {
         assert_eq!(bar(2.0), bar(1.0));
     }
 }
-

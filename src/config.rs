@@ -58,6 +58,14 @@ impl Keymap {
     }
 }
 
+/// Keyboard assists for one aircraft. Both default to off; the C172 exposes
+/// them on its settings page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AssistConfig {
+    pub bank_hold: bool,
+    pub turn_coord: bool,
+}
+
 /// All persisted settings. Lives as a resource so the menu can read and write
 /// it; changes are flushed through [`ConfigSink`].
 #[derive(Resource, Default, Debug, PartialEq)]
@@ -65,6 +73,7 @@ pub struct GameConfig {
     /// Index into [`crate::weather::RAIN_LEVELS`].
     pub weather_level: usize,
     keymaps: HashMap<String, Keymap>,
+    assists: HashMap<String, AssistConfig>,
     /// Aircraft set to fly in arcade mode, by canonical id. An id is present iff
     /// arcade is on, so the realistic default is simply absence.
     arcade: HashSet<String>,
@@ -101,6 +110,33 @@ impl GameConfig {
         } else {
             self.arcade.remove(&id);
         }
+    }
+
+    /// The keyboard assists for an aircraft (both off by default).
+    pub fn assists(&self, id: &str) -> AssistConfig {
+        self.assists
+            .get(aircraft_profile::normalized(id))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn set_assist(&mut self, id: &str, change: impl FnOnce(&mut AssistConfig)) {
+        let id = aircraft_profile::normalized(id).to_owned();
+        let mut a = self.assists.get(&id).copied().unwrap_or_default();
+        change(&mut a);
+        if a == AssistConfig::default() {
+            self.assists.remove(&id);
+        } else {
+            self.assists.insert(id, a);
+        }
+    }
+
+    pub fn set_bank_hold(&mut self, id: &str, on: bool) {
+        self.set_assist(id, |a| a.bank_hold = on);
+    }
+
+    pub fn set_turn_coord(&mut self, id: &str, on: bool) {
+        self.set_assist(id, |a| a.turn_coord = on);
     }
 }
 
@@ -147,6 +183,12 @@ fn apply_weather(config: Res<GameConfig>, mut weather: ResMut<Weather>) {
 
 /// The section header whose keys are aircraft ids, not control ids.
 const ARCADE_SECTION: &str = "arcade";
+/// Per-aircraft assist sections are written as `[c172p.assist]`.
+const ASSIST_SUFFIX: &str = ".assist";
+
+fn truthy(value: &str) -> bool {
+    matches!(value, "1" | "true" | "on")
+}
 
 fn serialize(config: &GameConfig) -> String {
     let mut out = format!("weather = {}\n", config.weather_level);
@@ -187,6 +229,19 @@ fn serialize(config: &GameConfig) -> String {
             out.push_str(&format!("{id} = 1\n"));
         }
     }
+
+    let mut assist_ids: Vec<&String> = config.assists.keys().collect();
+    assist_ids.sort();
+    for id in assist_ids {
+        let a = config.assists[id];
+        out.push_str(&format!("\n[{id}.assist]\n"));
+        if a.bank_hold {
+            out.push_str("bank-hold = 1\n");
+        }
+        if a.turn_coord {
+            out.push_str("turn-coord = 1\n");
+        }
+    }
     out
 }
 
@@ -219,8 +274,16 @@ fn parse(text: &str) -> GameConfig {
             Some(ARCADE_SECTION) => {
                 // `key` is an aircraft id here, not a control. Only a truthy
                 // value is stored; anything else means "leave realistic".
-                if matches!(value, "1" | "true" | "on") {
+                if truthy(value) {
                     config.set_arcade(key, true);
+                }
+            }
+            Some(s) if s.ends_with(ASSIST_SUFFIX) => {
+                let id = &s[..s.len() - ASSIST_SUFFIX.len()];
+                match key {
+                    "bank-hold" => config.set_bank_hold(id, truthy(value)),
+                    "turn-coord" => config.set_turn_coord(id, truthy(value)),
+                    _ => {}
                 }
             }
             Some(id) => {
@@ -251,7 +314,9 @@ pub struct FileStore {
 
 impl FileStore {
     pub fn new() -> Self {
-        FileStore { path: default_path() }
+        FileStore {
+            path: default_path(),
+        }
     }
 }
 
@@ -338,6 +403,32 @@ mod tests {
     }
 
     #[test]
+    fn assists_round_trip_per_aircraft() {
+        let mut config = GameConfig::default();
+        assert_eq!(config.assists("c172p"), AssistConfig::default());
+        config.set_bank_hold("c172p", true);
+        config.set_turn_coord("c172p", true);
+        assert_eq!(
+            config.assists("c172p"),
+            AssistConfig {
+                bank_hold: true,
+                turn_coord: true
+            }
+        );
+
+        let text = serialize(&config);
+        assert!(text.contains("[c172p.assist]"));
+        assert_eq!(parse(&text), config);
+        assert_eq!(serialize(&parse(&text)), text);
+
+        // Turning both off removes the section, so defaults stay implicit.
+        config.set_bank_hold("c172p", false);
+        config.set_turn_coord("c172p", false);
+        assert_eq!(config.assists("c172p"), AssistConfig::default());
+        assert!(!serialize(&config).contains(".assist"));
+    }
+
+    #[test]
     fn weather_is_read_from_the_header() {
         let cfg = parse("weather = 3\n");
         assert_eq!(cfg.weather_level, 3);
@@ -355,13 +446,21 @@ mod tests {
     #[test]
     fn missing_neg_key_parses_as_a_single_slot() {
         let cfg = parse("[737]\ngear = KeyU\n");
-        assert_eq!(cfg.keymap("737").toggle(ToggleAction::Gear), Some(KeyCode::KeyU));
+        assert_eq!(
+            cfg.keymap("737").toggle(ToggleAction::Gear),
+            Some(KeyCode::KeyU)
+        );
     }
 
     #[test]
     fn keymap_lookup_normalizes_the_id() {
         let mut config = GameConfig::default();
-        config.keymap_mut("b737").set_toggle(ToggleAction::Gear, KeyCode::KeyU);
-        assert_eq!(config.keymap("737").toggle(ToggleAction::Gear), Some(KeyCode::KeyU));
+        config
+            .keymap_mut("b737")
+            .set_toggle(ToggleAction::Gear, KeyCode::KeyU);
+        assert_eq!(
+            config.keymap("737").toggle(ToggleAction::Gear),
+            Some(KeyCode::KeyU)
+        );
     }
 }

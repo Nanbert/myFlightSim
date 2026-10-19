@@ -39,10 +39,15 @@ pub(crate) const DIAL_R: f32 = 248.0;
 pub(crate) const DIAL_PX: f32 = NODE * 0.5 * (DIAL_R / (TEX as f32 * 0.5));
 
 /// Instruments in each bottom trio.
-const COLS: usize = 3;
+pub(crate) const COLS: usize = 3;
 /// Margin from the screen edges, and the gap between instruments, px.
-const MARGIN: f32 = 37.0;
-const GAP: f32 = 6.0;
+pub(crate) const MARGIN: f32 = 37.0;
+pub(crate) const GAP: f32 = 6.0;
+
+/// Total width of one screen-corner trio, including its outer margin. The
+/// control-position discs use this to sit in the gaps either side of the
+/// centred attitude indicator.
+pub(crate) const CLUSTER_W: f32 = MARGIN + COLS as f32 * NODE + (COLS as f32 - 1.0) * GAP;
 
 /// Text was tuned at a 300 px gauge; scale label sizes with the current `NODE`.
 const FS: f32 = NODE / 300.0;
@@ -246,9 +251,7 @@ fn seat_panel(
         let project = |p: Vec3| camera.world_to_viewport(&cam_gt, p).ok();
         let Some((pa, pu, pv)) = project(root_tf.transform_point(d.anchor))
             .zip(project(root_tf.transform_point(d.anchor + d.u)))
-            .and_then(|(a, u)| {
-                project(root_tf.transform_point(d.anchor + d.v)).map(|v| (a, u, v))
-            })
+            .and_then(|(a, u)| project(root_tf.transform_point(d.anchor + d.v)).map(|v| (a, u, v)))
         else {
             // Off-screen (e.g. looking away): hide rather than smear it.
             inst.seated = true;
@@ -301,7 +304,10 @@ pub(crate) fn spawn_root(
     // the left-to-right reading order the same on both sides.
     let (left, right) = match side {
         Side::Left => (offset, Val::Auto),
-        Side::Right => (Val::Auto, Val::Px(MARGIN + (COLS - 1 - col) as f32 * (NODE + GAP))),
+        Side::Right => (
+            Val::Auto,
+            Val::Px(MARGIN + (COLS - 1 - col) as f32 * (NODE + GAP)),
+        ),
     };
     let home = Node {
         position_type: PositionType::Absolute,
@@ -358,11 +364,7 @@ pub(crate) fn spawn_root_centered(commands: &mut Commands, key: PanelKey, bottom
 
 /// A square image node filling the instrument, with `extra` components attached
 /// (markers, needle rotation).
-pub(crate) fn spawn_image<B: Bundle>(
-    p: &mut ChildSpawnerCommands,
-    image: Handle<Image>,
-    extra: B,
-) {
+pub(crate) fn spawn_image<B: Bundle>(p: &mut ChildSpawnerCommands, image: Handle<Image>, extra: B) {
     p.spawn((
         ImageNode::new(image),
         Node {
@@ -410,7 +412,11 @@ pub(crate) fn spawn_label(
 
 /// True if `a` lies in the clockwise arc from `lo` to `hi` (degrees, any wrap).
 pub(crate) fn cw_between(a: f32, lo: f32, hi: f32) -> bool {
-    let (a, lo, hi) = (a.rem_euclid(360.0), lo.rem_euclid(360.0), hi.rem_euclid(360.0));
+    let (a, lo, hi) = (
+        a.rem_euclid(360.0),
+        lo.rem_euclid(360.0),
+        hi.rem_euclid(360.0),
+    );
     if lo <= hi {
         a >= lo && a <= hi
     } else {

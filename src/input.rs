@@ -38,6 +38,79 @@ const ARCADE_BLEED_RATE: f64 = 0.5;
 /// energy you earn back over about a second — the "auto-throttle" feel.
 const ARCADE_RECOVER_RATE: f64 = 0.35;
 
+/// Axis update at 120 Hz internally, so a frame at 30 fps and one at 144 fps
+/// produce the same amount of control travel (and the same tap step).
+const INPUT_HZ: f64 = 120.0;
+
+/// Keyboard feel for one aircraft.
+///
+/// `LEGACY` is the original constant-rate ramp every non-C172 aircraft still
+/// uses. `C172` adds the keyboard-friendly behaviour the position indicators
+/// were designed around: a fixed nudge on a tap, a short hold before the ramp
+/// starts, a short linger after release, and a fine mode.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Feel {
+    /// Fixed normalized nudge when a direction key is first pressed.
+    tap_step: f64,
+    /// Seconds a key must be held before the continuous ramp starts.
+    hold_delay: f64,
+    /// Seconds the axis lingers at its current value after release.
+    release_hold: f64,
+    /// Scale applied to steps and rates while the fine key is held.
+    fine_scale: f64,
+    /// Whether the fine key does anything (C172 only for now).
+    fine_enabled: bool,
+}
+
+impl Feel {
+    const LEGACY: Self = Self {
+        tap_step: 0.0,
+        hold_delay: 0.0,
+        release_hold: 0.0,
+        fine_scale: 1.0,
+        fine_enabled: false,
+    };
+
+    const C172: Self = Self {
+        tap_step: 0.04,
+        hold_delay: 0.12,
+        release_hold: 0.10,
+        fine_scale: 0.25,
+        fine_enabled: true,
+    };
+
+    /// Per-axis tap sizes: rudder and trim are deliberately finer than pitch.
+    fn step_for(self, action: Action) -> f64 {
+        match action {
+            Action::Rudder => self.tap_step * 0.75,
+            Action::Throttle => self.tap_step * 0.5,
+            Action::PitchTrim => self.tap_step * 0.125,
+            Action::Flap | Action::BrakeLeft | Action::BrakeRight | Action::Collective => 0.0,
+            _ => self.tap_step,
+        }
+    }
+
+    /// Rudder keeps its nudge a little longer, because it is the twitchiest.
+    fn release_for(self, action: Action) -> f64 {
+        match action {
+            Action::Rudder => self.release_hold * 1.5,
+            // Brakes should let go as soon as the key does.
+            Action::BrakeLeft | Action::BrakeRight => 0.0,
+            _ => self.release_hold,
+        }
+    }
+
+    /// Axes without a tap step (flaps, brakes, collective) keep the original
+    /// immediate ramp; otherwise a short tap would do nothing for 120 ms.
+    fn hold_for(self, action: Action) -> f64 {
+        if self.step_for(action) == 0.0 {
+            0.0
+        } else {
+            self.hold_delay
+        }
+    }
+}
+
 /// One key pair driving one normalized JSBSim property.
 pub struct Binding {
     /// Semantic id (for the HUD / future rebind UI).
@@ -59,14 +132,24 @@ pub struct Binding {
     /// itself; used only for a rotorcraft's cyclic, which has no FDM trim
     /// channel — see [`Binding::effective`] and `adopt_trim`.
     pub trim: f64,
+    /// Assist contribution (bank hold / turn coordination), added on top of the
+    /// pilot's value. Kept separate so the 2D discs can show white = pilot and
+    /// cyan = assist.
+    pub assist: f64,
+    /// Seconds the current direction has been held (reset on release / flip).
+    held_for: f64,
+    /// Seconds since the last input stopped, for the release linger.
+    since_input: f64,
+    /// Previous frame's direction, so a tap step fires once per press.
+    last_dir: f64,
 }
 
 impl Binding {
-    /// What actually drives the FDM: the stick value plus the trim offset,
-    /// clamped to the axis range. For a trimmed rotorcraft a centered stick
-    /// (value 0) then holds the solved cyclic.
+    /// What actually drives the FDM: the stick value plus the trim offset and
+    /// any assist contribution, clamped to the axis range. For a trimmed
+    /// rotorcraft a centered stick (value 0) then holds the solved cyclic.
     pub fn effective(&self) -> f64 {
-        (self.value + self.trim).clamp(self.min, self.max)
+        (self.value + self.trim + self.assist).clamp(self.min, self.max)
     }
 
     /// +1 / -1 / 0 from which of the bound keys are down.
@@ -76,12 +159,60 @@ impl Binding {
         (pos - neg) as f64
     }
 
-    fn update(&mut self, keys: &ButtonInput<KeyCode>, dt: f64) {
+    fn update(&mut self, keys: &ButtonInput<KeyCode>, dt: f64, feel: Feel, fine: bool) {
         let dir = self.direction(keys);
+        // Split render frames into 120 Hz-ish substeps so 30 fps and 144 fps
+        // produce the same travel; otherwise a hitch becomes a big stick jump.
+        let steps = ((dt * INPUT_HZ).round() as usize).clamp(1, 24);
+        let sub = dt / steps as f64;
+        for _ in 0..steps {
+            self.update_step(dir, sub, feel, fine);
+        }
+    }
+
+    fn update_step(&mut self, dir: f64, dt: f64, feel: Feel, fine: bool) {
+        let scale = if fine { feel.fine_scale } else { 1.0 };
         match self.axis {
-            Axis::Spring => ramp(&mut self.value, dir, self.rate * dt),
+            Axis::Spring => {
+                if dir != 0.0 {
+                    if self.last_dir != dir {
+                        self.value = (self.value + dir * feel.step_for(self.action) * scale)
+                            .clamp(self.min, self.max);
+                        self.held_for = 0.0;
+                    }
+                    self.held_for += dt;
+                    self.since_input = 0.0;
+                    if self.held_for >= feel.hold_for(self.action) {
+                        let target = if dir > 0.0 { self.max } else { self.min };
+                        ramp(&mut self.value, target, self.rate * scale * dt);
+                    }
+                } else {
+                    self.held_for = 0.0;
+                    self.since_input += dt;
+                    if self.since_input >= feel.release_for(self.action) {
+                        ramp(&mut self.value, 0.0, self.rate * dt);
+                    }
+                }
+                self.last_dir = dir;
+            }
             Axis::Hold => {
-                self.value = (self.value + dir * self.rate * dt).clamp(self.min, self.max)
+                if dir != 0.0 {
+                    if self.last_dir != dir {
+                        self.value = (self.value + dir * feel.step_for(self.action) * scale)
+                            .clamp(self.min, self.max);
+                        self.held_for = 0.0;
+                    }
+                    self.held_for += dt;
+                    self.since_input = 0.0;
+                    if self.held_for >= feel.hold_for(self.action) {
+                        let target = if dir > 0.0 { self.max } else { self.min };
+                        ramp(&mut self.value, target, self.rate * scale * dt);
+                    }
+                } else {
+                    self.held_for = 0.0;
+                    self.since_input += dt;
+                }
+                self.last_dir = dir;
             }
         }
     }
@@ -93,6 +224,9 @@ impl Binding {
 pub struct Bindings {
     pub list: Vec<Binding>,
     pub toggles: Vec<ToggleSpec>,
+    /// Keyboard feel for this aircraft. Copied out before iteration so the
+    /// update loop can mutate the bindings.
+    feel: Feel,
 }
 
 impl Bindings {
@@ -100,23 +234,45 @@ impl Bindings {
     /// pilot's saved key overrides (empty `keymap` = pure defaults).
     pub fn for_aircraft(id: &str, keymap: &Keymap) -> Self {
         let p = aircraft_profile::profile(id);
+        let feel = if aircraft_profile::normalized(id) == "c172p" {
+            Feel::C172
+        } else {
+            Feel::LEGACY
+        };
         let list = p
             .bindings
             .iter()
             .map(|s| {
                 let (pos, neg) = keymap.axis(s.action).unwrap_or((s.pos, s.neg));
+                // The C172's keyboard feel also slows the axes down a little:
+                // the old 3/s was tuned for twitchy jets and helicopters.
+                let rate = if feel.fine_enabled {
+                    match s.action {
+                        Action::Elevator | Action::Aileron => 2.5,
+                        Action::Rudder => 1.5,
+                        Action::Throttle => 0.5,
+                        Action::PitchTrim => 0.15,
+                        _ => s.rate,
+                    }
+                } else {
+                    s.rate
+                };
                 Binding {
                     action: s.action,
                     property: s.property,
                     pos,
                     neg,
-                    rate: s.rate,
+                    rate,
                     axis: s.axis,
                     min: s.min,
                     max: s.max,
                     initial: s.initial,
                     value: s.initial,
                     trim: 0.0,
+                    assist: 0.0,
+                    held_for: 0.0,
+                    since_input: 0.0,
+                    last_dir: 0.0,
                 }
             })
             .collect();
@@ -128,7 +284,11 @@ impl Bindings {
                 key: keymap.toggle(t.action).unwrap_or(t.key),
             })
             .collect();
-        Bindings { list, toggles }
+        Bindings {
+            list,
+            toggles,
+            feel,
+        }
     }
 
     /// Give the throttle the arcade boost feel for aircraft whose profile offers
@@ -176,8 +336,15 @@ fn read_input(
     map: Res<crate::map::ActiveMap>,
 ) {
     let dt = time.delta_secs_f64();
+    // Fine control: C172 only for now. `Space` is free on the Cessna and is
+    // easier to hold with the thumb than Alt; Alt works everywhere too.
+    let fine = bindings.feel.fine_enabled
+        && (keys.pressed(KeyCode::Space)
+            || keys.pressed(KeyCode::AltLeft)
+            || keys.pressed(KeyCode::AltRight));
+    let feel = bindings.feel;
     for b in &mut bindings.list {
-        b.update(&keys, dt);
+        b.update(&keys, dt, feel, fine);
     }
 
     // The arcade throttle is automatic in the air: left alone in straight flight
@@ -261,6 +428,10 @@ fn read_input(
                 sim.trim_now();
                 adopt_trim(&mut bindings, &sim);
             }
+            // AH-64D arcade helpers. Both are no-ops on models that don't
+            // expose the properties; the realistic helicopter ignores them.
+            ToggleAction::HeliHover => toggle_prop(&mut sim, "fcs/heli-hover-enable"),
+            ToggleAction::HeliBalance => toggle_prop(&mut sim, "fcs/heli-balance-enable"),
         }
     }
 
@@ -303,14 +474,10 @@ fn adopt_trim(bindings: &mut Bindings, sim: &crate::sim::Sim) {
     let rotor = sim.model.has_rotor();
     for b in &mut bindings.list {
         match b.property {
-            "fcs/throttle-cmd-norm"
-            | "fcs/collective-cmd-norm"
-            | "fcs/pitch-trim-cmd-norm" => b.value = sim.model.get(b.property),
-            "fcs/elevator-cmd-norm"
-            | "fcs/aileron-cmd-norm"
-            | "fcs/rudder-cmd-norm"
-                if rotor =>
-            {
+            "fcs/throttle-cmd-norm" | "fcs/collective-cmd-norm" | "fcs/pitch-trim-cmd-norm" => {
+                b.value = sim.model.get(b.property)
+            }
+            "fcs/elevator-cmd-norm" | "fcs/aileron-cmd-norm" | "fcs/rudder-cmd-norm" if rotor => {
                 b.trim = sim.model.get(b.property)
             }
             _ => {}
@@ -350,10 +517,10 @@ fn ramp(value: &mut f64, target: f64, step: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Binding, Bindings, adopt_trim, arcade_throttle, manoeuvre_intensity, ramp};
+    use super::{adopt_trim, arcade_throttle, manoeuvre_intensity, ramp, Binding, Bindings, Feel};
     use crate::aircraft_profile::{Action, Axis};
     use crate::config::Keymap;
-    use bevy::prelude::KeyCode;
+    use bevy::prelude::{ButtonInput, KeyCode};
 
     fn cyclic() -> Binding {
         Binding {
@@ -368,6 +535,10 @@ mod tests {
             initial: 0.0,
             value: 0.0,
             trim: 0.0,
+            assist: 0.0,
+            held_for: 0.0,
+            since_input: 0.0,
+            last_dir: 0.0,
         }
     }
 
@@ -462,7 +633,7 @@ mod tests {
 
         for _ in 0..120 * 3 {
             for b in &mut bindings.list {
-                b.update(&held, dt);
+                b.update(&held, dt, Feel::LEGACY, false);
             }
             for b in &bindings.list {
                 sim.model.set(b.property, b.effective());
@@ -557,7 +728,7 @@ mod tests {
         keys.press(KeyCode::Space);
         for _ in 0..120 {
             for b in &mut bindings.list {
-                b.update(&keys, dt);
+                b.update(&keys, dt, Feel::LEGACY, false);
             }
         }
         assert!(throttle_value(&bindings) > 0.99, "boost never reached full");
@@ -566,7 +737,7 @@ mod tests {
         keys.release(KeyCode::Space);
         for _ in 0..240 {
             for b in &mut bindings.list {
-                b.update(&keys, dt);
+                b.update(&keys, dt, Feel::LEGACY, false);
             }
         }
         assert!(
@@ -619,5 +790,132 @@ mod tests {
             .unwrap();
         assert_eq!(throttle.axis, Axis::Hold);
         assert_eq!(throttle.pos, KeyCode::ShiftLeft);
+    }
+
+    fn axis_value(bindings: &Bindings, action: Action) -> f64 {
+        bindings
+            .list
+            .iter()
+            .find(|b| b.action == action)
+            .unwrap()
+            .value
+    }
+
+    #[test]
+    fn c172_tap_is_a_small_fixed_step_at_any_frame_rate() {
+        for fps in [30.0, 60.0, 144.0] {
+            let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+            let feel = bindings.feel;
+            let mut keys = ButtonInput::<KeyCode>::default();
+
+            // W is the elevator's negative key: nose up.
+            keys.press(KeyCode::KeyW);
+            for b in &mut bindings.list {
+                b.update(&keys, 1.0 / fps, feel, false);
+            }
+            keys.release(KeyCode::KeyW);
+
+            let value = axis_value(&bindings, Action::Elevator);
+            assert!(
+                (value + 0.04).abs() < 1e-9,
+                "{fps} fps tap should be -0.04, got {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn c172_release_lingers_before_springing_back() {
+        let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+        let feel = bindings.feel;
+        let mut keys = ButtonInput::<KeyCode>::default();
+        let dt = 1.0 / 60.0;
+
+        keys.press(KeyCode::KeyW);
+        for b in &mut bindings.list {
+            b.update(&keys, dt, feel, false);
+        }
+        keys.release(KeyCode::KeyW);
+
+        // Inside the 100 ms linger the nudge is still there.
+        for _ in 0..3 {
+            for b in &mut bindings.list {
+                b.update(&keys, dt, feel, false);
+            }
+        }
+        let held = axis_value(&bindings, Action::Elevator);
+        assert!(
+            (held + 0.04).abs() < 1e-9,
+            "release hold moved early: {held}"
+        );
+
+        // After it, the axis springs back to centre.
+        for _ in 0..30 {
+            for b in &mut bindings.list {
+                b.update(&keys, dt, feel, false);
+            }
+        }
+        let released = axis_value(&bindings, Action::Elevator);
+        assert!(released.abs() < 1e-6, "axis did not return: {released}");
+    }
+
+    #[test]
+    fn c172_fine_mode_scales_the_tap_step() {
+        let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+        let feel = bindings.feel;
+        let mut keys = ButtonInput::<KeyCode>::default();
+
+        keys.press(KeyCode::Space);
+        keys.press(KeyCode::KeyW);
+        for b in &mut bindings.list {
+            b.update(&keys, 1.0 / 60.0, feel, true);
+        }
+
+        let value = axis_value(&bindings, Action::Elevator);
+        assert!(
+            (value + 0.01).abs() < 1e-9,
+            "fine tap should be -0.01, got {value}"
+        );
+    }
+
+    #[test]
+    fn c172_holding_a_key_ramps_to_full() {
+        let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+        let feel = bindings.feel;
+        let mut keys = ButtonInput::<KeyCode>::default();
+        let dt = 1.0 / 60.0;
+
+        keys.press(KeyCode::KeyW);
+        for _ in 0..60 {
+            for b in &mut bindings.list {
+                b.update(&keys, dt, feel, false);
+            }
+        }
+
+        let value = axis_value(&bindings, Action::Elevator);
+        assert!(value < -0.9, "holding W should reach full up: {value}");
+    }
+
+    #[test]
+    fn c172_brake_tap_still_bites_immediately() {
+        let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+        let feel = bindings.feel;
+        let mut keys = ButtonInput::<KeyCode>::default();
+
+        // Brakes have no tap step, so they must keep the legacy immediate ramp
+        // rather than waiting out the pitch/roll hold delay.
+        keys.press(KeyCode::KeyB);
+        for b in &mut bindings.list {
+            b.update(&keys, 1.0 / 60.0, feel, false);
+        }
+
+        let value = axis_value(&bindings, Action::BrakeLeft);
+        assert!(value > 0.05, "a brake tap did nothing: {value}");
+    }
+
+    #[test]
+    fn feel_axes_without_a_tap_step_skip_the_hold_delay() {
+        assert_eq!(Feel::C172.hold_for(Action::BrakeLeft), 0.0);
+        assert_eq!(Feel::C172.hold_for(Action::Flap), 0.0);
+        assert_eq!(Feel::C172.hold_for(Action::Elevator), Feel::C172.hold_delay);
     }
 }

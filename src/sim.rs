@@ -89,7 +89,8 @@ impl Sim {
         } else {
             (Box::new(jsbsim_sys::Fdm::load(name, DT)), "JSBSim")
         };
-        let label = format!("{backend} {name}");
+        let display = if name == "ah1s" { "AH-64D" } else { name };
+        let label = format!("{backend} {display}");
         let mut sim = Sim {
             model,
             label,
@@ -227,10 +228,17 @@ pub struct AircraftState {
     /// 30,000 ft. The F-22's exhaust plume keys its size off this.
     pub thrust_norm: f64,
     pub elevator: f64,
+    /// Actual elevator surface angle (`fcs/elevator-pos-rad`), radians. Unlike
+    /// `elevator`, this includes the pitch-trim offset, so the 3D surface can
+    /// stay deflected after the yoke is centred.
+    pub elevator_pos_rad: f64,
     pub aileron: f64,
     pub rudder: f64,
     pub elevator_trim: f64,
     pub flap_deg: f64,
+    /// Left/right toe-brake commands (`fcs/{left,right}-brake-cmd-norm`).
+    pub brake_left: f64,
+    pub brake_right: f64,
     pub rpm: f64,
     /// Whether the loaded aircraft has an autopilot at all (737 only).
     pub autopilot_available: bool,
@@ -253,8 +261,14 @@ pub struct AircraftState {
     pub collective: f64,
     /// Main-rotor reaction torque (`propulsion/engine[0]/torque-lbsft`).
     pub torque_lbsft: f64,
-    /// Whether the loaded model is a rotorcraft (AH-1S only).
+    /// Whether the loaded model is a rotorcraft (AH-64D / AH-1S).
     pub rotor_available: bool,
+    /// Whether arcade dynamics are active (`fcs/arcade-enable`).
+    pub arcade: bool,
+    /// Helicopter auto-hover state: 0 off, 1 takeoff, 2 hold, 3 land.
+    pub heli_hover_state: f64,
+    /// Helicopter auto-balance switch (`fcs/heli-balance-enable`).
+    pub heli_balance: bool,
 
     // --- F-22 HUD quantities ---
     /// True airspeed (`velocities/vtrue-kts`).
@@ -428,10 +442,13 @@ fn publish_state(mut sim: ResMut<Sim>, time: Res<Time>, mut state: ResMut<Aircra
         throttle: m.get("fcs/throttle-cmd-norm"),
         thrust_norm: m.get("fcs/thrust-norm"),
         elevator: m.get("fcs/elevator-cmd-norm"),
+        elevator_pos_rad: m.get("fcs/elevator-pos-rad"),
         aileron: m.get("fcs/aileron-cmd-norm"),
         rudder: m.get("fcs/rudder-cmd-norm"),
         elevator_trim: m.get("fcs/pitch-trim-cmd-norm"),
         flap_deg: m.get("fcs/flap-pos-deg"),
+        brake_left: m.get("fcs/left-brake-cmd-norm"),
+        brake_right: m.get("fcs/right-brake-cmd-norm"),
         rpm: m.get("propulsion/engine[0]/engine-rpm"),
         autopilot_available: crate::aircraft_profile::profile(name).has_autopilot,
         tvc_on: m.get("fcs/tvc-enable") > 0.5,
@@ -444,6 +461,9 @@ fn publish_state(mut sim: ResMut<Sim>, time: Res<Time>, mut state: ResMut<Aircra
         collective: m.get("fcs/collective-cmd-norm"),
         torque_lbsft: m.get("propulsion/engine[0]/torque-lbsft"),
         rotor_available: m.has_rotor(),
+        arcade: m.get("fcs/arcade-enable") > 0.5,
+        heli_hover_state: m.get("fcs/heli-hover-state"),
+        heli_balance: m.get("fcs/heli-balance-enable") > 0.5,
         tas_kts: m.get("velocities/vtrue-kts"),
         gs_kts: gs_fps * 0.592_483_801,
         track_deg,
