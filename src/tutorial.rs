@@ -193,6 +193,23 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("     200-lb spawn load - so the pump is for discipline, not");
     p.line("     emergencies.");
 
+    p.heading("ILS APPROACH (GAME)");
+    p.line("  Both runways have a full ILS: localizer plus 3-degree");
+    p.line("  glideslope, radiated from the far end, usable from about");
+    p.line("  5 NM out. The CDI (bottom-right of the panel) shows it:");
+    p.line("  the course card sits under the top index at the current");
+    p.line("  beam course (card 0 = runway 36 from the south, 18 = runway");
+    p.line("  18 from the north); the white LOC needle sways about the");
+    p.line("  centre - tilt it back level with Q/E to hold course - and");
+    p.line("  the amber glideslope pointer slides along the right dot");
+    p.line("  column, up when you are below the beam. Fly toward the");
+    p.line("  pointers: needle left means the course lies to the left.");
+    p.line("  A white TO flag shows while the beam holds you; outside the");
+    p.line("  volume the needles centre and amber OFF takes its place.");
+    p.line("  Deviation dots: half scale is two dots = 1.25 deg localizer,");
+    p.line("  0.35 deg glideslope. The same numbers drive the autopilot's");
+    p.line("  beams on the 737, so both aircraft agree on the approach.");
+
     p.heading("FIRST FLIGHT (GAME)");
     p.line("  1. You start parked on the runway with 60% power. Hold Ctrl");
     p.line("     to pull the throttle back before taxiing.");
@@ -234,6 +251,8 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  TODO density altitude (temperature setting) and mixture");
     p.line("       power loss - they matter together at high fields.");
     p.line("  TODO nosewheel steering and differential braking.");
+    p.line("  TODO OBS course selector: the CDI card follows the beam");
+    p.line("       course instead of the pilot-set one.");
     p.line("  TODO flap detents: the sim's flap lever is continuous.");
     p.line("  TODO stall warning, spins and carb icing.");
     p.line("  TODO ATC, traffic and a real navigation stack.");

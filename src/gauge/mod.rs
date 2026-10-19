@@ -16,6 +16,7 @@
 mod airspeed;
 mod altimeter;
 mod attitude;
+mod cdi;
 mod fuel;
 mod heading;
 mod tach;
@@ -78,6 +79,7 @@ pub(crate) enum PanelKey {
     Turn,
     Attitude,
     Fuel,
+    Cdi,
 }
 
 /// Where a painted dial sits on the panel, in the airframe (`view::AircraftRoot`)
@@ -136,6 +138,12 @@ impl PanelKey {
                 [0.0389, 0.0000, 0.0000],
                 [0.0004, 0.0388, -0.0031],
             ),
+            // The bottom row continues right of the turn coordinator.
+            PanelKey::Cdi => (
+                [-0.0370, -0.0400, -0.6678],
+                [0.0383, 0.0000, 0.0000],
+                [0.0002, 0.0376, -0.0030],
+            ),
         };
         PanelDial {
             anchor: a.into(),
@@ -161,6 +169,7 @@ impl Plugin for GaugePlugin {
                     turn::setup,
                     attitude::setup,
                     fuel::setup,
+                    cdi::setup,
                 ),
             )
             .add_systems(
@@ -175,6 +184,7 @@ impl Plugin for GaugePlugin {
                         turn::update,
                         attitude::update,
                         fuel::update_needles,
+                        cdi::update,
                     )
                         .run_if(in_state(AppState::Flying)),
                     sync_visibility,
