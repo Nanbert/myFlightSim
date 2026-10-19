@@ -566,6 +566,11 @@ impl Plugin for ViewPlugin {
             .init_resource::<CockpitTune>()
             .add_systems(Startup, (setup_scene, setup_hud))
             .add_systems(OnExit(AppState::Flying), reset_camera_feel)
+            // Enter the chase pose *pinned*: without this the offset left over
+            // from the previous flight eases back to the standard framing over
+            // the first second — a lazy swing that reads as the camera wobbling
+            // right at scene entry, on a plane that hasn't moved.
+            .add_systems(OnEnter(AppState::Flying), clear_chase_offset)
             .add_systems(
                 Update,
                 (
@@ -1259,6 +1264,15 @@ pub(crate) fn follow_camera(
     };
     chase.offset = Some(offset);
     t.translation = pos + offset;
+    if std::env::var("CAMDEBUG").is_ok() {
+        println!(
+            "CAM t={:.2} pos={:?} off={:?} rot={:?}",
+            time.elapsed_secs(),
+            t.translation,
+            offset,
+            t.rotation,
+        );
+    }
     // Take on a fraction of the airframe's bank, blended toward world-up so an
     // inverted jet still gives a usable view. Without any coupling a hard roll
     // reads as the world pivoting around a static jet; with all of it the view
@@ -1278,6 +1292,12 @@ fn buffet_weight(cas_kts: f64, alpha_deg: f64) -> f32 {
     let speed01 = ((cas_kts as f32 - SHAKE0_KT) / (SHAKE1_KT - SHAKE0_KT)).clamp(0.0, 1.0);
     let alpha01 = (((alpha_deg as f32) - 12.0) / 18.0).clamp(0.0, 1.0) * 0.6;
     speed01.max(alpha01)
+}
+
+/// Clear the eased chase offset so the next flight's first frame sits at the
+/// standard framing instead of gliding there from wherever the last one left it.
+fn clear_chase_offset(mut chase: ResMut<Chase>) {
+    chase.offset = None;
 }
 
 /// Undo the parts of `camera_feel` that outlive a flight — the widened lens and

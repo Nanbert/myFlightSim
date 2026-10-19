@@ -664,15 +664,8 @@ mod tests {
             theta0 > 2.0,
             "parked C172 should sit nose-up on its gear: {theta0}"
         );
-        for i in 0..120 * 5 {
+        for _ in 0..120 * 5 {
             sim.model.step();
-            if i % 30 == 0 {
-                println!("t={:.1}s phi={:+.5} theta={:+.5} rpm={:.0}",
-                    i as f64 / 120.0,
-                    sim.model.get("attitude/phi-deg"),
-                    sim.model.get("attitude/theta-deg"),
-                    sim.model.get("propulsion/engine[0]/engine-rpm"));
-            }
         }
         assert_eq!(sim.model.get("propulsion/engine[0]/engine-rpm"), 0.0);
         assert!(
