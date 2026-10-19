@@ -507,6 +507,9 @@ fn b737(keymap: &Keymap) -> Vec<String> {
     p.line("  Leaving the ground with the roll established another card");
     p.line("  grades the takeoff: liftoff speed against the PFD's VR line,");
     p.line("  the rotation attitude, bank, and how fast the gear came up.");
+    p.line("  Descending through 1000 ft AAL a stability gate counts the");
+    p.line("  approach setup: gear down, flaps 15, inside Vref + 25 and a");
+    p.line("  gentle sink. UNSTABLE names what to fix before the fence.");
 
     p.heading("REAL 737 PROCEDURE (PUBLIC INFO)");
     p.line("  Preflight: walk-around, fuel, oil, hydraulics, tires and");

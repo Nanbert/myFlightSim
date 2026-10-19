@@ -1,5 +1,6 @@
 mod aerodrome;
 mod aircraft_profile;
+mod approach;
 mod app_state;
 mod assist;
 mod autopilot;
@@ -86,6 +87,7 @@ fn main() {
         .add_plugins(aerodrome::AerodromePlugin)
         .add_plugins(landing::LandingPlugin)
         .add_plugins(takeoff::TakeoffPlugin)
+        .add_plugins(approach::ApproachPlugin)
         .add_plugins(checklist::ChecklistPlugin)
         .add_plugins(taxi::TaxiPlugin)
         .add_plugins(lights::LightsPlugin)

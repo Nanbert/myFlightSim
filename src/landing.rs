@@ -328,8 +328,9 @@ fn score(td: Touchdown, bounces: u32) -> (u32, &'static str) {
 
 /// Approach reference speed the jet should carry over the fence, scheduled on
 /// the flap handle (the PFD's VR line uses the same schedule): full boards
-/// touch down under 120, a no-flap approach over the water wants ~145.
-fn vref(flap_norm: f64) -> f64 {
+/// touch down under 120, a no-flap approach over the water wants ~145. The
+/// stability gate grades the 1000 ft gate against this too.
+pub(crate) fn vref(flap_norm: f64) -> f64 {
     (145.0 - 25.0 * flap_norm).clamp(118.0, 145.0)
 }
 
