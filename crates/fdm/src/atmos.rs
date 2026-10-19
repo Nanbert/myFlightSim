@@ -3,9 +3,10 @@
 //! to line up with the JSBSim property values the app already speaks; the view
 //! layer converts to SI at the render boundary.
 //!
-//! Only the standard atmosphere is modelled — no winds, temperature bias, or
-//! humidity. That is all `c172p` needs, and it keeps the Rust model honest about
-//! what it does.
+//! Only the standard atmosphere is modelled — no temperature bias or
+//! humidity, and the wind lives on the property bus (`atmosphere/wind-*-fps`),
+//! not inside this module. That is all `c172p` needs, and it keeps the Rust
+//! model honest about what it does.
 
 use crate::table::Table1;
 

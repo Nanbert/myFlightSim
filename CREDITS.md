@@ -63,3 +63,30 @@ The same attribution for each model is carried inside the file itself
   colour model and normalized specular lobe are reused, with distance-based
   octave LOD, a world-scale-safe value-noise hash, the project's own sky
   gradient/weather and aerial haze. Attribution required; non-commercial.
+
+## 3D model — `assets/ah64d_cockpit.glb`
+
+- **Title:** AH-64D Apache pilot-station cockpit (PLT rear seat)
+- **Author:** Procedurally generated for this project by
+  `tools/ah64_cockpit.py`.
+- **Geometry:** Original work. No third-party mesh or texture data is included;
+  the panels, canopy frame, MPD bezels, screen symbology and HOCAS are built
+  from primitives in Blender.
+- **Layout reference:** Public DCS AH-64D cockpit/controls guide
+  (gamepressure) and publicly available AH-64 cockpit photographs. The model
+  is an approximate game interior, not a Boeing engineering drawing.
+- **License:** Same as the rest of this project's original code/assets.
+
+## 3D model — `assets/ah64d.glb`
+
+- **Title:** Boeing AH-64D Apache Combat Helicopter
+- **Author:** Muhamad Mirza Arrafi (https://sketchfab.com/nazidefenseforceofficial)
+- **Source:** https://sketchfab.com/3d-models/boeing-ah-64d-apache-combat-helicopter-c3b58008c46b45048fdd7dd283a3c8c8
+- **License:** [CC BY 4.0](http://creativecommons.org/licenses/by/4.0/)
+- **Modifications:** Imported and re-exported by `tools/prepare_apache.py`. The
+  original material batches are kept; the main and tail rotors are split out of
+  the airframe batch into `AH64_MainRotor` / `AH64_TailRotor` nodes with hub
+  pivots so the simulator can spin them. Node names are made readable and the
+  original `asset.extras` attribution is preserved here.
+- **Use:** exterior visual for the AH-64D entry; the FDM is currently the AH-1S
+  model as a stand-in.

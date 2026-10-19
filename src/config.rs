@@ -72,6 +72,8 @@ pub struct AssistConfig {
 pub struct GameConfig {
     /// Index into [`crate::weather::RAIN_LEVELS`].
     pub weather_level: usize,
+    /// Index into [`crate::weather::WIND_LEVELS`].
+    pub wind_level: usize,
     keymaps: HashMap<String, Keymap>,
     assists: HashMap<String, AssistConfig>,
     /// Aircraft set to fly in arcade mode, by canonical id. An id is present iff
@@ -164,6 +166,7 @@ impl Plugin for ConfigPlugin {
 
 fn apply_weather(config: Res<GameConfig>, mut weather: ResMut<Weather>) {
     weather.set_level(config.weather_level as isize);
+    weather.set_wind_level(config.wind_level as isize);
 }
 
 // --- text format -------------------------------------------------------------
@@ -192,6 +195,7 @@ fn truthy(value: &str) -> bool {
 
 fn serialize(config: &GameConfig) -> String {
     let mut out = format!("weather = {}\n", config.weather_level);
+    out.push_str(&format!("wind = {}\n", config.wind_level));
 
     let mut ids: Vec<&String> = config.keymaps.keys().collect();
     ids.sort();
@@ -268,6 +272,11 @@ fn parse(text: &str) -> GameConfig {
                 if key == "weather" {
                     if let Ok(n) = value.parse::<usize>() {
                         config.weather_level = n;
+                    }
+                }
+                if key == "wind" {
+                    if let Ok(n) = value.parse::<usize>() {
+                        config.wind_level = n;
                     }
                 }
             }

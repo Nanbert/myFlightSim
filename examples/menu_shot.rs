@@ -4,26 +4,28 @@
 //!
 //! Run: `cargo run --example menu_shot`
 
-#[path = "../src/cloud_camera.rs"]
-mod cloud_camera;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
-#[path = "../src/config.rs"]
-mod config;
-#[path = "../src/input.rs"]
-mod input;
 #[path = "../src/app_state.rs"]
 mod app_state;
 #[path = "../src/autopilot.rs"]
 mod autopilot;
+#[path = "../src/cloud_camera.rs"]
+mod cloud_camera;
+#[path = "../src/config.rs"]
+mod config;
+#[path = "../src/input.rs"]
+mod input;
+#[path = "../src/menu.rs"]
+mod menu;
 #[path = "../src/sim.rs"]
 mod sim;
+#[path = "../src/tutorial.rs"]
+mod tutorial;
 #[path = "../src/view.rs"]
 mod view;
 #[path = "../src/weather.rs"]
 mod weather;
-#[path = "../src/menu.rs"]
-mod menu;
 
 use bevy::input::keyboard::{Key, KeyboardInput, NativeKey};
 use bevy::input::ButtonState;
@@ -68,7 +70,11 @@ const SCRIPT: &[(u32, KeyCode, Key)] = &[
     (400, KeyCode::Enter, Key::Enter),
     // Only `key_code` drives `ButtonInput<KeyCode>`; the logical key is unused
     // here (a letter has no const-constructible `Key` variant).
-    (410, KeyCode::KeyK, Key::Unidentified(NativeKey::Unidentified)),
+    (
+        410,
+        KeyCode::KeyK,
+        Key::Unidentified(NativeKey::Unidentified),
+    ),
     (440, KeyCode::Escape, Key::Escape), // close aircraft SETTINGS
     // Up to the top row, over to the global SETTINGS entry, open it, and bump
     // the weather two steps (CLEAR -> LIGHT RAIN -> RAIN).

@@ -1,2 +1,6 @@
 /target
 .claude/settings.local.json
+
+# Scratch from concurrent agent sessions
+.tmp/
+.tools/

@@ -40,7 +40,7 @@ use bevy::shader::ShaderRef;
 
 use crate::app_state::AppState;
 use crate::sim::{AircraftState, Sim};
-use crate::view::{AircraftRoot, model_to_body};
+use crate::view::{model_to_body, AircraftRoot};
 
 /// Engine nozzle exits in the F-22's own glTF frame (metres, +X left / +Y up /
 /// +Z nose), sitting on the nozzle rim's exit plane (the aft-most ring of the
@@ -470,7 +470,14 @@ fn drive_flames(
     mut burner: ResMut<Burner>,
     mut plume: ResMut<Plume>,
     root: Query<&Transform, (With<AircraftRoot>, Without<FlamePuff>)>,
-    cameras: Query<&Transform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>, Without<FlamePuff>)>,
+    cameras: Query<
+        &Transform,
+        (
+            With<Camera3d>,
+            Without<crate::cloud_camera::CloudCamera>,
+            Without<FlamePuff>,
+        ),
+    >,
     mut puffs: Query<(
         &FlamePuff,
         &MeshMaterial3d<FlamePuffMaterial>,
@@ -578,8 +585,12 @@ fn drive_flames(
 
     for (puff, mat, mut tf, mut vis) in &mut puffs {
         let (n, i) = (puff.nozzle, puff.idx);
-        let (lvl, dry_v, flare_v, d) =
-            (plume.level[n][i], plume.dry[n][i], plume.flare[n][i], plume.dist[n][i]);
+        let (lvl, dry_v, flare_v, d) = (
+            plume.level[n][i],
+            plume.dry[n][i],
+            plume.flare[n][i],
+            plume.dist[n][i],
+        );
         let heat = lvl.max(dry_v);
         // How far through its life the puff is. Every scale below keys off this,
         // so the plume's colour, size and spread all track its length.
@@ -665,7 +676,10 @@ fn manage_haze(
     state: Res<AircraftState>,
     burner: Res<Burner>,
     root: Query<&Transform, With<AircraftRoot>>,
-    mut cameras: Query<(Entity, &Camera, &GlobalTransform, Option<&ExhaustHaze>), (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
+    mut cameras: Query<
+        (Entity, &Camera, &GlobalTransform, Option<&ExhaustHaze>),
+        (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>),
+    >,
 ) {
     let throttle = state.throttle.clamp(0.0, 1.0) as f32;
     // Exhaust heat, the same blend the plume colours itself from: the spooled
@@ -710,14 +724,18 @@ fn manage_haze(
             let base = root_tf.translation
                 + root_tf.rotation * (root_tf.scale * model_to_body(name, model));
             let aft = root_tf.rotation * Vec3::Z;
-            let to_uv = |v: Vec2| ((v - rect.min) / size - Vec2::splat(0.5)) * Vec2::new(aspect, 1.0);
+            let to_uv =
+                |v: Vec2| ((v - rect.min) / size - Vec2::splat(0.5)) * Vec2::new(aspect, 1.0);
 
             let p0 = to_uv(cam.world_to_viewport(cam_gt, base).ok()?);
             let p1 = to_uv(cam.world_to_viewport(cam_gt, base + aft * plume_len).ok()?);
             // Measure the radius sideways in screen space, where it is round
             // whatever the plume's own angle to the view.
             let side = cam_gt.rotation() * Vec3::X;
-            let edge = to_uv(cam.world_to_viewport(cam_gt, base + side * plume_rad).ok()?);
+            let edge = to_uv(
+                cam.world_to_viewport(cam_gt, base + side * plume_rad)
+                    .ok()?,
+            );
 
             let off = p1 - p0;
             let len = off.length();
@@ -725,11 +743,7 @@ fn manage_haze(
             // fall back to "heat rises". The threshold is a whole percent of the
             // screen: near it the projected direction is noise, and a camera
             // shake would flip the shimmer from frame to frame.
-            let dir = if len < 0.01 {
-                Vec2::NEG_Y
-            } else {
-                off / len
-            };
+            let dir = if len < 0.01 { Vec2::NEG_Y } else { off / len };
             Some((p0, dir, len.max(0.01), (edge - p0).length().max(1e-3)))
         };
         let (Some((uv0, dir0, len0, rad0)), Some((uv1, dir1, len1, rad1))) =

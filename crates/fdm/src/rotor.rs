@@ -329,14 +329,7 @@ impl Rotor {
     /// Momentum theory with the inflow lag (SH79 eqns 24-27, TA77 eqn 10a).
     /// `uw`/`ww` are the in-plane and axial hub velocities; `flow_scale` is the
     /// ground-effect factor.
-    fn calc_flow_and_thrust(
-        &mut self,
-        theta_0: f64,
-        uw: f64,
-        ww: f64,
-        flow_scale: f64,
-        dt: f64,
-    ) {
+    fn calc_flow_and_thrust(&mut self, theta_0: f64, uw: f64, ww: f64, flow_scale: f64, dt: f64) {
         let omega_r = self.omega * self.radius_ft;
 
         self.mu = uw / omega_r;
@@ -352,8 +345,7 @@ impl Rotor {
 
         let mut ct_l = (0.5 * self.b_pow[2] + 0.25 * mu2) * self.lambda;
 
-        let mut c0 =
-            0.5 * self.spec.lift_curve_slope * (ct_l + ct_t0 + ct_t1) * self.solidity;
+        let mut c0 = 0.5 * self.spec.lift_curve_slope * (ct_l + ct_t0 + ct_t1) * self.solidity;
         c0 /= 2.0 * (self.mu * self.mu + self.lambda * self.lambda).sqrt() + 1e-15;
 
         // dnu/dt = (1/tau)(Ct/(2·sqrt(mu²+λ²)) − ν), integrated with mu, lambda
@@ -397,7 +389,8 @@ impl Rotor {
                 - 16.0 * pqr_w[1] / (lock_gamma * self.omega));
 
         self.b1 = 1.0 / (1.0 + mu2_2)
-            * ((4.0 / 3.0) * self.mu * self.a0 - pqr_w[1] / self.omega
+            * ((4.0 / 3.0) * self.mu * self.a0
+                - pqr_w[1] / self.omega
                 - 16.0 * pqr_w[0] / (lock_gamma * self.omega));
 
         // The last term divides by C_T/sigma, used verbatim (as in JSBSim): it

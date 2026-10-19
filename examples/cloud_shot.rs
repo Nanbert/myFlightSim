@@ -40,8 +40,7 @@ fn parse_poses() -> Option<Vec<(Vec3, Vec3)>> {
                     .split(',')
                     .map(|n| n.trim().parse().ok())
                     .collect::<Option<_>>()?;
-                (v.len() == 6)
-                    .then(|| (Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5])))
+                (v.len() == 6).then(|| (Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5])))
             })
             .collect(),
     )
@@ -85,10 +84,7 @@ fn setup(mut commands: Commands) {
         Transform::from_xyz(0.0, 700.0, 0.0),
         Tonemapping::None,
     ));
-    commands.spawn((
-        DirectionalLight::default(),
-        Transform::from_rotation(rot),
-    ));
+    commands.spawn((DirectionalLight::default(), Transform::from_rotation(rot)));
 }
 
 fn pose(

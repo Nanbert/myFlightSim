@@ -81,7 +81,11 @@ pub fn force_moment(
     // Commanded body rates, in the airframe's own sign convention: +aileron rolls
     // right, +elevator pitches nose-down, +rudder yaws nose-left.
     let p_cmd = RATE_P * cfg.aileron;
-    let k_q = if cfg.elevator < 0.0 { RATE_Q_UP } else { RATE_Q_DN };
+    let k_q = if cfg.elevator < 0.0 {
+        RATE_Q_UP
+    } else {
+        RATE_Q_DN
+    };
     let q_cmd = -k_q * cfg.elevator;
     let r_cmd = -RATE_R * cfg.rudder;
 

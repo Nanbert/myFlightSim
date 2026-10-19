@@ -124,7 +124,11 @@ pub fn ground_force(
         // Vertical strut force, push-only (JSBSim clamps `StrutForce` <= 0, i.e.
         // magnitude >= 0), along the ground normal. Linear damping; the rebound
         // branch uses its own coefficient (equal here).
-        let b = if cs >= 0.0 { gear.damp } else { gear.damp_rebound };
+        let b = if cs >= 0.0 {
+            gear.damp
+        } else {
+            gear.damp_rebound
+        };
         let n = (gear.spring * pen + b * cs).max(0.0);
 
         // Ground-plane basis. `roll` is the wheel heading (the body forward axis
@@ -163,9 +167,8 @@ pub fn ground_force(
                     let slip = -v_side.atan2(v_roll.abs()) * R2D;
                     let stiff = TIRE_STIFFNESS * slip;
                     let coeff = gear.static_f
-                        * (TIRE_SHAPE
-                            * (stiff - TIRE_CURVATURE * (stiff - stiff.atan())).atan())
-                        .sin();
+                        * (TIRE_SHAPE * (stiff - TIRE_CURVATURE * (stiff - stiff.atan())).atan())
+                            .sin();
                     coeff * n
                 } else {
                     0.0
@@ -181,7 +184,10 @@ pub fn ground_force(
         // Friction acts in the ground plane; the strut force along the normal.
         // The moment uses the uncompressed arm: strut travel is < 6% of the arm
         // and RK4 already samples trial states, so the offset is immaterial.
-        let force = add(add(scale(up_body, n), scale(roll, f_roll)), scale(side, f_side));
+        let force = add(
+            add(scale(up_body, n), scale(roll, f_roll)),
+            scale(side, f_side),
+        );
         out.force_body = add(out.force_body, force);
         out.moment_body = add(out.moment_body, cross(r, force));
         out.wow = true;

@@ -144,10 +144,38 @@ pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 
         // Centre captions, to the right of the needle hub.
         let dim = Color::srgb(0.85, 0.85, 0.85);
-        spawn_label(p, "VERTICAL", c + DIAL_PX * 0.20, c - DIAL_PX * 0.14, 12.0, dim);
-        spawn_label(p, "SPEED", c + DIAL_PX * 0.20, c - DIAL_PX * 0.02, 12.0, dim);
-        spawn_label(p, "100 FEET", c + DIAL_PX * 0.24, c + DIAL_PX * 0.18, 10.0, dim);
-        spawn_label(p, "PER MIN", c + DIAL_PX * 0.24, c + DIAL_PX * 0.29, 10.0, dim);
+        spawn_label(
+            p,
+            "VERTICAL",
+            c + DIAL_PX * 0.20,
+            c - DIAL_PX * 0.14,
+            12.0,
+            dim,
+        );
+        spawn_label(
+            p,
+            "SPEED",
+            c + DIAL_PX * 0.20,
+            c - DIAL_PX * 0.02,
+            12.0,
+            dim,
+        );
+        spawn_label(
+            p,
+            "100 FEET",
+            c + DIAL_PX * 0.24,
+            c + DIAL_PX * 0.18,
+            10.0,
+            dim,
+        );
+        spawn_label(
+            p,
+            "PER MIN",
+            c + DIAL_PX * 0.24,
+            c + DIAL_PX * 0.29,
+            10.0,
+            dim,
+        );
 
         spawn_image(p, needle, VsiNeedle);
     });

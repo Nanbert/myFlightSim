@@ -121,8 +121,8 @@ const HWHAT_CONST: f64 = HIHAT_CONST * ROTOR_R_FT;
 /// a stall-style curve, verbatim from `ah1s.xml`.
 const T_CLA_WING: Table1 = Table1::new(
     &[
-        -3.49, -3.14, -2.79, -2.74, -1.83, -1.57, -1.31, -0.40, -0.35, 0.00, 0.35, 0.40, 1.31, 1.57,
-        1.83, 2.74, 2.79, 3.14, 3.49,
+        -3.49, -3.14, -2.79, -2.74, -1.83, -1.57, -1.31, -0.40, -0.35, 0.00, 0.35, 0.40, 1.31,
+        1.57, 1.83, 2.74, 2.79, 3.14, 3.49,
     ],
     &[
         -1.92, 0.00, 1.92, 1.92, 0.96, 0.00, -0.96, -1.92, -1.92, 0.00, 1.92, 1.92, 0.96, 0.00,
@@ -134,8 +134,8 @@ const T_CLA_WING: Table1 = Table1::new(
 /// (a=3.5, CL_max=1.83), verbatim.
 const T_CLA_HT: Table1 = Table1::new(
     &[
-        -3.67, -3.14, -2.62, -2.57, -1.83, -1.57, -1.31, -0.58, -0.52, 0.00, 0.52, 0.58, 1.31, 1.57,
-        1.83, 2.57, 2.62, 3.14, 3.67,
+        -3.67, -3.14, -2.62, -2.57, -1.83, -1.57, -1.31, -0.58, -0.52, 0.00, 0.52, 0.58, 1.31,
+        1.57, 1.83, 2.57, 2.62, 3.14, 3.67,
     ],
     &[
         -1.83, 0.00, 1.83, 1.83, 0.92, 0.00, -0.92, -1.83, -1.83, 0.00, 1.83, 1.83, 0.92, 0.00,
@@ -222,25 +222,63 @@ const PITCH: Axis = Axis::new(&[
     // Ma_ht — tailplane lift moment (the stabilator is what trims the aircraft).
     prod!(QBAR, val!(SH_SQFT), val!(LH_FT), val!(-1.0), CLA_HT),
     // Mw_ht — pitch moment due to w (horizontal-tail stiffness, restoring).
-    prod!(HIHAT, Factor::Table1 { var: "aero/mu", table: T_CMW_HT }, W_AERO),
+    prod!(
+        HIHAT,
+        Factor::Table1 {
+            var: "aero/mu",
+            table: T_CMW_HT
+        },
+        W_AERO
+    ),
     // Mq_ht — pitch moment due to q (horizontal-tail damping).
-    prod!(HWHAT, Factor::Table1 { var: "aero/mu", table: T_CMQ_HT }, Q_AERO),
+    prod!(
+        HWHAT,
+        Factor::Table1 {
+            var: "aero/mu",
+            table: T_CMQ_HT
+        },
+        Q_AERO
+    ),
 ]);
 
 const YAW: Axis = Axis::new(&[
     // Nb_vt — vertical-fin weathercock: qbar·Sv·lv·CNb_vt(beta).
-    prod!(QBAR, val!(SV_LV), Factor::Table1 { var: "aero/beta-rad", table: T_CNB_VT }),
+    prod!(
+        QBAR,
+        val!(SV_LV),
+        Factor::Table1 {
+            var: "aero/beta-rad",
+            table: T_CNB_VT
+        }
+    ),
     // Nv_vt — yaw moment due to v (momentum theory).
-    prod!(HIHAT, Factor::Table1 { var: "aero/mu", table: T_CNV_VT }, V_AERO),
+    prod!(
+        HIHAT,
+        Factor::Table1 {
+            var: "aero/mu",
+            table: T_CNV_VT
+        },
+        V_AERO
+    ),
     // Nr_vt — yaw moment due to r.
-    prod!(HWHAT, Factor::Table1 { var: "aero/mu", table: T_CNR_VT }, R_AERO),
+    prod!(
+        HWHAT,
+        Factor::Table1 {
+            var: "aero/mu",
+            table: T_CNR_VT
+        },
+        R_AERO
+    ),
     // Nr_limiter — extra yaw damping to tame hover, fading with advance ratio.
     prod!(
         val!(-0.1),
         HWHAT,
         R_AERO,
         val!(NR_LIMITER),
-        Factor::Table1 { var: "aero/mu", table: T_NR_LIM }
+        Factor::Table1 {
+            var: "aero/mu",
+            table: T_NR_LIM
+        }
     ),
 ]);
 
@@ -279,14 +317,20 @@ const PRE: &[NamedFn] = &[
     },
     NamedFn {
         name: "aero/abs-sin-alpha-sin2",
-        func: prod!(Factor::Prop("aero/abs-sin-alpha"), Factor::Prop("aero/sin2-alpha")),
+        func: prod!(
+            Factor::Prop("aero/abs-sin-alpha"),
+            Factor::Prop("aero/sin2-alpha")
+        ),
     },
     // Coefficients that depend on the sums above (downwash windows are disabled,
     // so their "compl" factor is 1.0 and drops out).
     NamedFn {
         name: "aero/coefficient/CLa_wing",
         func: prod!(
-            Factor::Table1 { var: "aero/alpha-iw-rad", table: T_CLA_WING },
+            Factor::Table1 {
+                var: "aero/alpha-iw-rad",
+                table: T_CLA_WING
+            },
             COS_B,
             COS_B
         ),
@@ -301,7 +345,10 @@ const PRE: &[NamedFn] = &[
     NamedFn {
         name: "aero/coefficient/CLa_ht",
         func: prod!(
-            Factor::Table1 { var: "aero/alpha-iht-rad", table: T_CLA_HT },
+            Factor::Table1 {
+                var: "aero/alpha-iht-rad",
+                table: T_CLA_HT
+            },
             COS_B,
             COS_B
         ),
@@ -468,4 +515,6 @@ pub const AH1S: Aircraft = Aircraft {
     gear_retractable: false,
     rotors: ROTORS,
     rest_h_ft: 6.0,
+    has_speedbrake: false,
+    max_reverse_lbs: 0.0,
 };

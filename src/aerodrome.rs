@@ -66,6 +66,74 @@ struct PapiMats {
 #[derive(Component)]
 struct Windsock;
 
+/// Segment layout for the painted threshold numbers: `(dx, dy, horizontal)`,
+/// in *half-cell* units, in a paper frame where +Y runs to the top of the
+/// glyph and +X to the reader's right.
+const SEGS: [(f32, f32, bool); 7] = [
+    (0.0, 1.0, true),    // A: top bar
+    (1.0, 0.5, false),   // B: upper right
+    (1.0, -0.5, false),  // C: lower right
+    (0.0, -1.0, true),   // D: bottom bar
+    (-1.0, -0.5, false), // E: lower left
+    (-1.0, 0.5, false),  // F: upper left
+    (0.0, 0.0, true),    // G: middle bar
+];
+
+/// Which segments make up each digit the thresholds need.
+fn digit_segs(d: char) -> &'static [usize] {
+    match d {
+        '0' => &[0, 1, 2, 3, 4, 5],
+        '1' => &[1, 2],
+        '3' => &[0, 1, 2, 3, 6],
+        '6' => &[0, 2, 3, 4, 5, 6],
+        '8' => &[0, 1, 2, 3, 4, 5, 6],
+        _ => &[],
+    }
+}
+
+/// Paint a two-digit runway designator as painted strokes. `mx`/`mz` map the
+/// paper frame into the world: 36 reads for a northbound pilot (paper right is
+/// world east, top of the glyph points north), 18 for a southbound one.
+#[allow(clippy::too_many_arguments)]
+fn paint_designator(
+    commands: &mut Commands,
+    quad: &Handle<Mesh>,
+    paint: &Handle<StandardMaterial>,
+    text: &str,
+    cx: f32,
+    cz: f32,
+    mx: f32,
+    mz: f32,
+) {
+    let cell_w = 5.6_f32;
+    let cell_h = 12.0_f32;
+    let seg = 1.1_f32;
+    let (half_w, half_h) = (cell_w * 0.5, cell_h * 0.5);
+    let step = cell_w + 1.2;
+    let y = PAINT_Y + 0.002;
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len() as f32;
+    for (i, d) in chars.iter().enumerate() {
+        // The '1' is a single right-side stroke; recentre that digit.
+        let mut px = (i as f32 - (n - 1.0) * 0.5) * step;
+        if *d == '1' {
+            px -= half_w - seg * 0.5;
+        }
+        for &si in digit_segs(*d) {
+            let (dx, dy, horiz) = SEGS[si];
+            let sx = cx + px + dx * half_w * mx;
+            let sz = cz + dy * half_h * mz;
+            let (w, l) = if horiz { (cell_w, seg) } else { (seg, half_h) };
+            commands.spawn((
+                Mesh3d(quad.clone()),
+                MeshMaterial3d(paint.clone()),
+                Transform::from_xyz(sx, y, sz).with_scale(Vec3::new(w, 1.0, l)),
+                DespawnOnExit(AppState::Flying),
+            ));
+        }
+    }
+}
+
 pub struct AerodromePlugin;
 
 impl Plugin for AerodromePlugin {
@@ -88,9 +156,11 @@ fn spawn_aerodrome(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // The airfield belongs to the default C172 scene. Missions force the F-22
+    // The airfield belongs to the default scene: the C172's home club and the
+    // 737's (short but usable) practice runway. Missions force the F-22
     // and build their own terrain.
-    if aircraft_profile::normalized(&sim.name) != "c172p" || map.0.is_some() {
+    let n = aircraft_profile::normalized(&sim.name);
+    if !matches!(n, "c172p" | "737") || map.0.is_some() {
         return;
     }
 
@@ -262,6 +332,28 @@ fn spawn_aerodrome(
             PAINT_Y,
         );
     }
+    // Threshold designators: "36" just past the north bars, the reciprocal
+    // "18" just past the south ones, both reading toward their approach.
+    paint_designator(
+        &mut commands,
+        &quad,
+        &paint,
+        "36",
+        0.0,
+        THRESHOLD_Z - 16.0,
+        1.0,
+        -1.0,
+    );
+    paint_designator(
+        &mut commands,
+        &quad,
+        &paint,
+        "18",
+        0.0,
+        RUNWAY_END_Z + 16.0,
+        -1.0,
+        1.0,
+    );
     // Aiming points, 300 m in from each threshold.
     for (end, into) in [(THRESHOLD_Z, -1.0_f32), (RUNWAY_END_Z, 1.0_f32)] {
         for x in [-7.0, 7.0] {
@@ -492,13 +584,31 @@ fn update_papi(
     }
 }
 
-/// The windsock points downwind. The sim has no wind in the FDM yet, so it
-/// hangs in an arbitrary light northerly and sways a little.
-fn update_windsock(time: Res<Time>, mut q: Query<&mut Transform, With<Windsock>>) {
-    let sway = (time.elapsed_secs() * 1.3).sin() * 0.06;
+/// The windsock reads the weather's wind: it swings round to lie downwind and
+/// its droop shrinks as the wind strengthens (calm hangs limp, 15 kt lies it
+/// flat). The FDM gets the same field through the property bus, so what the
+/// pilot sees on the ground is what the aircraft feels.
+fn update_windsock(
+    time: Res<Time>,
+    weather: Res<crate::weather::Weather>,
+    mut q: Query<&mut Transform, With<Windsock>>,
+) {
+    let sway = (time.elapsed_secs() * 1.3).sin() * 0.05;
+    //_mount: align + droop + sway, ordering matters for the droop axis
+    let toward = weather.wind_toward_deg().to_radians();
+    let droop = (std::f32::consts::FRAC_PI_2 - weather.wind_kts * 0.11)
+        .clamp(0.0, std::f32::consts::FRAC_PI_2);
     let base = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+    let align = Quat::from_rotation_y(std::f32::consts::PI - toward);
+    let hang = Quat::from_rotation_x(droop);
+    let sway_q = Quat::from_rotation_y(sway);
+    let rotation = align * hang * sway_q * base;
+    // Keep the wide mouth anchored at the pole top while the tail swings.
+    let tip = rotation * Vec3::Y;
+    let anchor = Vec3::new(28.0, 6.2, -60.0);
     for mut tf in &mut q {
-        tf.rotation = Quat::from_rotation_y(sway) * base;
+        tf.rotation = rotation;
+        tf.translation = anchor + tip * 1.3;
     }
 }
 

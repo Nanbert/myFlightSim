@@ -94,8 +94,17 @@ fn main() {
     println!("aircraft = {ac}   IC: {vc} kt at {alt} ft, full throttle\n");
     println!(
         "{:>5} | {:>9} {:>7} {:>7} {:>7} | {:>9} {:>7} {:>7} {:>7} | {:>8} {:>8}",
-        "t", "h_jsb", "vc_jsb", "th_jsb", "rpm_jsb", "h_rust", "vc_rust", "th_rust", "rpm_rust",
-        "dh", "dvc"
+        "t",
+        "h_jsb",
+        "vc_jsb",
+        "th_jsb",
+        "rpm_jsb",
+        "h_rust",
+        "vc_rust",
+        "th_rust",
+        "rpm_rust",
+        "dh",
+        "dvc"
     );
 
     let mut peak = (0.0f64, 0.0f64);
@@ -125,8 +134,19 @@ fn main() {
 
     println!(
         "\n{:>5} | {:>6} {:>6} | {:>8} {:>7} {:>7} {:>8} {:>8} | {:>8} {:>7} {:>7} {:>8} {:>8}",
-        "t", "al_jsb", "al_rs", "qbar_jsb", "fbz_jsb", "thr_j", "maero_j", "mprop_j", "qbar_rs",
-        "fbz_rs", "thr_r", "maero_r", "mprop_r"
+        "t",
+        "al_jsb",
+        "al_rs",
+        "qbar_jsb",
+        "fbz_jsb",
+        "thr_j",
+        "maero_j",
+        "mprop_j",
+        "qbar_rs",
+        "fbz_rs",
+        "thr_r",
+        "maero_r",
+        "mprop_r"
     );
     let mut jsb2: Box<dyn FlightModel> = Box::new(jsbsim_sys::Fdm::load(&ac, DT));
     let mut rust2: Box<dyn FlightModel> = Box::new(fdm::Fdm::new(&ac));

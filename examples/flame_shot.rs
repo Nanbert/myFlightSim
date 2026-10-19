@@ -9,20 +9,20 @@
 //! up and back down, so the plume's automatic growth and fade are on camera.
 //! Shots land in `/tmp/opencode/`.
 
-#[path = "../src/cloud_camera.rs"]
-mod cloud_camera;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
 #[path = "../src/app_state.rs"]
 mod app_state;
+#[path = "../src/autopilot.rs"]
+mod autopilot;
+#[path = "../src/cloud_camera.rs"]
+mod cloud_camera;
 #[path = "../src/config.rs"]
 mod config;
 #[path = "../src/fx.rs"]
 mod fx;
 #[path = "../src/input.rs"]
 mod input;
-#[path = "../src/autopilot.rs"]
-mod autopilot;
 #[path = "../src/sim.rs"]
 mod sim;
 #[path = "../src/view.rs"]
@@ -77,7 +77,10 @@ fn main() {
             (view::spawn_flight_aircraft, view::reset_control_rig).chain(),
         )
         .init_resource::<Frame>()
-        .insert_resource(Scene { afterburner, arcade })
+        .insert_resource(Scene {
+            afterburner,
+            arcade,
+        })
         .add_systems(Startup, launch)
         .add_systems(Update, report)
         .add_systems(Last, drive)
@@ -91,7 +94,8 @@ fn main() {
 fn launch(scene: Res<Scene>, mut sim: ResMut<sim::Sim>) {
     // Arcade changes what trim means, so select it before the reset seats the
     // realistic trim (a no-op under arcade).
-    sim.model.set("fcs/arcade-enable", scene.arcade as i32 as f64);
+    sim.model
+        .set("fcs/arcade-enable", scene.arcade as i32 as f64);
     sim.reset_air(12_000.0, 320.0);
 }
 
@@ -140,10 +144,7 @@ fn drive(scene: Res<Scene>, f: Res<Frame>, mut bindings: ResMut<input::Bindings>
 }
 
 /// Sit off the tail, looking forward up the plume.
-fn chase_cam(
-    rp: Res<sim::RenderPose>,
-    mut q: Query<&mut Transform, With<Camera3d>>,
-) {
+fn chase_cam(rp: Res<sim::RenderPose>, mut q: Query<&mut Transform, With<Camera3d>>) {
     let Ok(mut t) = q.single_mut() else { return };
     if !rp.init {
         return;
@@ -175,7 +176,13 @@ fn shot(
     // and the rest after it. Arcade: the lever sweeps, so these catch the plume
     // ramping up, holding at full reheat, and fading back to a dry stub.
     let shots: &[(u32, &str)] = if scene.arcade {
-        &[(100, "ramp"), (170, "full"), (240, "hold"), (320, "fade"), (380, "dry")]
+        &[
+            (100, "ramp"),
+            (170, "full"),
+            (240, "hold"),
+            (320, "fade"),
+            (380, "dry"),
+        ]
     } else {
         &[(26, "ign"), (46, "a"), (110, "b"), (220, "c")]
     };

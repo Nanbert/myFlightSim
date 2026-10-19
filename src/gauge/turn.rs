@@ -132,8 +132,22 @@ pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         spawn_label(p, "COORDINATOR", c, c - DIAL_PX * 0.55, 12.0, Color::WHITE);
 
         // Tube ends.
-        spawn_label(p, "L", c - DIAL_PX * 0.43, c + DIAL_PX * 0.36, 14.0, Color::WHITE);
-        spawn_label(p, "R", c + DIAL_PX * 0.43, c + DIAL_PX * 0.36, 14.0, Color::WHITE);
+        spawn_label(
+            p,
+            "L",
+            c - DIAL_PX * 0.43,
+            c + DIAL_PX * 0.36,
+            14.0,
+            Color::WHITE,
+        );
+        spawn_label(
+            p,
+            "R",
+            c + DIAL_PX * 0.43,
+            c + DIAL_PX * 0.36,
+            14.0,
+            Color::WHITE,
+        );
 
         spawn_label(p, "2 MIN", c, c + DIAL_PX * 0.70, 12.0, Color::WHITE);
         spawn_label(p, "NO PITCH", c, c + DIAL_PX * 0.80, 9.0, dim);

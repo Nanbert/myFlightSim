@@ -370,6 +370,8 @@ fn b737(keymap: &Keymap) -> Vec<String> {
     p.row("LVL CHG", toggle(&b, ToggleAction::LvlChg));
     p.row("A/T", toggle(&b, ToggleAction::AutoThrottle));
     p.row("IAS / MACH", toggle(&b, ToggleAction::SpeedMach));
+    p.row("Speedbrake", toggle(&b, ToggleAction::SpeedBrake));
+    p.row("Reverse", toggle(&b, ToggleAction::Reverse));
     common_tail_rows(&mut p, &b);
 
     p.heading("USING THE AUTOPILOT (GAME)");
@@ -382,10 +384,34 @@ fn b737(keymap: &Keymap) -> Vec<String> {
     p.line("     click the knob halves for fine steps. In the cockpit, click");
     p.line("     the modelled MCP board to focus it.");
     p.line("  3. 1 = HDG SEL, 2 = ALT HOLD (captures now), 3 = V/S,");
-    p.line("     4 = LVL CHG, 5 = A/T, M = IAS/MACH display.");
+    p.line("     4 = LVL CHG, 5 = A/T, M = IAS/MACH display, 6 = APP.");
     p.line("  4. V/S and LVL CHG capture the MCP altitude when reached.");
     p.line("     LVL CHG flies speed on pitch with A/T N1, then hands back to");
     p.line("     SPD when the altitude is captured.");
+
+    p.heading("ILS APPROACH WITH APP (GAME)");
+    p.line("  MYFS has a full ILS on both runway ends (course 360 / 180).");
+    p.line("  1. Fly south of the field, gear down (a quick way in: press Y");
+    p.line("     or edit the flight, or just fly out and come back around).");
+    p.line("  2. Inside 5 NM of the final the beams are live; the PFD shows");
+    p.line("     the deviation scales and the MCP APP light arms both beams.");
+    p.line("  3. Intercept: cross the localizer inside 1.6 deg while");
+    p.line("     descending (V/S with the bar) and APP captures LOC, then");
+    p.line("     G/S once it is on the localizer at the beam.");
+    p.line("  4. The A/P flies beams; the A/T holds the MCP speed, then");
+    p.line("     RETARDs to idle at 27 ft. Below 50 ft it flares itself and");
+    p.line("     drops off at touchdown. Land: spoilers L, reverse K, brake.");
+    p.line("     Amber GLIDESLOPE / SINK RATE annunciations watch the sink.");
+
+    p.heading("SPEEDBRAKE AND REVERSE (GAME)");
+    p.line("  Speedbrake toggles the flight spoilers: an extra stall of drag");
+    p.line("  and a 15% lift cut, both real model coefficients. Use them for");
+    p.line("  level fast descents and on the landing roll.");
+    p.line("  Reverse arms the thrust buckets; the FDM only bites while the");
+    p.line("  wheels carry weight, and it stows itself the moment you leave");
+    p.line("  the ground. Keep the throttles near idle and hold reverse to");
+    p.line("  about 80 kt, then brakes (B) do the rest. Reverse drops the");
+    p.line("  autothrottle, as the retard would on the real jet.");
 
     p.heading("FIRST FLIGHT (GAME)");
     p.line("  1. You spawn on the runway at 60% power. Set flaps with F.");
@@ -411,9 +437,8 @@ fn b737(keymap: &Keymap) -> Vec<String> {
     p.line("  taxi in and shut down.");
 
     p.heading("NOT MODELLED YET (TODO)");
-    p.line("  TODO FMC/CDU, LNAV/VNAV, route, performance and fuel.");
-    p.line("  TODO ILS/glideslope, autoland and flight-director modes.");
-    p.line("  TODO autobrake, spoilers/speedbrake and reverse thrust.");
+    p.line("  TODO FMC/CDU, LNAV/VNAV, route, performance and fuel (in work).");
+    p.line("  TODO autobrake, ground spoilers and auto-stow speedbrake on exit.");
     p.line("  TODO engine start, pressurisation, hydraulics and failures.");
     p.line("  TODO full 737 systems, checklists and crew coordination.");
 

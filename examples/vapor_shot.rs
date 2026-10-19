@@ -8,26 +8,26 @@
 //! lights up on the descending wing alone; `SCENE=sonic` flies fast for the
 //! Mach-1 cone. Shots land in `/tmp/opencode/`.
 
-#[path = "../src/cloud_camera.rs"]
-mod cloud_camera;
-#[path = "../src/map.rs"]
-mod map;
-#[path = "../src/sky.rs"]
-mod sky;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
 #[path = "../src/app_state.rs"]
 mod app_state;
+#[path = "../src/autopilot.rs"]
+mod autopilot;
+#[path = "../src/cloud_camera.rs"]
+mod cloud_camera;
 #[path = "../src/config.rs"]
 mod config;
 #[path = "../src/fx.rs"]
 mod fx;
 #[path = "../src/input.rs"]
 mod input;
-#[path = "../src/autopilot.rs"]
-mod autopilot;
+#[path = "../src/map.rs"]
+mod map;
 #[path = "../src/sim.rs"]
 mod sim;
+#[path = "../src/sky.rs"]
+mod sky;
 #[path = "../src/vapor.rs"]
 mod vapor;
 #[path = "../src/view.rs"]
@@ -40,9 +40,9 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::post_process::bloom::Bloom;
 use bevy::post_process::motion_blur::MotionBlur;
 use bevy::prelude::*;
+use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 use bevy::render::view::{DebandDither, Msaa};
 use bevy::window::PresentMode;
-use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 use bevy::winit::WinitSettings;
 
 #[derive(Resource, Default)]

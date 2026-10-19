@@ -277,10 +277,7 @@ fn shoot(
     if let Some((vi, ai)) = shot_at(now) {
         let f = (now - START) % SHOT_FRAMES;
         if f == SHOT_FRAMES - 3 {
-            let path = format!(
-                "/tmp/sea_{}_{}m.png",
-                VARIANTS[vi].name, ALTS[ai].0 as u32
-            );
+            let path = format!("/tmp/sea_{}_{}m.png", VARIANTS[vi].name, ALTS[ai].0 as u32);
             commands
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk(path.clone()));

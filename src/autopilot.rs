@@ -139,7 +139,11 @@ impl Mcp {
                 self.hdg_deg = (self.hdg_deg + dir * step).rem_euclid(360.0);
             }
             McpWindow::Altitude => {
-                let step = if fine { ALT_STEP_FT / 10.0 } else { ALT_STEP_FT };
+                let step = if fine {
+                    ALT_STEP_FT / 10.0
+                } else {
+                    ALT_STEP_FT
+                };
                 self.alt_ft = (self.alt_ft + dir * step).clamp(0.0, 50_000.0);
             }
             McpWindow::VerticalSpeed => {
@@ -171,6 +175,9 @@ impl Mcp {
 pub enum LatMode {
     Off,
     HdgSel,
+    /// Captured the localizer (APP). The A/P steers the captured course with a
+    /// deviation nulling correction; the MCP heading bug is ignored.
+    Loc,
 }
 
 /// Vertical modes.
@@ -180,6 +187,11 @@ pub enum VertMode {
     AltHold,
     Vs,
     LvlChg,
+    /// Captured the glideslope (APP). Flies a 3° VS schedule with beam
+    /// correction, then flare below 50 ft.
+    Gs,
+    /// The flare: pitch up and settle onto the runway.
+    Flare,
 }
 
 /// Autothrottle modes.
@@ -210,6 +222,11 @@ pub struct Autopilot {
     /// Attitude the flight director is commanding, for the PFD's magenta bars.
     pub fd_pitch_deg: f64,
     pub fd_bank_deg: f64,
+    /// APP armed: watching both beams inside an ILS volume. Cleared as each
+    /// one captures (LOC then GS), and by a second APP press.
+    pub app_armed: bool,
+    /// Course the localizer was captured on (the beam, not the MCP bug).
+    loc_course_deg: f64,
 }
 
 impl Default for Autopilot {
@@ -227,9 +244,36 @@ impl Default for Autopilot {
             disc_timer: 0.0,
             fd_pitch_deg: 0.0,
             fd_bank_deg: 0.0,
+            app_armed: false,
+            loc_course_deg: 0.0,
         }
     }
 }
+
+/// APP capture gates. Capture when the deviation is under a fraction of one
+/// full-scale dot and closing.
+const LOC_CAPTURE_DEG: f64 = 1.6;
+const GS_CAPTURE_DEG: f64 = 0.25;
+/// LOC steering: degrees of course per degree of deviation, and its clamp.
+const LOC_COURSE_GAIN: f64 = 3.0;
+const LOC_COURSE_MAX_DEG: f64 = 30.0;
+/// GS steering: the 3° schedule at groundspeed, plus this much descent per foot
+/// above the beam.
+const GS_HEIGHT_TO_VS: f64 = 3.0;
+const GS_VS_MIN_FPM: f64 = -1_400.0;
+const GS_VS_MAX_FPM: f64 = -150.0;
+/// Flare: starts below this radar height, blending toward the touchdown sink.
+const FLARE_START_FT: f64 = 50.0;
+/// Autothrottle retards to idle at this radar height (the real RETARD point).
+const RETARD_FT: f64 = 27.0;
+/// Unit plumbing for the GS schedule: knots -> fpm (1 kt = 1.68781 fps),
+/// tan(3°), and feet per metre.
+const KT_TO_FPM: f64 = 101.27;
+const SLOPE_TAN: f64 = 0.052_408;
+const FT_PER_M: f64 = 3.280_84;
+/// Sink rate the flare settles onto: a k² blend toward this from the beam's
+/// −700-ish fpm, so the last 50 ft bleed from −700 to −120 then touch.
+const VS_FLARE_FPM: f64 = -120.0;
 
 impl Autopilot {
     pub fn reset(&mut self) {
@@ -268,6 +312,7 @@ impl Autopilot {
         self.pitch_int = 0.0;
         self.fd_pitch_deg = 0.0;
         self.fd_bank_deg = 0.0;
+        self.app_armed = false;
     }
 
     /// Whether the amber AP DISC annunciation is still showing.
@@ -282,6 +327,17 @@ impl Autopilot {
         self.vs_int = 0.0;
         self.spd_int = 0.0;
         self.pitch_int = 0.0;
+        // Selecting any conventional mode cancels APP (as pressing the
+        // real buttons does).
+        if self.engaged {
+            match action {
+                ToggleAction::HdgSel
+                | ToggleAction::AltHold
+                | ToggleAction::VsMode
+                | ToggleAction::LvlChg => self.app_armed = false,
+                _ => {}
+            }
+        }
         match action {
             ToggleAction::HdgSel if self.engaged => self.lat = LatMode::HdgSel,
             ToggleAction::AltHold if self.engaged => {
@@ -296,6 +352,15 @@ impl Autopilot {
                 self.vert = VertMode::LvlChg;
                 self.at = AtMode::N1;
                 self.at_integral = 0.0;
+            }
+            // APP arms both beams. A second press while armed disengages APP
+            // without touching anything captured.
+            ToggleAction::Approach if self.engaged => {
+                if self.app_armed {
+                    self.app_armed = false;
+                } else {
+                    self.app_armed = true;
+                }
             }
             ToggleAction::AutoThrottle => {
                 self.at = match self.at {
@@ -334,12 +399,15 @@ impl Autopilot {
         let lat = match self.lat {
             LatMode::Off => "---",
             LatMode::HdgSel => "HDG SEL",
+            LatMode::Loc => "LOC",
         };
         let vert = match self.vert {
             VertMode::Off => "---",
             VertMode::AltHold => "ALT HOLD",
             VertMode::Vs => "V/S",
             VertMode::LvlChg => "LVL CHG",
+            VertMode::Gs => "G/S",
+            VertMode::Flare => "FLARE",
         };
         if at.is_empty() {
             format!("CMD  {lat}  {vert}")
@@ -381,20 +449,64 @@ impl Sensors {
 /// Advance the autopilot one FDM step. Writes throttle when the A/T is on, and
 /// elevator/aileron when the A/P is engaged. Everything else (flaps, gear,
 /// trim, rudder) stays with the pilot.
-pub fn advance(model: &mut dyn FlightModel, mcp: &Mcp, ap: &mut Autopilot, dt: f64) {
+pub fn advance(
+    model: &mut dyn FlightModel,
+    mcp: &Mcp,
+    ap: &mut Autopilot,
+    dt: f64,
+    ils: &crate::ils::Ils,
+) {
     if ap.disc_timer > 0.0 {
         ap.disc_timer = (ap.disc_timer - dt).max(0.0);
     }
 
     let s = Sensors::read(model);
+    let radar_ft = model.get("position/h-agl-ft");
+    let on_ground = model.get("gear/wow") > 0.5;
+
+    // Touchdown is the end of the approach: real autoland drops off and the
+    // pilot takes the reverse and the rollout.
+    if on_ground && ap.vert == VertMode::Flare {
+        ap.disengage();
+        return;
+    }
+
+    // Beam capture while APP is armed. LOC first (it must be on the localizer
+    // before the glideslope will arm-in, as on the real jet), then GS.
+    if ap.app_armed && ap.engaged && ils.available {
+        if ap.lat != LatMode::Loc && ils.loc_dev_deg.abs() < LOC_CAPTURE_DEG {
+            ap.lat = LatMode::Loc;
+            ap.loc_course_deg = ils.course_deg;
+        }
+        if ap.lat == LatMode::Loc
+            && ap.vert != VertMode::Gs
+            && ap.vert != VertMode::Flare
+            && ils.gs_dev_deg.abs() < GS_CAPTURE_DEG
+            && s.vs_fpm < -50.0
+        {
+            ap.vert = VertMode::Gs;
+        }
+        if ap.lat == LatMode::Loc && matches!(ap.vert, VertMode::Gs | VertMode::Flare) {
+            // Both beams flying: APP is no longer "armed", it is flying.
+            ap.app_armed = false;
+        }
+    }
 
     if ap.at != AtMode::Off {
-        let throttle = match ap.at {
-            AtMode::Speed => speed_throttle(mcp.speed_error(&s), &mut ap.at_integral, dt),
-            AtMode::N1 => n1_throttle(mcp.alt_ft, s.alt_ft),
-            AtMode::Off => unreachable!(),
-        };
-        model.set("fcs/throttle-cmd-norm", throttle);
+        // RETARD: at flare height the A/T pulls the throttles to idle and
+        // releases them to the pilot.
+        if radar_ft < RETARD_FT && matches!(ap.vert, VertMode::Gs | VertMode::Flare) {
+            ap.at = AtMode::Off;
+            ap.at_integral = 0.0;
+            model.set("fcs/throttle-cmd-norm", 0.0);
+        } else {
+            let throttle = match ap.at {
+                AtMode::Speed => speed_throttle(mcp.speed_error(&s), &mut ap.at_integral, dt),
+                AtMode::N1 => n1_throttle(mcp.alt_ft, s.alt_ft),
+                AtMode::Off => unreachable!(),
+            };
+            model.set("fcs/throttle-cmd-norm", throttle);
+        }
     } else {
         ap.at_integral = 0.0;
     }
@@ -404,10 +516,9 @@ pub fn advance(model: &mut dyn FlightModel, mcp: &Mcp, ap: &mut Autopilot, dt: f
     }
 
     // ALT ACQ: on reaching the MCP window, V/S and LVL CHG hand over to ALT
-    // HOLD. LVL CHG also hands the autothrottle from N1 to SPD.
-    if matches!(ap.vert, VertMode::Vs | VertMode::LvlChg)
-        && alt_capture(&s, mcp.alt_ft)
-    {
+    // HOLD. LVL CHG also hands the autothrottle from N1 to SPD. GS/flare fly
+    // the beam; the MCP window does not capture them.
+    if matches!(ap.vert, VertMode::Vs | VertMode::LvlChg) && alt_capture(&s, mcp.alt_ft) {
         ap.vert = VertMode::AltHold;
         ap.alt_hold_ft = mcp.alt_ft;
         if ap.at == AtMode::N1 {
@@ -418,6 +529,13 @@ pub fn advance(model: &mut dyn FlightModel, mcp: &Mcp, ap: &mut Autopilot, dt: f
 
     let (aileron, fd_bank) = match ap.lat {
         LatMode::HdgSel => heading_aileron(mcp.hdg_deg, &s),
+        // Fly the beam: the desired course is the captured one, biased by the
+        // localizer error (+dev = right of course → bias left).
+        LatMode::Loc => {
+            let steer = ap.loc_course_deg - (LOC_COURSE_GAIN * ils.loc_dev_deg)
+                .clamp(-LOC_COURSE_MAX_DEG, LOC_COURSE_MAX_DEG);
+            heading_aileron(steer, &s)
+        }
         LatMode::Off => (0.0, 0.0),
     };
 
@@ -440,6 +558,29 @@ pub fn advance(model: &mut dyn FlightModel, mcp: &Mcp, ap: &mut Autopilot, dt: f
             integrate(&mut ap.spd_int, -SPD_PITCH_KI * err, p, dt);
             (p + ap.spd_int).clamp(-PITCH_CMD_MAX_DEG, PITCH_CMD_MAX_DEG)
         }
+        // GS: the 3° schedule at the current groundspeed, corrected for the
+        // height above the beam. Below 50 ft the flare takes over; the pitch
+        // loop integrator carries over so the handover has no step.
+        VertMode::Gs | VertMode::Flare => {
+            ap.spd_int = 0.0;
+            if ap.vert == VertMode::Gs && radar_ft < FLARE_START_FT {
+                ap.vert = VertMode::Flare;
+            }
+            if ap.vert == VertMode::Flare {
+                let k = (1.0 - radar_ft / FLARE_START_FT).clamp(0.0, 1.0);
+                let vs_cmd = (VS_FLARE_FPM * k * k).max(GS_VS_MIN_FPM * 0.6);
+                vs_pitch(vs_cmd, &s, &mut ap.vs_int, dt)
+            } else {
+                // Groundspeed ~ IAS (no wind here); tan(3°) × 230 kt is about
+                // −720 fpm. The correction pulls down proportionally to the
+                // feet above the beam, so a high chirp steepens smoothly.
+                let slope_fpm = -s.ias_kts * KT_TO_FPM * SLOPE_TAN;
+                let above_ft = ils.gs_dev_deg.to_radians() * ils.dist_m * FT_PER_M;
+                let vs_cmd = (slope_fpm - GS_HEIGHT_TO_VS * above_ft)
+                    .clamp(GS_VS_MIN_FPM, GS_VS_MAX_FPM);
+                vs_pitch(vs_cmd, &s, &mut ap.vs_int, dt)
+            }
+        }
         VertMode::Off => {
             ap.vs_int = 0.0;
             ap.spd_int = 0.0;
@@ -453,11 +594,11 @@ pub fn advance(model: &mut dyn FlightModel, mcp: &Mcp, ap: &mut Autopilot, dt: f
 
     let theta_err = theta_cmd - s.theta_deg;
     let p = -PITCH_KP * theta_err;
-    let saturated =
-        (p + ap.pitch_int >= 1.0 && theta_err < 0.0) || (p + ap.pitch_int <= -1.0 && theta_err > 0.0);
+    let saturated = (p + ap.pitch_int >= 1.0 && theta_err < 0.0)
+        || (p + ap.pitch_int <= -1.0 && theta_err > 0.0);
     if !saturated {
-        ap.pitch_int = (ap.pitch_int - PITCH_KI * theta_err * dt)
-            .clamp(-PITCH_INT_LIMIT, PITCH_INT_LIMIT);
+        ap.pitch_int =
+            (ap.pitch_int - PITCH_KI * theta_err * dt).clamp(-PITCH_INT_LIMIT, PITCH_INT_LIMIT);
     }
     let elevator = (p + ap.pitch_int + PITCH_KD * s.q_dps).clamp(-1.0, 1.0);
 
@@ -481,8 +622,8 @@ fn integrate(integral: &mut f64, rate: f64, p: f64, dt: f64) {
     let saturated = (p + *integral >= PITCH_CMD_MAX_DEG && rate > 0.0)
         || (p + *integral <= -PITCH_CMD_MAX_DEG && rate < 0.0);
     if !saturated {
-        *integral = (*integral + rate * dt)
-            .clamp(-PITCH_INTEGRAL_LIMIT_DEG, PITCH_INTEGRAL_LIMIT_DEG);
+        *integral =
+            (*integral + rate * dt).clamp(-PITCH_INTEGRAL_LIMIT_DEG, PITCH_INTEGRAL_LIMIT_DEG);
     }
 }
 
@@ -677,8 +818,9 @@ mod tests {
     }
 
     fn run(m: &mut dyn FlightModel, mcp: &Mcp, ap: &mut Autopilot, secs: f64) {
+        let ils = crate::ils::Ils::none();
         for _ in 0..(secs / DT).round() as usize {
-            advance(m, mcp, ap, DT);
+            advance(m, mcp, ap, DT, &ils);
             m.step();
         }
     }
@@ -845,5 +987,87 @@ mod tests {
         let v = m.get("velocities/vc-kts");
         assert!((alt - 10_000.0).abs() < 350.0, "altitude {alt}");
         assert!((v - 250.0).abs() < 15.0, "speed {v}");
+    }
+
+    /// Hand-driven approach beams: a localizer fixed 0.8° left-of-centre
+    /// (inside capture), and a glideslope warming up as the real height error
+    /// against a beam 3000 m out. Standing in for `ils::compute`, which reads
+    /// the world pose instead.
+    fn approach_ils(m: &dyn FlightModel, dist_m: f64) -> crate::ils::Ils {
+        let alt_m = m.get("position/h-sl-ft") * 0.3048;
+        let beam_m = dist_m * SLOPE_TAN;
+        let gs_dev = ((alt_m - beam_m) / dist_m)
+            .atan()
+            .to_degrees()
+            .clamp(-1.4, 1.4);
+        crate::ils::Ils {
+            available: true,
+            loc_offset_m: 42.0,
+            loc_dev_deg: 0.8,
+            gs_dev_deg: gs_dev,
+            dist_m,
+            course_deg: 0.0,
+        }
+    }
+
+    #[test]
+    fn app_captures_loc_then_gs_flare_and_lands() {
+        let mut m = rust_737(2_000.0, 170.0);
+        m.set("gear/gear-cmd-norm", 1.0);
+        m.set("fcs/flap-cmd-norm", 0.5);
+        let mut mcp = Mcp::default();
+        mcp.ias_kts = 150.0;
+        let mut ap = Autopilot::default();
+        ap.toggle(&*m);
+        ap.press_mode(ToggleAction::AutoThrottle, &*m);
+        // Slide down first: glideslope capture wants an intercept.
+        mcp.vs_fpm = -1_200.0;
+        ap.press_mode(ToggleAction::VsMode, &*m);
+        let ils = approach_ils(&*m, 3_000.0);
+        for _ in 0..(10.0 / DT) as usize {
+            advance(&mut *m, &mcp, &mut ap, DT, &ils);
+            m.step();
+        }
+        assert_eq!(ap.vert, VertMode::Vs, "still descending on V/S");
+
+        // Arm APP: the localizer is inside the capture gate already.
+        ap.press_mode(ToggleAction::Approach, &*m);
+        assert!(ap.app_armed);
+
+        let mut saw_loc = false;
+        let mut saw_gs = false;
+        let secs = (300.0 / DT) as usize;
+        for i in 0..secs {
+            let ils = approach_ils(&*m, 3_000.0);
+            advance(&mut *m, &mcp, &mut ap, DT, &ils);
+            m.step();
+            if !saw_loc && ap.lat == LatMode::Loc {
+                saw_loc = true;
+            }
+            if !saw_gs && ap.vert == VertMode::Gs {
+                assert!(saw_loc, "G/S must come after LOC");
+                saw_gs = true;
+            }
+            if i % (60.0 / DT) as usize == 0 {
+                let alt = m.get("position/h-sl-ft");
+                assert!(alt > 0.0, "must not hit the deck before flare: {alt}");
+            }
+        }
+        assert!(saw_loc, "never captured LOC");
+        assert!(saw_gs, "never captured G/S (vert={:?})", ap.vert);
+
+        // The beam already led it down; by now it should have flared and
+        // landed, and touchdown drops the A/P.
+        assert!(
+            matches!(ap.vert, VertMode::Flare) || !ap.engaged,
+            "should flare or land, vert={:?}",
+            ap.vert
+        );
+        let landed = m.get("gear/wow") > 0.5;
+        if landed {
+            assert!(!ap.engaged, "A/P must drop on touchdown");
+        }
+        // Still bounded to a gentle descent overall (no crash dive).
+        assert!(m.get("position/h-sl-ft") < 2_100.0, "did not descend");
     }
 }

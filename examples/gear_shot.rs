@@ -4,18 +4,18 @@
 //!
 //! Run: `FDM_BACKEND=rust AIRCRAFT=f22 cargo run --example gear_shot`
 
-#[path = "../src/cloud_camera.rs"]
-mod cloud_camera;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
-#[path = "../src/config.rs"]
-mod config;
-#[path = "../src/input.rs"]
-mod input;
 #[path = "../src/app_state.rs"]
 mod app_state;
 #[path = "../src/autopilot.rs"]
 mod autopilot;
+#[path = "../src/cloud_camera.rs"]
+mod cloud_camera;
+#[path = "../src/config.rs"]
+mod config;
+#[path = "../src/input.rs"]
+mod input;
 #[path = "../src/sim.rs"]
 mod sim;
 #[path = "../src/view.rs"]

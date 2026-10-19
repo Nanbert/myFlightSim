@@ -133,7 +133,9 @@ fn face_sample(t: &Tables, x: f32, y: f32) -> [u8; 4] {
         c = TICK;
     }
     // The red VNE line, drawn last so it rides over ticks and arc.
-    if (0.68..0.905).contains(&u) && cw_between(ang, kt_to_angle(V_NE) - 0.6, kt_to_angle(V_NE) + 0.6) {
+    if (0.68..0.905).contains(&u)
+        && cw_between(ang, kt_to_angle(V_NE) - 0.6, kt_to_angle(V_NE) + 0.6)
+    {
         c = RED;
     }
     c
@@ -177,8 +179,22 @@ pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         }
 
         // Centre captions.
-        spawn_label(p, "AIRSPEED", c, c - DIAL_PX * 0.11, 12.0, Color::srgb(0.85, 0.85, 0.85));
-        spawn_label(p, "KNOTS", c, c + DIAL_PX * 0.11, 12.0, Color::srgb(0.85, 0.85, 0.85));
+        spawn_label(
+            p,
+            "AIRSPEED",
+            c,
+            c - DIAL_PX * 0.11,
+            12.0,
+            Color::srgb(0.85, 0.85, 0.85),
+        );
+        spawn_label(
+            p,
+            "KNOTS",
+            c,
+            c + DIAL_PX * 0.11,
+            12.0,
+            Color::srgb(0.85, 0.85, 0.85),
+        );
 
         // V-speed limit labels, just outside the bezel (yellow, like the
         // real placards).

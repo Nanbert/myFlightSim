@@ -182,8 +182,22 @@ pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         }
 
         // Centre caption.
-        spawn_label(p, "ALTITUDE", c, c + DIAL_PX * 0.36, 12.0, Color::srgb(0.85, 0.85, 0.85));
-        spawn_label(p, "FEET", c, c + DIAL_PX * 0.47, 10.0, Color::srgb(0.75, 0.75, 0.75));
+        spawn_label(
+            p,
+            "ALTITUDE",
+            c,
+            c + DIAL_PX * 0.36,
+            12.0,
+            Color::srgb(0.85, 0.85, 0.85),
+        );
+        spawn_label(
+            p,
+            "FEET",
+            c,
+            c + DIAL_PX * 0.47,
+            10.0,
+            Color::srgb(0.75, 0.75, 0.75),
+        );
 
         // Pressure-setting window: a light card holding the readout. The number
         // and its unit are *children* of the card, so flex centring puts them

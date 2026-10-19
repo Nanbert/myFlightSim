@@ -15,7 +15,12 @@ fn main() {
     };
 
     if std::env::var("TRIMTEST").is_ok() {
-        for (vc, alt) in [(80.0, 1000.0), (100.0, 2000.0), (120.0, 3000.0), (75.0, 500.0)] {
+        for (vc, alt) in [
+            (80.0, 1000.0),
+            (100.0, 2000.0),
+            (120.0, 3000.0),
+            (75.0, 500.0),
+        ] {
             m.set("ic/vc-kts", vc);
             m.set("ic/h-sl-ft", alt);
             m.set("ic/psi-true-deg", 0.0);
@@ -39,7 +44,10 @@ fn main() {
         m.set("ic/h-sl-ft", 3000.0);
         m.set("ic/psi-true-deg", 0.0);
         m.apply_ic();
-        println!("{:>6} {:>7} {:>6} {:>6} {:>6} {:>6}", "t[s]", "ALT", "IAS", "PITCH", "ROLL", "PSI");
+        println!(
+            "{:>6} {:>7} {:>6} {:>6} {:>6} {:>6}",
+            "t[s]", "ALT", "IAS", "PITCH", "ROLL", "PSI"
+        );
         for i in 0..=120 * 60 {
             m.set("fcs/throttle-cmd-norm", 0.0);
             m.set("fcs/elevator-cmd-norm", 0.0);

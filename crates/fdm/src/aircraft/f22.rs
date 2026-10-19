@@ -73,17 +73,21 @@ macro_rules! prod {
 // --- ground-effect functions (<function name="aero/function/...">) ---------
 
 const T_KCLGE: Table1 = Table1::new(
-    &[0.0, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1],
     &[
-        1.3893, 1.2108, 1.1972, 1.2108, 1.1785, 1.0697, 1.0578, 1.0323, 1.0136, 1.0051,
-        1.0017, 1.0, 1.0,
+        0.0, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1,
+    ],
+    &[
+        1.3893, 1.2108, 1.1972, 1.2108, 1.1785, 1.0697, 1.0578, 1.0323, 1.0136, 1.0051, 1.0017,
+        1.0, 1.0,
     ],
 );
 const T_KCDGE: Table1 = Table1::new(
-    &[0.0, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1],
     &[
-        0.5235, 0.4759, 0.5250, 0.5388, 0.5924, 0.6471, 0.6941, 0.7624, 0.8253, 0.8812,
-        0.9412, 1.0, 1.0,
+        0.0, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1,
+    ],
+    &[
+        0.5235, 0.4759, 0.5250, 0.5388, 0.5924, 0.6471, 0.6941, 0.7624, 0.8253, 0.8812, 0.9412,
+        1.0, 1.0,
     ],
 );
 
@@ -93,7 +97,10 @@ const T_CD0: Table1 = Table1::new(
     &[-1.5700, -0.2600, 0.0000, 0.2600, 1.5700],
     &[1.5000, 0.0480, 0.00820, 0.0480, 1.5000],
 );
-const T_CDMACH: Table1 = Table1::new(&[0.0, 0.81, 1.10, 1.80, 2.40], &[0.0, 0.0, 0.0220, 0.0140, 0.020]);
+const T_CDMACH: Table1 = Table1::new(
+    &[0.0, 0.81, 1.10, 1.80, 2.40],
+    &[0.0, 0.0, 0.0220, 0.0140, 0.020],
+);
 const T_CDBETA: Table1 = Table1::new(
     &[-1.5700, -0.2600, 0.0000, 0.2600, 1.5700],
     &[1.2300, 0.0500, 0.0000, 0.0500, 1.2300],
@@ -108,24 +115,27 @@ const ALPHA_XS: [f64; 12] = [
 ];
 /// The standard 16-point alpha breakpoint list used by the aileron/rudder terms.
 const ALPHA_XS16: [f64; 16] = [
-    -0.1745, -0.0873, 0.0, 0.0873, 0.1745, 0.2618, 0.3491, 0.4363, 0.5236, 0.6109, 0.6981,
-    0.7854, 0.8727, 1.0472, 1.2217, 1.3963,
+    -0.1745, -0.0873, 0.0, 0.0873, 0.1745, 0.2618, 0.3491, 0.4363, 0.5236, 0.6109, 0.6981, 0.7854,
+    0.8727, 1.0472, 1.2217, 1.3963,
 ];
 
 const T_CDDLEF: Table1 = Table1::new(
     &ALPHA_XS,
-    &[0.003, 0.001, 0.000, 0.001, 0.002, 0.004, 0.007, 0.011, 0.015, 0.019, 0.023, 0.024],
+    &[
+        0.003, 0.001, 0.000, 0.001, 0.002, 0.004, 0.007, 0.011, 0.015, 0.019, 0.023, 0.024,
+    ],
 );
 const T_CDQ: Table1 = Table1::new(
     &ALPHA_XS,
     &[
-        -1.265, -2.139, -0.308, 1.402, 3.369, 5.135, 6.880, 8.060, 11.201, 13.872,
-        19.217, 22.105,
+        -1.265, -2.139, -0.308, 1.402, 3.369, 5.135, 6.880, 8.060, 11.201, 13.872, 19.217, 22.105,
     ],
 );
 const T_CDQ_DLEF: Table1 = Table1::new(
     &ALPHA_XS,
-    &[0.067, 0.034, 0.028, 0.029, 0.033, 0.059, 0.061, 0.027, 0.036, 0.047, 0.029, 0.015],
+    &[
+        0.067, 0.034, 0.028, 0.029, 0.033, 0.059, 0.061, 0.027, 0.036, 0.047, 0.029, 0.015,
+    ],
 );
 
 const T_CYB_M: Table1 = Table1::new(&[0.4, 1.2, 1.6], &[0.0, 0.0573, -0.1719]);
@@ -133,25 +143,29 @@ const T_CYB_M: Table1 = Table1::new(&[0.4, 1.2, 1.6], &[0.0, 0.0573, -0.1719]);
 const T_CLALPHA: Table1 = Table1::new(&[-0.1745, 0.7854, 1.3963], &[-0.4279, 2.3000, 1.0726]);
 const T_CLDLEF: Table1 = Table1::new(
     &[
-        -0.175, -0.087, 0.0, 0.087, 0.175, 0.262, 0.349, 0.436, 0.524, 0.611, 0.698, 0.785,
-        0.8727, 1.0472, 1.2217, 1.3963,
+        -0.175, -0.087, 0.0, 0.087, 0.175, 0.262, 0.349, 0.436, 0.524, 0.611, 0.698, 0.785, 0.8727,
+        1.0472, 1.2217, 1.3963,
     ],
     &[
-        -0.012, -0.004, 0.002, 0.007, 0.012, 0.018, 0.022, 0.025, 0.026, 0.028, 0.030,
-        0.032, 0.030, 0.028, 0.025, 0.020,
+        -0.012, -0.004, 0.002, 0.007, 0.012, 0.018, 0.022, 0.025, 0.026, 0.028, 0.030, 0.032,
+        0.030, 0.028, 0.025, 0.020,
     ],
 );
 const T_CLQ: Table1 = Table1::new(
     &ALPHA_XS,
     &[
-        8.7127, 25.7114, 28.9000, 31.3973, 31.0872, 30.4071, 28.9735, 28.4242, 27.8647,
-        27.2654, 30.5158, 27.8165,
+        8.7127, 25.7114, 28.9000, 31.3973, 31.0872, 30.4071, 28.9735, 28.4242, 27.8647, 27.2654,
+        30.5158, 27.8165,
     ],
 );
 
 const T_CLB: Table1 = Table1::new(
-    &[-0.0873, 0.0, 0.0873, 0.1745, 0.2618, 0.3491, 0.4363, 0.5236, 0.6109],
-    &[0.0189, 0.0176, 0.0119, 0.0050, 0.0049, 0.0028, 0.0084, 0.0171, 0.0044],
+    &[
+        -0.0873, 0.0, 0.0873, 0.1745, 0.2618, 0.3491, 0.4363, 0.5236, 0.6109,
+    ],
+    &[
+        0.0189, 0.0176, 0.0119, 0.0050, 0.0049, 0.0028, 0.0084, 0.0171, 0.0044,
+    ],
 );
 const T_CLDA_M: Table1 = Table1::new(&[0.6, 1.2, 1.6], &[0.0, -0.063, -0.063]);
 const T_CLDR_M: Table1 = Table1::new(&[0.6, 1.6], &[0.0, -0.0201]);
@@ -159,22 +173,21 @@ const T_CLP: Table1 = Table1::new(&[0.0, 0.3490], &[-0.4000, -0.3100]);
 const T_CLR: Table1 = Table1::new(
     &ALPHA_XS,
     &[
-        -0.126, -0.026, 0.063, 0.113, 0.208, 0.230, 0.319, 0.437, 0.680, 0.100, 0.447,
-        -0.330,
+        -0.126, -0.026, 0.063, 0.113, 0.208, 0.230, 0.319, 0.437, 0.680, 0.100, 0.447, -0.330,
     ],
 );
 const T_CLDA: Table1 = Table1::new(
     &ALPHA_XS16,
     &[
-        0.045, 0.052, 0.060, 0.057, 0.052, 0.047, 0.040, 0.034, 0.029, 0.023, 0.019,
-        0.015, 0.012, 0.011, 0.009, 0.008,
+        0.045, 0.052, 0.060, 0.057, 0.052, 0.047, 0.040, 0.034, 0.029, 0.023, 0.019, 0.015, 0.012,
+        0.011, 0.009, 0.008,
     ],
 );
 const T_CLDR: Table1 = Table1::new(
     &ALPHA_XS16,
     &[
-        0.0078, 0.0070, 0.0059, 0.0043, 0.0023, 0.0007, -0.0008, 0.0004, 0.0019, 0.0019,
-        0.0017, 0.0009, 0.0003, 0.0, 0.0, 0.0,
+        0.0078, 0.0070, 0.0059, 0.0043, 0.0023, 0.0007, -0.0008, 0.0004, 0.0019, 0.0019, 0.0017,
+        0.0009, 0.0003, 0.0, 0.0, 0.0,
     ],
 );
 
@@ -185,8 +198,7 @@ const T_CMA_M: Table1 = Table1::new(
 const T_CMQ: Table1 = Table1::new(
     &ALPHA_XS,
     &[
-        -7.21, -5.40, -5.23, -5.26, -6.11, -6.64, -5.69, -6.00, -6.20, -6.40, -6.60,
-        -6.00,
+        -7.21, -5.40, -5.23, -5.26, -6.11, -6.64, -5.69, -6.00, -6.20, -6.40, -6.60, -6.00,
     ],
 );
 const T_CMADOT: Table1 = Table1::new(&[0.257, 1.8], &[-1.5611, -2.05]);
@@ -199,23 +211,23 @@ const T_CNB_M: Table1 = Table1::new(
 const T_CNR: Table1 = Table1::new(
     &ALPHA_XS,
     &[
-        -0.380, -0.363, -0.378, -0.386, -0.370, -0.453, -0.550, -0.582, -0.595, -0.637,
-        -1.020, -0.840,
+        -0.380, -0.363, -0.378, -0.386, -0.370, -0.453, -0.550, -0.582, -0.595, -0.637, -1.020,
+        -0.840,
     ],
 );
 const T_CNDR: Table1 = Table1::new(
     &ALPHA_XS16,
     &[
-        -0.048, -0.045, -0.045, -0.045, -0.044, -0.045, -0.047, -0.048, -0.040, -0.033,
-        -0.025, -0.017, -0.010, -0.0075, -0.0075, -0.0075,
+        -0.048, -0.045, -0.045, -0.045, -0.044, -0.045, -0.047, -0.048, -0.040, -0.033, -0.025,
+        -0.017, -0.010, -0.0075, -0.0075, -0.0075,
     ],
 );
 const T_CNDR_M: Table1 = Table1::new(&[0.6, 1.2, 1.6], &[0.0, 0.0401, 0.0716]);
 const T_CNDA: Table1 = Table1::new(
     &ALPHA_XS16,
     &[
-        0.010, 0.009, 0.010, 0.009, 0.008, 0.006, -0.002, -0.003, -0.005, -0.008, -0.006,
-        -0.006, -0.008, -0.010, -0.011, -0.013,
+        0.010, 0.009, 0.010, 0.009, 0.008, 0.006, -0.002, -0.003, -0.005, -0.008, -0.006, -0.006,
+        -0.008, -0.010, -0.011, -0.013,
     ],
 );
 
@@ -225,8 +237,8 @@ const T_CNDA: Table1 = Table1::new(
 /// the primary source of pitch stability at low Mach, where Cma is neutral.
 const T_CMDH: Table2 = Table2::new(
     &[
-        -0.0873, 0.0, 0.0873, 0.1745, 0.2618, 0.3491, 0.4363, 0.5236, 0.6109, 0.6981,
-        0.7854, 0.8727, 1.0472, 1.2217,
+        -0.0873, 0.0, 0.0873, 0.1745, 0.2618, 0.3491, 0.4363, 0.5236, 0.6109, 0.6981, 0.7854,
+        0.8727, 1.0472, 1.2217,
     ],
     &[-0.5236, 0.0, 0.5236],
     &[
@@ -251,8 +263,8 @@ const T_CMDH: Table2 = Table2::new(
 /// FCS (which leaves `fcs/tvc-pos-rad` at 0), kept so the term is present.
 const T_CMDTV: Table2 = Table2::new(
     &[
-        -0.0873, 0.0, 0.0873, 0.1745, 0.2618, 0.3491, 0.4363, 0.5236, 0.6109, 0.6981,
-        0.7854, 0.8727, 1.0472, 1.2217,
+        -0.0873, 0.0, 0.0873, 0.1745, 0.2618, 0.3491, 0.4363, 0.5236, 0.6109, 0.6981, 0.7854,
+        0.8727, 1.0472, 1.2217,
     ],
     &[-0.3491, 0.0, 0.3491],
     &[
@@ -278,11 +290,26 @@ const T_CMDTV: Table2 = Table2::new(
 /// Force axes are DRAG, SIDE, LIFT (wind frame).
 const DRAG: Axis = Axis::new(&[
     // CD0 — drag at zero lift
-    prod!(QBAR, SW, KCDGE, Factor::Table1 { var: "aero/alpha-rad", table: T_CD0 }),
+    prod!(
+        QBAR,
+        SW,
+        KCDGE,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CD0
+        }
+    ),
     // CDi — induced drag (needs the previous frame's CL²)
     prod!(QBAR, SW, CL2, KCDGE, val!(0.0700)),
     // CDmach — drag rise with Mach
-    prod!(QBAR, SW, Factor::Table1 { var: "velocities/mach", table: T_CDMACH }),
+    prod!(
+        QBAR,
+        SW,
+        Factor::Table1 {
+            var: "velocities/mach",
+            table: T_CDMACH
+        }
+    ),
     // CDflap — trailing-edge flaps
     prod!(QBAR, SW, FLAPN, KCDGE, val!(0.0750)),
     // CDgear — landing gear
@@ -290,23 +317,74 @@ const DRAG: Axis = Axis::new(&[
     // CDsb — speedbrakes
     prod!(QBAR, SW, SBN, val!(0.0240)),
     // CDbeta — sideslip
-    prod!(QBAR, SW, KCDGE, Factor::Table1 { var: "aero/beta-rad", table: T_CDBETA }),
+    prod!(
+        QBAR,
+        SW,
+        KCDGE,
+        Factor::Table1 {
+            var: "aero/beta-rad",
+            table: T_CDBETA
+        }
+    ),
     // CDde — elevator deflection
-    prod!(QBAR, SW, KCDGE, Factor::Table1 { var: "fcs/elevator-pos-rad", table: T_CDDE }),
+    prod!(
+        QBAR,
+        SW,
+        KCDGE,
+        Factor::Table1 {
+            var: "fcs/elevator-pos-rad",
+            table: T_CDDE
+        }
+    ),
     // CDDlef — leading-edge flaps
-    prod!(QBAR, SW, KCDGE, LEF, Factor::Table1 { var: "aero/alpha-rad", table: T_CDDLEF }),
+    prod!(
+        QBAR,
+        SW,
+        KCDGE,
+        LEF,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CDDLEF
+        }
+    ),
     // CDq — pitch rate
-    prod!(QBAR, SW, Q_AERO, CI2VEL, Factor::Table1 { var: "aero/alpha-rad", table: T_CDQ }),
+    prod!(
+        QBAR,
+        SW,
+        Q_AERO,
+        CI2VEL,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CDQ
+        }
+    ),
     // CDq_Dlef — pitch rate × leading-edge flaps
-    prod!(QBAR, SW, Q_AERO, CI2VEL, LEF, Factor::Table1 {
-        var: "aero/alpha-rad", table: T_CDQ_DLEF }),
+    prod!(
+        QBAR,
+        SW,
+        Q_AERO,
+        CI2VEL,
+        LEF,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CDQ_DLEF
+        }
+    ),
 ]);
 
 const SIDE: Axis = Axis::new(&[
     // CYb — side force due to beta
     prod!(QBAR, SW, BETA, val!(-1.7875)),
     // CYb_M — beta × Mach
-    prod!(QBAR, SW, BETA, Factor::Table1 { var: "velocities/mach", table: T_CYB_M }),
+    prod!(
+        QBAR,
+        SW,
+        BETA,
+        Factor::Table1 {
+            var: "velocities/mach",
+            table: T_CYB_M
+        }
+    ),
     // CYbdot — beta rate
     prod!(QBAR, SW, BETADOT, val!(-0.0458)),
     // CYDa — aileron
@@ -321,14 +399,39 @@ const SIDE: Axis = Axis::new(&[
 
 const LIFT: Axis = Axis::new(&[
     // CLalpha — lift due to alpha
-    prod!(QBAR, SW, Factor::Table1 { var: "aero/alpha-rad", table: T_CLALPHA }),
+    prod!(
+        QBAR,
+        SW,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CLALPHA
+        }
+    ),
     // CLDlef — leading-edge flaps
-    prod!(QBAR, SW, LEF, KCLGE, Factor::Table1 { var: "aero/alpha-rad", table: T_CLDLEF }),
+    prod!(
+        QBAR,
+        SW,
+        LEF,
+        KCLGE,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CLDLEF
+        }
+    ),
     // CLadot — alpha rate
     prod!(QBAR, SW, ALPHADOT, CI2VEL, val!(2.5602)),
     // CLq — pitch rate
-    prod!(QBAR, SW, Q_AERO, CI2VEL, KCLGE, Factor::Table1 {
-        var: "aero/alpha-rad", table: T_CLQ }),
+    prod!(
+        QBAR,
+        SW,
+        Q_AERO,
+        CI2VEL,
+        KCLGE,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CLQ
+        }
+    ),
     // dCLflap — trailing-edge flaps
     prod!(QBAR, SW, FLAPN, KCLGE, val!(0.3500)),
     // dCLsb — speedbrakes
@@ -340,67 +443,247 @@ const LIFT: Axis = Axis::new(&[
 /// Moment axes are ROLL, PITCH, YAW (body frame).
 const ROLL: Axis = Axis::new(&[
     // Clb — roll due to beta
-    prod!(QBAR, SW, BW, BETA, Factor::Table1 { var: "aero/alpha-rad", table: T_CLB }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        BETA,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CLB
+        }
+    ),
     // Clda_M — aileron × alpha × Mach
-    prod!(QBAR, SW, BW, ALPHA, AIL, Factor::Table1 { var: "velocities/mach", table: T_CLDA_M }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        ALPHA,
+        AIL,
+        Factor::Table1 {
+            var: "velocities/mach",
+            table: T_CLDA_M
+        }
+    ),
     // Cldr_M — rudder × alpha × Mach
-    prod!(QBAR, SW, BW, ALPHA, RUD, Factor::Table1 { var: "velocities/mach", table: T_CLDR_M }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        ALPHA,
+        RUD,
+        Factor::Table1 {
+            var: "velocities/mach",
+            table: T_CLDR_M
+        }
+    ),
     // Clbdot — beta rate
     prod!(QBAR, SW, BW, BI2VEL, BETADOT, val!(-0.0037)),
     // Clp — roll damping
-    prod!(QBAR, SW, BW, BI2VEL, P_AERO, Factor::Table1 { var: "aero/alpha-rad", table: T_CLP }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        BI2VEL,
+        P_AERO,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CLP
+        }
+    ),
     // Clr — roll due to yaw rate
-    prod!(QBAR, SW, BW, BI2VEL, R_AERO, Factor::Table1 { var: "aero/alpha-rad", table: T_CLR }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        BI2VEL,
+        R_AERO,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CLR
+        }
+    ),
     // Clda — aileron
-    prod!(val!(4.0), QBAR, SW, BW, AIL, Factor::Table1 { var: "aero/alpha-rad", table: T_CLDA }),
+    prod!(
+        val!(4.0),
+        QBAR,
+        SW,
+        BW,
+        AIL,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CLDA
+        }
+    ),
     // ClDr — rudder
-    prod!(val!(2.0), QBAR, SW, BW, RUD, Factor::Table1 { var: "aero/alpha-rad", table: T_CLDR }),
+    prod!(
+        val!(2.0),
+        QBAR,
+        SW,
+        BW,
+        RUD,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CLDR
+        }
+    ),
 ]);
 
 const PITCH: Axis = Axis::new(&[
     // CmDh — stabilator pitching moment
-    prod!(QBAR, SW, CBAR, Factor::Table2 {
-        rvar: "aero/alpha-rad", cvar: "fcs/elevator-pos-rad", table: T_CMDH }, val!(1.5)),
+    prod!(
+        QBAR,
+        SW,
+        CBAR,
+        Factor::Table2 {
+            rvar: "aero/alpha-rad",
+            cvar: "fcs/elevator-pos-rad",
+            table: T_CMDH
+        },
+        val!(1.5)
+    ),
     // CmDtv — thrust vectoring (zero while TVC is off)
-    prod!(val!(1.25), QBAR, SW, CBAR, THRUSTN, Factor::Table2 {
-        rvar: "aero/alpha-rad", cvar: "fcs/tvc-pos-rad", table: T_CMDTV }),
+    prod!(
+        val!(1.25),
+        QBAR,
+        SW,
+        CBAR,
+        THRUSTN,
+        Factor::Table2 {
+            rvar: "aero/alpha-rad",
+            cvar: "fcs/tvc-pos-rad",
+            table: T_CMDTV
+        }
+    ),
     // Cma_M — alpha × Mach (positive subsonic: unstable)
-    prod!(QBAR, SW, CBAR, ALPHA, Factor::Table1 { var: "velocities/mach", table: T_CMA_M }),
+    prod!(
+        QBAR,
+        SW,
+        CBAR,
+        ALPHA,
+        Factor::Table1 {
+            var: "velocities/mach",
+            table: T_CMA_M
+        }
+    ),
     // Cmq — pitch damping
-    prod!(QBAR, SW, CBAR, CI2VEL, Q_AERO, Factor::Table1 { var: "aero/alpha-rad", table: T_CMQ }),
+    prod!(
+        QBAR,
+        SW,
+        CBAR,
+        CI2VEL,
+        Q_AERO,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CMQ
+        }
+    ),
     // Cmadot — alpha rate
-    prod!(QBAR, SW, CBAR, CI2VEL, ALPHADOT, Factor::Table1 {
-        var: "velocities/mach", table: T_CMADOT }),
+    prod!(
+        QBAR,
+        SW,
+        CBAR,
+        CI2VEL,
+        ALPHADOT,
+        Factor::Table1 {
+            var: "velocities/mach",
+            table: T_CMADOT
+        }
+    ),
 ]);
 
 const YAW: Axis = Axis::new(&[
     // Cnb — weathercock stability
-    prod!(QBAR, SW, BW, BETA, Factor::Table1 { var: "aero/alpha-rad", table: T_CNB }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        BETA,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CNB
+        }
+    ),
     // Cnb_M — beta × Mach
-    prod!(QBAR, SW, BW, BETA, Factor::Table1 { var: "velocities/mach", table: T_CNB_M }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        BETA,
+        Factor::Table1 {
+            var: "velocities/mach",
+            table: T_CNB_M
+        }
+    ),
     // Cnbdot — beta rate
     prod!(QBAR, SW, BW, BI2VEL, BETADOT, val!(-0.0115)),
     // Cnp — yaw due to roll rate
     prod!(QBAR, SW, BW, BI2VEL, P_AERO, val!(-0.0035)),
     // Cnr — yaw damping
-    prod!(QBAR, SW, BW, BI2VEL, R_AERO, Factor::Table1 { var: "aero/alpha-rad", table: T_CNR }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        BI2VEL,
+        R_AERO,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CNR
+        }
+    ),
     // CnDr — rudder
-    prod!(val!(5.0), QBAR, SW, BW, RUD, Factor::Table1 { var: "aero/alpha-rad", table: T_CNDR }),
+    prod!(
+        val!(5.0),
+        QBAR,
+        SW,
+        BW,
+        RUD,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CNDR
+        }
+    ),
     // Cndr_M — rudder × alpha × Mach
-    prod!(QBAR, SW, BW, ALPHA, RUD, Factor::Table1 { var: "velocities/mach", table: T_CNDR_M }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        ALPHA,
+        RUD,
+        Factor::Table1 {
+            var: "velocities/mach",
+            table: T_CNDR_M
+        }
+    ),
     // Cnda — adverse yaw from aileron
-    prod!(val!(2.0), QBAR, SW, BW, AIL, Factor::Table1 { var: "aero/alpha-rad", table: T_CNDA }),
+    prod!(
+        val!(2.0),
+        QBAR,
+        SW,
+        BW,
+        AIL,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CNDA
+        }
+    ),
 ]);
 
 /// File-level functions computed before the axes.
 const PRE: &[NamedFn] = &[
     NamedFn {
         name: "aero/function/kCLge",
-        func: Function::product(&[Factor::Table1 { var: "aero/h_b-mac-ft", table: T_KCLGE }]),
+        func: Function::product(&[Factor::Table1 {
+            var: "aero/h_b-mac-ft",
+            table: T_KCLGE,
+        }]),
     },
     NamedFn {
         name: "aero/function/kCDge",
-        func: Function::product(&[Factor::Table1 { var: "aero/h_b-mac-ft", table: T_KCDGE }]),
+        func: Function::product(&[Factor::Table1 {
+            var: "aero/h_b-mac-ft",
+            table: T_KCDGE,
+        }]),
     },
 ];
 
@@ -409,9 +692,18 @@ const PRE: &[NamedFn] = &[
 /// Pilot (230 lb) plus two full 9350-lb fuel tanks. Positions are structural
 /// frame inches, matching `<mass_balance>` and the `<tank>` locations.
 const POINTS: &[PointMass] = &[
-    PointMass { weight_lb: 230.0, pos_in: [148.8, 0.0, 20.0] },
-    PointMass { weight_lb: 9350.0, pos_in: [446.478, -36.0, -18.6033] },
-    PointMass { weight_lb: 9350.0, pos_in: [446.478, 36.0, -18.6033] },
+    PointMass {
+        weight_lb: 230.0,
+        pos_in: [148.8, 0.0, 20.0],
+    },
+    PointMass {
+        weight_lb: 9350.0,
+        pos_in: [446.478, -36.0, -18.6033],
+    },
+    PointMass {
+        weight_lb: 9350.0,
+        pos_in: [446.478, 36.0, -18.6033],
+    },
 ];
 
 const MASS: MassSpec = MassSpec {
@@ -428,7 +720,9 @@ const MASS: MassSpec = MassSpec {
 /// Idle-thrust fraction, row = Mach, col = density altitude (ft).
 const IDLE_THRUST: Table2 = Table2::new(
     &[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
-    &[-10000.0, 0.0, 10000.0, 20000.0, 30000.0, 40000.0, 50000.0, 60000.0],
+    &[
+        -10000.0, 0.0, 10000.0, 20000.0, 30000.0, 40000.0, 50000.0, 60000.0,
+    ],
     &[
         0.0430, 0.0488, 0.0528, 0.0694, 0.0899, 0.1183, 0.1467, 0.0, //
         0.0500, 0.0501, 0.0335, 0.0544, 0.0797, 0.1049, 0.1342, 0.0, //
@@ -442,7 +736,9 @@ const IDLE_THRUST: Table2 = Table2::new(
 /// Military-thrust fraction, row = Mach, col = density altitude (ft).
 const MIL_THRUST: Table2 = Table2::new(
     &[0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2],
-    &[-10000.0, 0.0, 10000.0, 20000.0, 30000.0, 40000.0, 50000.0, 60000.0, 70000.0, 80000.0],
+    &[
+        -10000.0, 0.0, 10000.0, 20000.0, 30000.0, 40000.0, 50000.0, 60000.0, 70000.0, 80000.0,
+    ],
     &[
         1.2600, 1.0000, 0.7400, 0.5340, 0.3720, 0.2410, 0.1490, 0.0800, 0.040, 0.0, //
         1.1710, 0.9340, 0.6970, 0.5060, 0.3550, 0.2310, 0.1430, 0.0780, 0.040, 0.0, //
@@ -461,8 +757,12 @@ const MIL_THRUST: Table2 = Table2::new(
 
 /// Augmented (afterburning) thrust fraction, row = Mach, col = density altitude.
 const AUG_THRUST: Table2 = Table2::new(
-    &[0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6],
-    &[-10000.0, 0.0, 10000.0, 20000.0, 30000.0, 40000.0, 50000.0, 60000.0, 70000.0, 80000.0],
+    &[
+        0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6,
+    ],
+    &[
+        -10000.0, 0.0, 10000.0, 20000.0, 30000.0, 40000.0, 50000.0, 60000.0, 70000.0, 80000.0,
+    ],
     &[
         1.1816, 1.0000, 0.8184, 0.6627, 0.5280, 0.3756, 0.2327, 0.1279, 0.063, 0.0, //
         1.1308, 0.9599, 0.7890, 0.6406, 0.5116, 0.3645, 0.2258, 0.1242, 0.062, 0.0, //
@@ -558,8 +858,20 @@ const fn bogey(
 /// Nosewheel steers (max 80 deg); the mains carry the brakes.
 const GEAR: &[Gear] = &[
     bogey([96.7, 0.0, -89.3], 18603.4, 6201.1, 80.0, BrakeGroup::None),
-    bogey([468.8, -48.0, -89.3], 82011.2, 22402.2, 0.0, BrakeGroup::Left),
-    bogey([468.8, 48.0, -89.3], 82011.2, 22402.2, 0.0, BrakeGroup::Right),
+    bogey(
+        [468.8, -48.0, -89.3],
+        82011.2,
+        22402.2,
+        0.0,
+        BrakeGroup::Left,
+    ),
+    bogey(
+        [468.8, 48.0, -89.3],
+        82011.2,
+        22402.2,
+        0.0,
+        BrakeGroup::Right,
+    ),
 ];
 
 /// The F-22A Raptor. `AERORP` (417.6, 0, 0) inches; the FDM shifts moments from
@@ -586,4 +898,7 @@ pub const F22: Aircraft = Aircraft {
     gear_retractable: true,
     rotors: &[],
     rest_h_ft: 4.7,
+    // The F-22's dive-brake is part of the welded airframe in this model.
+    has_speedbrake: false,
+    max_reverse_lbs: 0.0,
 };

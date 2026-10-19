@@ -97,13 +97,11 @@ fn setup(
         ChildOf(model),
     ));
 
-    commands.spawn((
-        AmbientLight {
-            color: Color::WHITE,
-            brightness: 500.0,
-            ..default()
-        },
-    ));
+    commands.spawn((AmbientLight {
+        color: Color::WHITE,
+        brightness: 500.0,
+        ..default()
+    },));
     commands.spawn((
         DirectionalLight {
             illuminance: 7_000.0,
@@ -125,8 +123,13 @@ fn setup(
     ));
 
     println!("--- f22 cockpit eye tuner ---");
-    println!("right-drag look | WASD move | E/Q up-down | Shift fast | Ctrl slow | P shot | Esc quit");
-    println!("model frame: +X nose, +Y up, +Z right; {:.0} units = 1 m", 1.0 / SCALE);
+    println!(
+        "right-drag look | WASD move | E/Q up-down | Shift fast | Ctrl slow | P shot | Esc quit"
+    );
+    println!(
+        "model frame: +X nose, +Y up, +Z right; {:.0} units = 1 m",
+        1.0 / SCALE
+    );
     println!("paste the printed eye line into view.rs::cockpit_spec(\"f22\")");
 }
 
@@ -191,11 +194,7 @@ fn fly(
 
 /// Prints the camera's model-local position once a second. That vector is the
 /// `eye` value; the yaw offset is relative to straight ahead (0 = down the nose).
-fn report(
-    time: Res<Time>,
-    mut timer: ResMut<ReportTimer>,
-    q: Query<&Transform, With<Camera3d>>,
-) {
+fn report(time: Res<Time>, mut timer: ResMut<ReportTimer>, q: Query<&Transform, With<Camera3d>>) {
     timer.0.tick(time.delta());
     if !timer.0.just_finished() {
         return;

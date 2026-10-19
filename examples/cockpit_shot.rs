@@ -72,8 +72,12 @@ fn setup(
             ..default()
         }),
         bevy::core_pipeline::tonemapping::Tonemapping::None,
-        Transform::from_xyz(0.209, 1.835, -0.350)
-            .with_rotation(Quat::from_euler(EulerRot::YXZ, std::f32::consts::PI, 0.0, 0.0)),
+        Transform::from_xyz(0.209, 1.835, -0.350).with_rotation(Quat::from_euler(
+            EulerRot::YXZ,
+            std::f32::consts::PI,
+            0.0,
+            0.0,
+        )),
         AmbientLight {
             color: Color::WHITE,
             brightness: 400.0,
@@ -131,8 +135,7 @@ fn fly(
     if mouse.pressed(MouseButton::Right) {
         for ev in motion.read() {
             look.yaw -= ev.delta.x * LOOK_SENS;
-            look.pitch = (look.pitch - ev.delta.y * LOOK_SENS)
-                .clamp(-1.5, 1.5);
+            look.pitch = (look.pitch - ev.delta.y * LOOK_SENS).clamp(-1.5, 1.5);
         }
     } else {
         // Drain anyway so a later press doesn't replay stale motion.
@@ -175,11 +178,7 @@ fn fly(
 
 /// Print `pos=(x, y, z)` plus the yaw/pitch/roll and the forward vector, once a
 /// second — grab the line you want and hand it over.
-fn report(
-    time: Res<Time>,
-    mut timer: ResMut<ReportTimer>,
-    q: Query<&Transform, With<Camera3d>>,
-) {
+fn report(time: Res<Time>, mut timer: ResMut<ReportTimer>, q: Query<&Transform, With<Camera3d>>) {
     timer.0.tick(time.delta());
     if !timer.0.just_finished() {
         return;
@@ -204,10 +203,7 @@ fn report(
     );
 }
 
-fn screenshot(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut commands: Commands,
-) {
+fn screenshot(keys: Res<ButtonInput<KeyCode>>, mut commands: Commands) {
     if keys.just_pressed(KeyCode::KeyP) {
         let path = "/tmp/cockpit_view.png";
         commands

@@ -20,15 +20,31 @@ pub const RAIN_LEVELS: [f32; 4] = [0.0, 0.3, 0.6, 0.9];
 /// Human-readable names for [`RAIN_LEVELS`], shown in the settings page.
 pub const RAIN_LABELS: [&str; 4] = ["CLEAR", "LIGHT RAIN", "RAIN", "STORM"];
 
-/// Current weather. `rain` is 0 (clear) … 1 (downpour).
+/// Wind speeds (knots) selectable from the menu's global settings page.
+pub const WIND_LEVELS: [f32; 4] = [0.0, 5.0, 10.0, 15.0];
+
+/// Human-readable names for [`WIND_LEVELS`].
+pub const WIND_LABELS: [&str; 4] = ["CALM", "5 KT", "10 KT", "15 KT"];
+
+/// The direction the wind levels blow *from*, degrees true. West-northwest:
+/// a headwind with a right crosswind component for runway 36, so the level
+/// matters for both the takeoff roll and the crab down final.
+pub const WIND_FROM_DEG: f32 = 300.0;
+
+/// Current weather. `rain` is 0 (clear) … 1 (downpour); `wind_kts` is the
+/// ambient wind speed at surface level.
 #[derive(Resource)]
 pub struct Weather {
     pub rain: f32,
+    pub wind_kts: f32,
 }
 
 impl Default for Weather {
     fn default() -> Self {
-        Weather { rain: 0.0 }
+        Weather {
+            rain: 0.0,
+            wind_kts: 0.0,
+        }
     }
 }
 
@@ -52,6 +68,42 @@ impl Weather {
         let n = RAIN_LEVELS.len() as isize;
         let level = (i % n + n) % n;
         self.rain = RAIN_LEVELS[level as usize];
+    }
+
+    /// Short label for the current wind level.
+    pub fn wind_label(&self) -> &'static str {
+        WIND_LABELS[self.wind_level()]
+    }
+
+    /// Index into [`WIND_LEVELS`] nearest the current speed.
+    pub fn wind_level(&self) -> usize {
+        WIND_LEVELS
+            .iter()
+            .position(|&l| (l - self.wind_kts).abs() < 1e-3)
+            .unwrap_or(0)
+    }
+
+    /// Set the wind speed to level `i` (clamped, wrapping) and return the new
+    /// index. Used by the menu's settings page.
+    pub fn set_wind_level(&mut self, i: isize) -> usize {
+        let n = WIND_LEVELS.len() as isize;
+        let level = (i % n + n) % n;
+        self.wind_kts = WIND_LEVELS[level as usize];
+        level as usize
+    }
+
+    /// Where the wind blows *toward*, degrees true (the sock's deflection).
+    pub fn wind_toward_deg(&self) -> f32 {
+        WIND_FROM_DEG + 180.0
+    }
+
+    /// Wind velocity as NED components in *feet per second*, the FDM/JSBSim
+    /// bus unit, so `sim.rs` can push it straight through the property bus.
+    pub fn wind_ned_fps(&self) -> (f64, f64) {
+        const KTS_TO_FPS: f64 = 1.68781;
+        let to = (self.wind_toward_deg() as f64).to_radians();
+        let v = self.wind_kts as f64 * KTS_TO_FPS;
+        (v * to.cos(), v * to.sin())
     }
 }
 
@@ -190,7 +242,14 @@ fn update_rain(
     weather: Res<Weather>,
     mat: Res<RainMaterial>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    camera: Query<&Transform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>, Without<RainDrop>)>,
+    camera: Query<
+        &Transform,
+        (
+            With<Camera3d>,
+            Without<crate::cloud_camera::CloudCamera>,
+            Without<RainDrop>,
+        ),
+    >,
     mut drops: Query<(&mut Transform, &mut Visibility, &RainDrop)>,
 ) {
     let Ok(cam) = camera.single() else {
@@ -236,7 +295,14 @@ fn update_splashes(
     weather: Res<Weather>,
     mut rng: Local<Lcg>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    camera: Query<&Transform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>, Without<Splash>)>,
+    camera: Query<
+        &Transform,
+        (
+            With<Camera3d>,
+            Without<crate::cloud_camera::CloudCamera>,
+            Without<Splash>,
+        ),
+    >,
     mut splashes: Query<(&mut Transform, &mut Visibility, &mut Splash)>,
 ) {
     let Ok(cam) = camera.single() else {
@@ -277,11 +343,7 @@ fn update_splashes(
 fn random_disk(rng: &mut Lcg, centre: Vec3, radius: f32) -> Vec3 {
     let ang = rng.range(0.0, std::f32::consts::TAU);
     let r = radius * rng.next().sqrt();
-    Vec3::new(
-        centre.x + r * ang.cos(),
-        SPLASH_Y,
-        centre.z + r * ang.sin(),
-    )
+    Vec3::new(centre.x + r * ang.cos(), SPLASH_Y, centre.z + r * ang.sin())
 }
 
 /// Wrap `v` into `[-h, h)`.
@@ -341,10 +403,69 @@ mod tests {
 
     #[test]
     fn labels_track_intensity() {
-        assert_eq!(Weather { rain: 0.0 }.label(), "CLEAR");
-        assert_eq!(Weather { rain: 0.3 }.label(), "LIGHT RAIN");
-        assert_eq!(Weather { rain: 0.6 }.label(), "RAIN");
-        assert_eq!(Weather { rain: 0.9 }.label(), "STORM");
+        assert_eq!(
+            Weather {
+                rain: 0.0,
+                wind_kts: 0.0
+            }
+            .label(),
+            "CLEAR"
+        );
+        assert_eq!(
+            Weather {
+                rain: 0.3,
+                wind_kts: 0.0
+            }
+            .label(),
+            "LIGHT RAIN"
+        );
+        assert_eq!(
+            Weather {
+                rain: 0.6,
+                wind_kts: 0.0
+            }
+            .label(),
+            "RAIN"
+        );
+        assert_eq!(
+            Weather {
+                rain: 0.9,
+                wind_kts: 0.0
+            }
+            .label(),
+            "STORM"
+        );
+    }
+
+    #[test]
+    fn wind_levels_cycle_like_the_rain_ones() {
+        let mut w = Weather::default();
+        assert_eq!(w.wind_label(), "CALM");
+        w.set_wind_level(1);
+        assert_eq!(w.wind_kts, 5.0);
+        assert_eq!(w.wind_label(), "5 KT");
+        // Wraps around both ends.
+        w.set_wind_level(4);
+        assert_eq!(w.wind_level(), 0);
+        w.set_wind_level(-1);
+        assert_eq!(w.wind_level(), 3);
+        assert_eq!(w.wind_kts, 15.0);
+    }
+
+    /// The bus direction: from 300 deg means blowing toward 120 deg, so the
+    /// NED components are east-strong and north-negative (blowing away from
+    /// the north).
+    #[test]
+    #[test]
+    fn wind_ned_components_match_the_from_direction() {
+        let mut w = Weather::default();
+        w.wind_kts = 10.0;
+        let (north, east) = w.wind_ned_fps();
+        // toward 120 deg: cos(120) = -0.5, sin(120) = +0.866.
+        assert!((north / east - (-0.5 / 0.866)).abs() < 1e-3);
+        // Magnitude: 10 kt in ft/s.
+        let expected = 10.0 * 1.68781;
+        assert!((north.hypot(east) - expected).abs() < 1e-6);
     }
 
     #[test]

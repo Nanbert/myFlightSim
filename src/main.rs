@@ -11,6 +11,7 @@ mod fx;
 mod gauge;
 mod hud;
 mod input;
+mod ils;
 mod landing;
 mod lens;
 mod map;

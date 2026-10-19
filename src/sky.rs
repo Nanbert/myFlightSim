@@ -301,17 +301,10 @@ fn follow_camera(
 
 /// Give the offscreen camera exactly the main camera's pose and lens.
 fn sync_cloud_camera(
-    main: Query<
-        (&GlobalTransform, &Projection),
-        (With<Camera3d>, Without<CloudCamera>),
-    >,
-    mut cloud: Query<
-        (&mut Transform, &mut GlobalTransform, &mut Projection),
-        With<CloudCamera>,
-    >,
+    main: Query<(&GlobalTransform, &Projection), (With<Camera3d>, Without<CloudCamera>)>,
+    mut cloud: Query<(&mut Transform, &mut GlobalTransform, &mut Projection), With<CloudCamera>>,
 ) {
-    let (Ok((cam, projection)), Ok((mut t, mut g, mut p))) =
-        (main.single(), cloud.single_mut())
+    let (Ok((cam, projection)), Ok((mut t, mut g, mut p))) = (main.single(), cloud.single_mut())
     else {
         return;
     };
@@ -382,10 +375,7 @@ fn update_cloud_params(
     time: Res<Time>,
     weather: Res<Weather>,
     mut frame: ResMut<CloudFrame>,
-    camera: Query<
-        (&GlobalTransform, &Projection, &Camera),
-        (With<Camera3d>, Without<CloudCamera>),
-    >,
+    camera: Query<(&GlobalTransform, &Projection, &Camera), (With<Camera3d>, Without<CloudCamera>)>,
     sun: Query<&GlobalTransform, With<DirectionalLight>>,
     handles: Res<SkyMaterialHandles>,
     mut materials: ResMut<Assets<CloudMaterial>>,
@@ -397,8 +387,7 @@ fn update_cloud_params(
     let sun_dir = (sun.rotation() * Vec3::Z).normalize_or_zero();
     let pos = cam.translation();
     let coverage = coverage_for(weather.rain);
-    let clip_from_world =
-        projection.get_clip_from_view() * cam.to_matrix().inverse();
+    let clip_from_world = projection.get_clip_from_view() * cam.to_matrix().inverse();
     let screen = camera
         .physical_target_size()
         .map(|s| Vec2::new(s.x as f32, s.y as f32))

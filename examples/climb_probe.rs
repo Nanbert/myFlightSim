@@ -16,7 +16,10 @@ fn main() {
     m.set("gear/gear-pos-norm", 1.0);
     m.set("propulsion/set-running", -1.0);
 
-    println!("{:>6} {:>8} {:>7} {:>8} {:>6} {:>6} {:>5} {}", "t[s]", "ALT", "IAS", "VS[fpm]", "PITCH", "THR", "WOW", "phase");
+    println!(
+        "{:>6} {:>8} {:>7} {:>8} {:>6} {:>6} {:>5} {}",
+        "t[s]", "ALT", "IAS", "VS[fpm]", "PITCH", "THR", "WOW", "phase"
+    );
     for i in 0..=120 * 300 {
         let (cmds, phase) = jsbsim_sys::autopilot::step(&*m);
         jsbsim_sys::autopilot::apply(&mut *m, &cmds);

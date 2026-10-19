@@ -53,10 +53,7 @@ pub enum Factor {
     /// A literal constant.
     Value(f64),
     /// A 1-D lookup: read `var`, interpolate.
-    Table1 {
-        var: &'static str,
-        table: Table1,
-    },
+    Table1 { var: &'static str, table: Table1 },
     /// A 2-D lookup over row/column variables.
     Table2 {
         rvar: &'static str,
@@ -203,7 +200,11 @@ impl Aerodynamics {
         // Lift coefficient for the induced-drag feedback term. Guarded on a
         // non-trivial qbar·S so a stationary aircraft doesn't divide by ~zero.
         let qbar_sw = props.get("aero/qbar-psf") * props.get("metrics/Sw-sqft");
-        let cl = if qbar_sw.abs() > 1e-9 { lift / qbar_sw } else { 0.0 };
+        let cl = if qbar_sw.abs() > 1e-9 {
+            lift / qbar_sw
+        } else {
+            0.0
+        };
 
         AeroResult {
             force_body,

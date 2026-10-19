@@ -88,7 +88,9 @@ fn resolve_jsbsim_src() -> PathBuf {
 /// rpath points at the same place.
 fn shared_build_dir() -> PathBuf {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let workspace = manifest.parent().expect("jsbsim-sys must live in a workspace");
+    let workspace = manifest
+        .parent()
+        .expect("jsbsim-sys must live in a workspace");
     let target = env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| workspace.join("target"));

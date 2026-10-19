@@ -67,7 +67,7 @@ fn ap_eats_stick() {
 }
 
 fn main() {
-    report(3000.0, 110.0);   // the app's shared cruise point (c172 values)
-    report(15000.0, 350.0);  // a fighter-appropriate cruise
+    report(3000.0, 110.0); // the app's shared cruise point (c172 values)
+    report(15000.0, 350.0); // a fighter-appropriate cruise
     ap_eats_stick();
 }

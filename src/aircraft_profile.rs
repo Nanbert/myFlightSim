@@ -101,6 +101,10 @@ pub enum ToggleAction {
     Cruise,
     /// A rotorcraft's hands-free level-flight trim.
     RotorTrim,
+    /// Arcade helicopter: vertical take-off / hover / land state machine.
+    HeliHover,
+    /// Arcade helicopter: auto-level and rate damping.
+    HeliBalance,
     /// Select heading-select lateral mode (737 A/P).
     HdgSel,
     /// Capture and hold the current altitude (737 A/P).
@@ -113,6 +117,13 @@ pub enum ToggleAction {
     AutoThrottle,
     /// Switch the MCP speed window between IAS and Mach (737).
     SpeedMach,
+    /// Deploy/stow the speedbrake (`fcs/speedbrake-cmd-norm`, 737).
+    SpeedBrake,
+    /// Arm/disarm thrust reverse (`fcs/reverse-cmd-norm`, 737). The FDM only
+    /// extends it while the wheels carry weight.
+    Reverse,
+    /// Arm/disarm the APP mode (LOC + GS beams, 737 MCP).
+    Approach,
 }
 
 impl ToggleAction {
@@ -124,12 +135,17 @@ impl ToggleAction {
             ToggleAction::Trim => "retrim",
             ToggleAction::Cruise => "cruise",
             ToggleAction::RotorTrim => "trim",
+            ToggleAction::HeliHover => "hover / VTOL",
+            ToggleAction::HeliBalance => "auto balance",
             ToggleAction::HdgSel => "HDG SEL",
             ToggleAction::AltHold => "ALT HOLD",
             ToggleAction::VsMode => "V/S",
             ToggleAction::LvlChg => "LVL CHG",
             ToggleAction::AutoThrottle => "A/T",
             ToggleAction::SpeedMach => "IAS/MACH",
+            ToggleAction::SpeedBrake => "speedbrake",
+            ToggleAction::Reverse => "reverse",
+            ToggleAction::Approach => "APP",
         }
     }
 
@@ -142,12 +158,17 @@ impl ToggleAction {
             ToggleAction::Trim => "trim",
             ToggleAction::Cruise => "cruise",
             ToggleAction::RotorTrim => "rotor-trim",
+            ToggleAction::HeliHover => "heli-hover",
+            ToggleAction::HeliBalance => "heli-balance",
             ToggleAction::HdgSel => "hdg-sel",
             ToggleAction::AltHold => "alt-hold",
             ToggleAction::VsMode => "vs",
             ToggleAction::LvlChg => "lvl-chg",
             ToggleAction::AutoThrottle => "autothrottle",
             ToggleAction::SpeedMach => "speed-mach",
+            ToggleAction::SpeedBrake => "speedbrake",
+            ToggleAction::Reverse => "reverse",
+            ToggleAction::Approach => "approach",
         }
     }
 
@@ -159,12 +180,17 @@ impl ToggleAction {
             "trim" => ToggleAction::Trim,
             "cruise" => ToggleAction::Cruise,
             "rotor-trim" => ToggleAction::RotorTrim,
+            "heli-hover" => ToggleAction::HeliHover,
+            "heli-balance" => ToggleAction::HeliBalance,
             "hdg-sel" => ToggleAction::HdgSel,
             "alt-hold" => ToggleAction::AltHold,
             "vs" => ToggleAction::VsMode,
             "lvl-chg" => ToggleAction::LvlChg,
             "autothrottle" => ToggleAction::AutoThrottle,
             "speed-mach" => ToggleAction::SpeedMach,
+            "speedbrake" => ToggleAction::SpeedBrake,
+            "reverse" => ToggleAction::Reverse,
+            "approach" => ToggleAction::Approach,
             _ => return None,
         })
     }
@@ -197,7 +223,7 @@ pub struct ToggleSpec {
 pub struct Profile {
     pub has_autopilot: bool,
     /// Whether the aircraft offers the Realistic/Arcade flight-model switch on
-    /// its settings page. Only the F-22 carries an arcade dynamics path.
+    /// its settings page. The F-22 and the AH-64D carry arcade dynamics paths.
     pub has_arcade: bool,
     pub bindings: Vec<BindingSpec>,
     pub toggles: Vec<ToggleSpec>,
@@ -206,28 +232,108 @@ pub struct Profile {
 // --- shared control constructors (the identical-across-aircraft defaults) ---
 
 fn elevator() -> BindingSpec {
-    BindingSpec { action: Action::Elevator, property: "fcs/elevator-cmd-norm", axis: Axis::Spring, pos: KeyCode::KeyS, neg: Some(KeyCode::KeyW), rate: 3.0, min: -1.0, max: 1.0, initial: 0.0 }
+    BindingSpec {
+        action: Action::Elevator,
+        property: "fcs/elevator-cmd-norm",
+        axis: Axis::Spring,
+        pos: KeyCode::KeyS,
+        neg: Some(KeyCode::KeyW),
+        rate: 3.0,
+        min: -1.0,
+        max: 1.0,
+        initial: 0.0,
+    }
 }
 fn aileron() -> BindingSpec {
-    BindingSpec { action: Action::Aileron, property: "fcs/aileron-cmd-norm", axis: Axis::Spring, pos: KeyCode::KeyD, neg: Some(KeyCode::KeyA), rate: 3.0, min: -1.0, max: 1.0, initial: 0.0 }
+    BindingSpec {
+        action: Action::Aileron,
+        property: "fcs/aileron-cmd-norm",
+        axis: Axis::Spring,
+        pos: KeyCode::KeyD,
+        neg: Some(KeyCode::KeyA),
+        rate: 3.0,
+        min: -1.0,
+        max: 1.0,
+        initial: 0.0,
+    }
 }
 fn rudder() -> BindingSpec {
-    BindingSpec { action: Action::Rudder, property: "fcs/rudder-cmd-norm", axis: Axis::Spring, pos: KeyCode::KeyQ, neg: Some(KeyCode::KeyE), rate: 3.0, min: -1.0, max: 1.0, initial: 0.0 }
+    BindingSpec {
+        action: Action::Rudder,
+        property: "fcs/rudder-cmd-norm",
+        axis: Axis::Spring,
+        pos: KeyCode::KeyQ,
+        neg: Some(KeyCode::KeyE),
+        rate: 3.0,
+        min: -1.0,
+        max: 1.0,
+        initial: 0.0,
+    }
 }
 fn throttle(pos: KeyCode) -> BindingSpec {
-    BindingSpec { action: Action::Throttle, property: "fcs/throttle-cmd-norm", axis: Axis::Hold, pos, neg: Some(KeyCode::ControlLeft), rate: 0.6, min: 0.0, max: 1.0, initial: 0.6 }
+    BindingSpec {
+        action: Action::Throttle,
+        property: "fcs/throttle-cmd-norm",
+        axis: Axis::Hold,
+        pos,
+        neg: Some(KeyCode::ControlLeft),
+        rate: 0.6,
+        min: 0.0,
+        max: 1.0,
+        initial: 0.6,
+    }
 }
 fn collective() -> BindingSpec {
-    BindingSpec { action: Action::Collective, property: "fcs/collective-cmd-norm", axis: Axis::Hold, pos: KeyCode::ShiftLeft, neg: Some(KeyCode::ControlLeft), rate: 0.6, min: 0.0, max: 1.0, initial: 0.0 }
+    BindingSpec {
+        action: Action::Collective,
+        property: "fcs/collective-cmd-norm",
+        axis: Axis::Hold,
+        pos: KeyCode::ShiftLeft,
+        neg: Some(KeyCode::ControlLeft),
+        rate: 0.6,
+        min: 0.0,
+        max: 1.0,
+        initial: 0.0,
+    }
 }
 fn pitch_trim() -> BindingSpec {
-    BindingSpec { action: Action::PitchTrim, property: "fcs/pitch-trim-cmd-norm", axis: Axis::Hold, pos: KeyCode::KeyZ, neg: Some(KeyCode::KeyX), rate: 0.3, min: -1.0, max: 1.0, initial: 0.0 }
+    BindingSpec {
+        action: Action::PitchTrim,
+        property: "fcs/pitch-trim-cmd-norm",
+        axis: Axis::Hold,
+        pos: KeyCode::KeyZ,
+        neg: Some(KeyCode::KeyX),
+        rate: 0.3,
+        min: -1.0,
+        max: 1.0,
+        initial: 0.0,
+    }
 }
 fn flap() -> BindingSpec {
-    BindingSpec { action: Action::Flap, property: "fcs/flap-cmd-norm", axis: Axis::Hold, pos: KeyCode::KeyF, neg: Some(KeyCode::KeyV), rate: 0.5, min: 0.0, max: 1.0, initial: 0.0 }
+    BindingSpec {
+        action: Action::Flap,
+        property: "fcs/flap-cmd-norm",
+        axis: Axis::Hold,
+        pos: KeyCode::KeyF,
+        neg: Some(KeyCode::KeyV),
+        rate: 0.5,
+        min: 0.0,
+        max: 1.0,
+        initial: 0.0,
+    }
 }
 fn brake(action: Action, property: &'static str) -> BindingSpec {
-    BindingSpec { action, property, axis: Axis::Spring, pos: KeyCode::KeyB, neg: None, rate: 4.0, min: 0.0, max: 1.0, initial: 0.0 }
+    BindingSpec {
+        action,
+        property,
+        axis: Axis::Spring,
+        pos: KeyCode::KeyB,
+        neg: None,
+        rate: 4.0,
+        min: 0.0,
+        max: 1.0,
+        initial: 0.0,
+    }
 }
 
 fn core_bindings(throttle_pos: KeyCode) -> Vec<BindingSpec> {
@@ -245,8 +351,14 @@ fn core_bindings(throttle_pos: KeyCode) -> Vec<BindingSpec> {
 
 fn core_toggles() -> Vec<ToggleSpec> {
     vec![
-        ToggleSpec { action: ToggleAction::Trim, key: KeyCode::KeyT },
-        ToggleSpec { action: ToggleAction::Cruise, key: KeyCode::KeyY },
+        ToggleSpec {
+            action: ToggleAction::Trim,
+            key: KeyCode::KeyT,
+        },
+        ToggleSpec {
+            action: ToggleAction::Cruise,
+            key: KeyCode::KeyY,
+        },
     ]
 }
 
@@ -258,7 +370,7 @@ pub fn normalized(id: &str) -> &str {
     match id {
         "b737" => "737",
         "c172" => "c172p",
-        "ah-1s" => "ah1s",
+        "ah-1s" | "ah-64d" | "ah64d" => "ah1s",
         other => other,
     }
 }
@@ -274,19 +386,41 @@ pub fn profile(id: &str) -> Profile {
             bindings: core_bindings(KeyCode::Space),
             toggles: {
                 let mut t = core_toggles();
-                t.push(ToggleSpec { action: ToggleAction::Gear, key: KeyCode::KeyU });
-                t.push(ToggleSpec { action: ToggleAction::Tvc, key: KeyCode::KeyJ });
+                t.push(ToggleSpec {
+                    action: ToggleAction::Gear,
+                    key: KeyCode::KeyU,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::Tvc,
+                    key: KeyCode::KeyJ,
+                });
                 t
             },
         },
         "ah1s" => Profile {
             has_autopilot: false,
-            has_arcade: false,
+            // AH-64D: realistic rotor physics or the simplified helicopter
+            // arcade rules (auto hover + auto balance) selected in Settings.
+            has_arcade: true,
             // A helicopter: collective instead of throttle, no flaps, no wheels.
             bindings: vec![elevator(), aileron(), rudder(), collective(), pitch_trim()],
             toggles: vec![
-                ToggleSpec { action: ToggleAction::RotorTrim, key: KeyCode::Space },
-                ToggleSpec { action: ToggleAction::Trim, key: KeyCode::KeyT },
+                ToggleSpec {
+                    action: ToggleAction::RotorTrim,
+                    key: KeyCode::Space,
+                },
+                ToggleSpec {
+                    action: ToggleAction::Trim,
+                    key: KeyCode::KeyT,
+                },
+                ToggleSpec {
+                    action: ToggleAction::HeliHover,
+                    key: KeyCode::KeyJ,
+                },
+                ToggleSpec {
+                    action: ToggleAction::HeliBalance,
+                    key: KeyCode::KeyB,
+                },
             ],
         },
         "737" => Profile {
@@ -295,15 +429,54 @@ pub fn profile(id: &str) -> Profile {
             bindings: core_bindings(KeyCode::ShiftLeft),
             toggles: {
                 let mut t = core_toggles();
-                t.push(ToggleSpec { action: ToggleAction::Autopilot, key: KeyCode::KeyG });
-                t.push(ToggleSpec { action: ToggleAction::Gear, key: KeyCode::KeyU });
+                t.push(ToggleSpec {
+                    action: ToggleAction::Autopilot,
+                    key: KeyCode::KeyG,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::Gear,
+                    key: KeyCode::KeyU,
+                });
                 // MCP mode buttons, laid out like the 737's mode control panel.
-                t.push(ToggleSpec { action: ToggleAction::HdgSel, key: KeyCode::Digit1 });
-                t.push(ToggleSpec { action: ToggleAction::AltHold, key: KeyCode::Digit2 });
-                t.push(ToggleSpec { action: ToggleAction::VsMode, key: KeyCode::Digit3 });
-                t.push(ToggleSpec { action: ToggleAction::LvlChg, key: KeyCode::Digit4 });
-                t.push(ToggleSpec { action: ToggleAction::AutoThrottle, key: KeyCode::Digit5 });
-                t.push(ToggleSpec { action: ToggleAction::SpeedMach, key: KeyCode::KeyM });
+                t.push(ToggleSpec {
+                    action: ToggleAction::HdgSel,
+                    key: KeyCode::Digit1,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::AltHold,
+                    key: KeyCode::Digit2,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::VsMode,
+                    key: KeyCode::Digit3,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::LvlChg,
+                    key: KeyCode::Digit4,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::AutoThrottle,
+                    key: KeyCode::Digit5,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::SpeedMach,
+                    key: KeyCode::KeyM,
+                });
+                // Ground deceleration: the speedbrake handle and the reverse
+                // thrust. Reverse only bites with weight on the wheels.
+                t.push(ToggleSpec {
+                    action: ToggleAction::SpeedBrake,
+                    key: KeyCode::KeyL,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::Reverse,
+                    key: KeyCode::KeyK,
+                });
+                // APP (ILS approach): arms LOC + GS on the MCP.
+                t.push(ToggleSpec {
+                    action: ToggleAction::Approach,
+                    key: KeyCode::Digit6,
+                });
                 t
             },
         },
@@ -436,11 +609,11 @@ mod tests {
     }
 
     #[test]
-    fn only_the_f22_offers_arcade_mode() {
+    fn the_f22_and_apache_offer_arcade_mode() {
         assert!(profile("f22").has_arcade);
+        assert!(profile("ah1s").has_arcade);
         assert!(!profile("c172p").has_arcade);
         assert!(!profile("737").has_arcade);
-        assert!(!profile("ah1s").has_arcade);
     }
 
     #[test]
@@ -556,6 +729,9 @@ mod tests {
             ToggleAction::LvlChg,
             ToggleAction::AutoThrottle,
             ToggleAction::SpeedMach,
+            ToggleAction::SpeedBrake,
+            ToggleAction::Reverse,
+            ToggleAction::Approach,
         ] {
             assert_eq!(ToggleAction::from_id(a.id()), Some(a));
         }

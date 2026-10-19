@@ -229,10 +229,7 @@ fn board_probe(
             return;
         }
         let ndc = Vec2::new(d.x / (depth * tan_half * aspect), d.y / (depth * tan_half));
-        let px = Vec2::new(
-            (ndc.x * 0.5 + 0.5) * size.x,
-            (0.5 - ndc.y * 0.5) * size.y,
-        );
+        let px = Vec2::new((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y);
         min = min.min(px);
         max = max.max(px);
     }

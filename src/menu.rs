@@ -117,8 +117,8 @@ enum Page {
     Global,
 }
 
-/// Rows on the global settings page. Only weather today.
-const SETTINGS_ROWS: usize = 1;
+/// Rows on the global settings page. Weather intensity and wind speed today.
+const SETTINGS_ROWS: usize = 2;
 
 /// Cursor within the global settings page.
 #[derive(Resource, Default)]
@@ -655,6 +655,10 @@ fn global_settings_text(weather: &Weather, settings: &SettingsState) -> String {
                 "{cursor} WEATHER        < {} >\n",
                 weather.label()
             )),
+            1 => out.push_str(&format!(
+                "{cursor} WIND 300DEG    < {} >\n",
+                weather.wind_label()
+            )),
             _ => {}
         }
     }
@@ -722,6 +726,11 @@ fn menu_input(
                             let level = weather.level() as isize + dir;
                             weather.set_level(level);
                             config.weather_level = weather.level();
+                            config::save(&config, &sink);
+                        }
+                        1 => {
+                            let level = weather.wind_level() as isize + dir;
+                            config.wind_level = weather.set_wind_level(level);
                             config::save(&config, &sink);
                         }
                         _ => {}
@@ -1010,6 +1019,11 @@ fn start_flight(
     if std::env::var("AIRBORNE").is_ok() {
         sim.reset_air(1500.0, 60.0);
     }
+    // Seat on a 5 km final for runway 36 with the gear down — the ILS/APP
+    // practice start.
+    if std::env::var("FINAL").is_ok() {
+        sim.reset_final();
+    }
     if std::env::var("AHOVER").is_ok() {
         sim.model.set("fcs/heli-hover-enable", 1.0);
     }
@@ -1107,8 +1121,9 @@ mod tests {
         assert_eq!(editor_slots("c172p", &Keymap::default()).len(), 16);
         // ah1s: 5 paired axes (10) + 4 toggles (rotor-trim, trim, hover, balance).
         assert_eq!(editor_slots("ah1s", &Keymap::default()).len(), 14);
-        // 737: c172p's slots + autopilot, gear, and the six MCP toggles.
-        assert_eq!(editor_slots("737", &Keymap::default()).len(), 24);
+        // 737: c172p's slots + autopilot, gear, the six MCP toggles, the
+        // speedbrake handle, the reverse thrust and APP.
+        assert_eq!(editor_slots("737", &Keymap::default()).len(), 27);
     }
 
     #[test]

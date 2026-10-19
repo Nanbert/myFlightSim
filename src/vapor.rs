@@ -37,12 +37,12 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::mesh::ConeAnchor;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
-use bevy::transform::TransformSystems;
 use bevy::shader::ShaderRef;
+use bevy::transform::TransformSystems;
 
 use crate::app_state::AppState;
 use crate::sim::{AircraftState, Sim};
-use crate::view::{AircraftRoot, model_to_body};
+use crate::view::{model_to_body, AircraftRoot};
 use crate::weather::Weather;
 
 /// One condensation-vapor emitter, anchored in the F-22's own glTF frame
@@ -85,17 +85,80 @@ struct Emitter {
 /// of the canopy. All distances are model units.
 const EMITTERS: &[Emitter] = &[
     // Wingtips (left +x, right −x; the roll only biases the ones that move).
-    Emitter { model: Vec3::new( 1.00, 0.14, -0.72), roll_side: -1.0, aoa0: 5.0, aoa1: 16.0, roll_gain: 0.000, yaw_gain: 0.00, mach_gain: 1.0, trail: true },
-    Emitter { model: Vec3::new(-1.00, 0.14, -0.72), roll_side:  1.0, aoa0: 5.0, aoa1: 16.0, roll_gain: 0.000, yaw_gain: 0.00, mach_gain: 1.0, trail: true },
+    Emitter {
+        model: Vec3::new(1.00, 0.14, -0.72),
+        roll_side: -1.0,
+        aoa0: 5.0,
+        aoa1: 16.0,
+        roll_gain: 0.000,
+        yaw_gain: 0.00,
+        mach_gain: 1.0,
+        trail: true,
+    },
+    Emitter {
+        model: Vec3::new(-1.00, 0.14, -0.72),
+        roll_side: 1.0,
+        aoa0: 5.0,
+        aoa1: 16.0,
+        roll_gain: 0.000,
+        yaw_gain: 0.00,
+        mach_gain: 1.0,
+        trail: true,
+    },
     // Leading edge, mid-span (the tip-to-root sweep line).
-    Emitter { model: Vec3::new( 0.66, 0.08, -0.31), roll_side: -1.0, aoa0: 6.0, aoa1: 14.0, roll_gain: 0.035, yaw_gain: 0.02, mach_gain: 0.0, trail: false },
-    Emitter { model: Vec3::new(-0.66, 0.08, -0.31), roll_side:  1.0, aoa0: 6.0, aoa1: 14.0, roll_gain: 0.035, yaw_gain: 0.02, mach_gain: 0.0, trail: false },
+    Emitter {
+        model: Vec3::new(0.66, 0.08, -0.31),
+        roll_side: -1.0,
+        aoa0: 6.0,
+        aoa1: 14.0,
+        roll_gain: 0.035,
+        yaw_gain: 0.02,
+        mach_gain: 0.0,
+        trail: false,
+    },
+    Emitter {
+        model: Vec3::new(-0.66, 0.08, -0.31),
+        roll_side: 1.0,
+        aoa0: 6.0,
+        aoa1: 14.0,
+        roll_gain: 0.035,
+        yaw_gain: 0.02,
+        mach_gain: 0.0,
+        trail: false,
+    },
     // Wing-root leading edge / LEX, where the vortex is strongest.
-    Emitter { model: Vec3::new( 0.34, 0.08,  0.06), roll_side: -1.0, aoa0: 5.0, aoa1: 13.0, roll_gain: 0.026, yaw_gain: 0.03, mach_gain: 0.0, trail: false },
-    Emitter { model: Vec3::new(-0.34, 0.08,  0.06), roll_side:  1.0, aoa0: 5.0, aoa1: 13.0, roll_gain: 0.026, yaw_gain: 0.03, mach_gain: 0.0, trail: false },
+    Emitter {
+        model: Vec3::new(0.34, 0.08, 0.06),
+        roll_side: -1.0,
+        aoa0: 5.0,
+        aoa1: 13.0,
+        roll_gain: 0.026,
+        yaw_gain: 0.03,
+        mach_gain: 0.0,
+        trail: false,
+    },
+    Emitter {
+        model: Vec3::new(-0.34, 0.08, 0.06),
+        roll_side: 1.0,
+        aoa0: 5.0,
+        aoa1: 13.0,
+        roll_gain: 0.026,
+        yaw_gain: 0.03,
+        mach_gain: 0.0,
+        trail: false,
+    },
     // Forebody / chine, over the centerline ahead of the canopy. On the roll axis,
     // so the roll does not bias it — only the yaw does.
-    Emitter { model: Vec3::new( 0.00, 0.22,  0.34), roll_side:  0.0, aoa0: 7.0, aoa1: 20.0, roll_gain: 0.000, yaw_gain: 0.05, mach_gain: 0.0, trail: false },
+    Emitter {
+        model: Vec3::new(0.00, 0.22, 0.34),
+        roll_side: 0.0,
+        aoa0: 7.0,
+        aoa1: 20.0,
+        roll_gain: 0.000,
+        yaw_gain: 0.05,
+        mach_gain: 0.0,
+        trail: false,
+    },
 ];
 
 /// One trail ring per emitter.
@@ -171,10 +234,7 @@ impl Plugin for VaporPlugin {
         .init_resource::<SheetState>()
         .init_resource::<WingPuffs>()
         .add_systems(OnEnter(AppState::Flying), reset_vapor_state)
-        .add_systems(
-            Update,
-            spawn_vapor.run_if(in_state(AppState::Flying)),
-        )
+        .add_systems(Update, spawn_vapor.run_if(in_state(AppState::Flying)))
         // Reads the freshly-written airframe pose, so it must run after
         // `sync_aircraft` placed the aircraft this frame.
         .add_systems(
@@ -645,10 +705,8 @@ fn wing_sheet_mesh(name: &str, mirror: f32, layer: usize) -> Mesh {
             // Window the billow to zero at both edges so the sheet stays seated
             // on the wing. The layer phase makes the three surfaces caress
             // rather than stack as identical planes.
-            let window = (std::f32::consts::PI * u).sin()
-                * (std::f32::consts::PI * v).sin();
-            let wave = (u * 9.0 + layer as f32 * 1.7).sin()
-                * (v * 6.0 - layer as f32 * 2.1).cos();
+            let window = (std::f32::consts::PI * u).sin() * (std::f32::consts::PI * v).sin();
+            let wave = (u * 9.0 + layer as f32 * 1.7).sin() * (v * 6.0 - layer as f32 * 2.1).cos();
             body.y += wave * window * SHEET_LAYER_WAVE[layer];
             positions.push(body.to_array());
             normals.push(Vec3::Y.to_array());
@@ -670,7 +728,10 @@ fn wing_sheet_mesh(name: &str, mirror: f32, layer: usize) -> Mesh {
             }
         }
     }
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
@@ -858,10 +919,7 @@ fn spawn_vapor(
             Mesh::ATTRIBUTE_UV_0,
             vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
         );
-        volume_quad.insert_indices(Indices::U32(vec![
-            0, 1, 2, 0, 2, 3,
-            0, 2, 1, 0, 3, 2,
-        ]));
+        volume_quad.insert_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2]));
         let volume_quad = meshes.add(volume_quad);
         for idx in 0..WING_PUFF_COUNT {
             wing.anchor[idx] = wing_puff_anchor(&sim.name, idx);
@@ -987,7 +1045,12 @@ fn drive_vapor(
     mut puff_mats: ResMut<Assets<PuffMaterial>>,
     mut cones: Query<
         (&MeshMaterial3d<ConeMaterial>, &mut Visibility),
-        (With<VaporCone>, Without<VaporPuff>, Without<VaporSheet>, Without<WingPuff>),
+        (
+            With<VaporCone>,
+            Without<VaporPuff>,
+            Without<VaporSheet>,
+            Without<WingPuff>,
+        ),
     >,
     mut cone_mats: ResMut<Assets<ConeMaterial>>,
     mut sheet_state: ResMut<SheetState>,
@@ -1049,8 +1112,7 @@ fn drive_vapor(
     let local_alpha = [alpha - delta_alpha, alpha + delta_alpha];
     let previous_g = sheet_state.prev_g;
     let g_spike = previous_g.abs() > 0.5
-        && ((g - previous_g).abs() > 0.5
-            || (previous_g.abs() < 3.0 && g.abs() >= 3.0));
+        && ((g - previous_g).abs() > 0.5 || (previous_g.abs() < 3.0 && g.abs() >= 3.0));
 
     for side in 0..2 {
         let a = local_alpha[side];
@@ -1299,11 +1361,7 @@ fn drive_sheet(
     time: Res<Time>,
     sheet_state: Res<SheetState>,
     sun: Query<&GlobalTransform, With<DirectionalLight>>,
-    mut sheets: Query<(
-        &VaporSheet,
-        &MeshMaterial3d<SheetMaterial>,
-        &mut Visibility,
-    )>,
+    mut sheets: Query<(&VaporSheet, &MeshMaterial3d<SheetMaterial>, &mut Visibility)>,
     mut sheet_mats: ResMut<Assets<SheetMaterial>>,
 ) {
     let sun_dir = sun
@@ -1319,12 +1377,7 @@ fn drive_sheet(
             Visibility::Hidden
         };
         if let Some(mut m) = sheet_mats.get_mut(&mat.0) {
-            m.params.anim = Vec4::new(
-                intensity,
-                t,
-                sheet.side as f32,
-                sheet.layer as f32,
-            );
+            m.params.anim = Vec4::new(intensity, t, sheet.side as f32, sheet.layer as f32);
             m.params.tint = Vec4::new(0.95, 0.97, 1.0, 0.0);
             m.params.light = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, 0.0);
         }
@@ -1409,8 +1462,7 @@ fn drive_shadow(
         let age = sheet_state.age[side];
         let f = (age / 0.45).clamp(0.0, 1.0);
         let outboard = if side == 0 { -1.0 } else { 1.0 };
-        tf.translation = shadow.base
-            + Vec3::new(outboard * 0.6 * f * 0.15, 0.0, 1.8 * f * 0.15);
+        tf.translation = shadow.base + Vec3::new(outboard * 0.6 * f * 0.15, 0.0, 1.8 * f * 0.15);
         *vis = if opacity > 0.004 {
             Visibility::Inherited
         } else {

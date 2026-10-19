@@ -61,6 +61,12 @@ pub struct Aircraft {
     /// aircraft, so this is per-aircraft (e.g. the c172p reset height, or a
     /// helicopter resting on its skids).
     pub rest_h_ft: f64,
+    /// Whether the airframe has flight spoilers (the 737's speedbrake): the
+    /// `fcs/speedbrake-cmd-norm` command is otherwise ignored.
+    pub has_speedbrake: bool,
+    /// Maximum reverse thrust **per engine** (lbf), applied only while the
+    /// wheels carry weight. 0 = no thrust reverse.
+    pub max_reverse_lbs: f64,
 }
 
 impl Aircraft {

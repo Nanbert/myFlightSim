@@ -39,6 +39,14 @@
 //! - `propulsion/engine[0]/rotor-rpm`, `propulsion/engine[1]/rotor-rpm` — main
 //!   and tail rotor rpm (rotorcraft only; the app spins the rotor meshes from these)
 //! - `fcs/collective-cmd-norm` — collective lever (rotorcraft only)
+//! - `velocities/vg-fps`, `velocities/v-north/v-east-fps` — ground velocity (wind
+//!   drift included; the FPM marker needs this, not the airspeed)
+//! - `atmosphere/wind-{north,east,down}-fps` — ambient wind, NED, ft/s. Both
+//!   directions of the bus: the app writes it to set the weather, and reads it
+//!   back for the windsock/HUD. A backend that doesn't model wind can ignore
+//!   the write and always answer 0.
+//! - `velocities/vtrue-kts`, `velocities/mach` — air-relative true airspeed and
+//!   Mach (the pitot never reads the wind, even though the vehicle drifts)
 
 /// A flight dynamics model driven through a named-property bus.
 pub trait FlightModel: Send + Sync {

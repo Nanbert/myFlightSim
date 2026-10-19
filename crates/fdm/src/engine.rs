@@ -107,8 +107,8 @@ impl PistonEngine {
         let ze = piston.peak_mps_fps / rated_mps;
         let z_airbox = (STD_PRESSURE * ze / max_map) - ze;
         let idle_mps = (piston.idle_rpm * piston.stroke_in) / 360.0;
-        let z_throttle = (piston.peak_mps_fps / idle_mps) * (STD_PRESSURE / min_map - 1.0)
-            - z_airbox;
+        let z_throttle =
+            (piston.peak_mps_fps / idle_mps) * (STD_PRESSURE / min_map - 1.0) - z_airbox;
 
         // ISFC: the engine file's `<bsfc>` wins; otherwise estimate from geometry
         // (JSBSim computes it only when the file gives none).
@@ -118,9 +118,10 @@ impl PistonEngine {
             let disp_si = piston.displacement_in3 * IN3_TO_M3;
             let pmep = (29.92 - piston.max_map_inhg) * INHG_TO_PA * piston.volumetric_eff;
             let fmep = piston.fmep_dyn * rated_mps * 0.3048 + piston.fmep_static;
-            let hp_loss =
-                ((pmep + fmep) * disp_si * piston.max_rpm) / (piston.cycles * 22371.0);
-            (1.1 * piston.displacement_in3 * piston.max_rpm * piston.volumetric_eff
+            let hp_loss = ((pmep + fmep) * disp_si * piston.max_rpm) / (piston.cycles * 22371.0);
+            (1.1 * piston.displacement_in3
+                * piston.max_rpm
+                * piston.volumetric_eff
                 * (piston.max_map_inhg / 29.92))
                 / (9411.0 * (piston.max_hp + hp_loss - piston.static_friction_hp))
         };
@@ -187,7 +188,15 @@ impl PistonEngine {
             rpm: self.rpm,
         };
         for _ in 0..6000 {
-            out = self.step(0.5, throttle, rho, pressure_psf, temperature_r, vel_x, sound_speed);
+            out = self.step(
+                0.5,
+                throttle,
+                rho,
+                pressure_psf,
+                temperature_r,
+                vel_x,
+                sound_speed,
+            );
             let thrust = out.thrust;
             if (last_thrust - thrust).abs() < 0.0001 {
                 steady += 1;
@@ -216,7 +225,14 @@ impl PistonEngine {
         sound_speed: f64,
     ) -> EngineOutput {
         self.light();
-        self.spool(throttle, rho, pressure_psf, temperature_r, vel_x, sound_speed)
+        self.spool(
+            throttle,
+            rho,
+            pressure_psf,
+            temperature_r,
+            vel_x,
+            sound_speed,
+        )
     }
 
     /// Steady output at `throttle` and a flight condition, computed on a fresh
@@ -233,7 +249,14 @@ impl PistonEngine {
         sound_speed: f64,
     ) -> EngineOutput {
         let mut scratch = PistonEngine::new(self.piston, self.prop);
-        scratch.steady_at(throttle, rho, pressure_psf, temperature_r, vel_x, sound_speed)
+        scratch.steady_at(
+            throttle,
+            rho,
+            pressure_psf,
+            temperature_r,
+            vel_x,
+            sound_speed,
+        )
     }
 
     /// Advance the powerplant one step. `throttle` is the normalized command,
@@ -383,12 +406,12 @@ impl PistonEngine {
 /// Combustion efficiency vs fuel/air ratio (JSBSim's default correlation).
 fn mixture_efficiency(far: f64) -> f64 {
     const XS: [f64; 15] = [
-        0.05000, 0.05137, 0.05179, 0.05430, 0.05842, 0.06312, 0.06942, 0.07786, 0.08845,
-        0.09270, 0.10120, 0.11455, 0.12158, 0.12435, 0.12500,
+        0.05000, 0.05137, 0.05179, 0.05430, 0.05842, 0.06312, 0.06942, 0.07786, 0.08845, 0.09270,
+        0.10120, 0.11455, 0.12158, 0.12435, 0.12500,
     ];
     const YS: [f64; 15] = [
-        0.00000, 0.00862, 0.21552, 0.48276, 0.70690, 0.83621, 0.93103, 1.00000, 1.00000,
-        0.98276, 0.93103, 0.72414, 0.45690, 0.23276, 0.00000,
+        0.00000, 0.00862, 0.21552, 0.48276, 0.70690, 0.83621, 0.93103, 1.00000, 1.00000, 0.98276,
+        0.93103, 0.72414, 0.45690, 0.23276, 0.00000,
     ];
     Table1::new(&XS, &YS).lookup(far)
 }
@@ -547,7 +570,11 @@ impl RotorDrive {
             } else {
                 0.0
             },
-            rpm: if self.running { self.spec.nominal_rpm } else { 0.0 },
+            rpm: if self.running {
+                self.spec.nominal_rpm
+            } else {
+                0.0
+            },
         }
     }
 
@@ -630,9 +657,7 @@ impl Powerplant {
         sound_speed: f64,
     ) {
         match self {
-            Powerplant::Piston(e) => {
-                e.start(rho, pressure_psf, temperature_r, vel_x, sound_speed)
-            }
+            Powerplant::Piston(e) => e.start(rho, pressure_psf, temperature_r, vel_x, sound_speed),
             Powerplant::Turbine(t) => t.start(),
             Powerplant::Rotor(r) => r.start(),
         }
@@ -650,9 +675,14 @@ impl Powerplant {
         mach: f64,
     ) -> EngineOutput {
         match self {
-            Powerplant::Piston(e) => {
-                e.steady_at(throttle, rho, pressure_psf, temperature_r, vel_x, sound_speed)
-            }
+            Powerplant::Piston(e) => e.steady_at(
+                throttle,
+                rho,
+                pressure_psf,
+                temperature_r,
+                vel_x,
+                sound_speed,
+            ),
             Powerplant::Turbine(t) => t.steady_at(throttle, rho, mach),
             Powerplant::Rotor(r) => r.steady_at(throttle),
         }
@@ -670,9 +700,14 @@ impl Powerplant {
         mach: f64,
     ) -> EngineOutput {
         match self {
-            Powerplant::Piston(e) => {
-                e.steady_output(throttle, rho, pressure_psf, temperature_r, vel_x, sound_speed)
-            }
+            Powerplant::Piston(e) => e.steady_output(
+                throttle,
+                rho,
+                pressure_psf,
+                temperature_r,
+                vel_x,
+                sound_speed,
+            ),
             Powerplant::Turbine(t) => t.steady_output(throttle, rho, mach),
             Powerplant::Rotor(r) => r.steady_output(throttle),
         }
@@ -772,11 +807,23 @@ mod tests {
         let out = pp_step(&mut pp, 1.0);
         // Sea-level *static* full throttle settles near 2500 rpm (the prop's
         // zero-advance-ratio power demand is highest there).
-        assert!(out.rpm > 2400.0, "expected near-static cruise rpm, got {}", out.rpm);
-        assert!(out.power_hp > 100.0, "expected real power, got {}", out.power_hp);
+        assert!(
+            out.rpm > 2400.0,
+            "expected near-static cruise rpm, got {}",
+            out.rpm
+        );
+        assert!(
+            out.power_hp > 100.0,
+            "expected real power, got {}",
+            out.power_hp
+        );
         // Rated 160 hp is a nominal sea-level rating; the power curve can carry
         // it a bit past that at full throttle, matching JSBSim.
-        assert!(out.power_hp < 220.0, "power way past rating: {}", out.power_hp);
+        assert!(
+            out.power_hp < 220.0,
+            "power way past rating: {}",
+            out.power_hp
+        );
     }
 
     #[test]
@@ -791,7 +838,16 @@ mod tests {
     }
 
     fn pp_step(pp: &mut Powerplant, throttle: f64) -> EngineOutput {
-        pp.step(1.0 / 120.0, throttle, SL_RHO, SL_PRESSURE, SL_TEMP_R, 0.0, SL_SOUND, 0.0)
+        pp.step(
+            1.0 / 120.0,
+            throttle,
+            SL_RHO,
+            SL_PRESSURE,
+            SL_TEMP_R,
+            0.0,
+            SL_SOUND,
+            0.0,
+        )
     }
 
     // A 1×1 turbine: constant fractions, so the thrust-vs-throttle law is the
@@ -817,7 +873,16 @@ mod tests {
     }
 
     fn turb_step(pp: &mut Powerplant, throttle: f64) -> EngineOutput {
-        pp.step(1.0 / 60.0, throttle, SL_RHO, SL_PRESSURE, SL_TEMP_R, 0.0, SL_SOUND, 0.0)
+        pp.step(
+            1.0 / 60.0,
+            throttle,
+            SL_RHO,
+            SL_PRESSURE,
+            SL_TEMP_R,
+            0.0,
+            SL_SOUND,
+            0.0,
+        )
     }
 
     #[test]
@@ -845,6 +910,10 @@ mod tests {
         pp.start(SL_RHO, SL_PRESSURE, SL_TEMP_R, 0.0, SL_SOUND);
         // 95% throttle is dry (no augmentation) and below full military thrust.
         let out = turb_step(&mut pp, 0.95);
-        assert!(out.thrust > 30000.0 && out.thrust < 53900.0, "got {}", out.thrust);
+        assert!(
+            out.thrust > 30000.0 && out.thrust < 53900.0,
+            "got {}",
+            out.thrust
+        );
     }
 }

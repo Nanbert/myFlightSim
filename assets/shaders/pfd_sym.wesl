@@ -24,8 +24,14 @@ struct PfdParams {
     e: vec4<f32>,
     // at_mode, lat_mode, vert_mode, mach
     f: vec4<f32>,
-    // time_s, slip, tas_kts, unused
+    // time_s, slip, tas_kts, app_armed
     g: vec4<f32>,
+    // speedbrake_pos, reverse_pos, loc_dev_dots, gs_dev_dots — the ILS channels
+    // feed the deviation scales; the app already converts degrees to receiver
+    // dots (1 LOC dot = 1.25°, 1 GS dot = 0.35°)
+    h: vec4<f32>,
+    // gpws_glideslope, gpws_sink_rate, unused, unused
+    i: vec4<f32>,
 };
 
 const SCREEN: vec3<f32> = vec3<f32>(0.010, 0.016, 0.013);
@@ -190,6 +196,23 @@ fn draw_word(p: vec2<f32>, org: vec2<f32>, s: f32, ids: array<u32, 8>, n: u32) -
         }
     }
     return acc;
+}
+
+/// Same as `draw_word` for ten-glyph words (the GPWS annunciators).
+fn draw_word10(p: vec2<f32>, org: vec2<f32>, s: f32, ids: array<u32, 10>, n: u32) -> f32 {
+    var acc = 0.0;
+    for (var i = 0u; i < n; i = i + 1u) {
+        if (ids[i] < 43u) {
+            acc = max(acc, glyph_at(p, org + vec2<f32>(f32(i) * 6.0 * s, 0.0), s, ids[i]));
+        }
+    }
+    return acc;
+}
+
+/// A filled diamond (two triangles), used for the ILS deviation pointers.
+fn diamond(p: vec2<f32>, c: vec2<f32>, r: f32) -> f32 {
+    let d = abs(p - c).x + abs(p - c).y;
+    return clamp((r - d) * 0.5, 0.0, 1.0);
 }
 
 fn text_w(n: u32, s: f32) -> f32 {
@@ -604,13 +627,27 @@ fn pfd(u: PfdParams, p: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
         green = max(green, draw_word(p, vec2<f32>(center_x(0.20 * W, at_n, fma_s), 0.022 * H), fma_s, at_word, at_n));
 
         if (engaged) {
-            if (u.f.y > 0.5) {
-                let roll_word = array<u32, 8>(CH_H, CH_D, CH_G, CH_SP, CH_S, CH_E, CH_L, CH_SP);
-                green = max(green, draw_word(p, vec2<f32>(center_x(0.5 * W, 7u, fma_s), 0.022 * H), fma_s, roll_word, 7u));
+            var roll_word = array<u32, 8>(CH_SP, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP);
+            var roll_n = 0u;
+            if (u.f.y > 1.5) {
+                roll_word = array<u32, 8>(CH_L, CH_O, CH_C, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP);
+                roll_n = 3u;
+            } else if (u.f.y > 0.5) {
+                roll_word = array<u32, 8>(CH_H, CH_D, CH_G, CH_SP, CH_S, CH_E, CH_L, CH_SP);
+                roll_n = 7u;
+            }
+            if (roll_n > 0u) {
+                green = max(green, draw_word(p, vec2<f32>(center_x(0.5 * W, roll_n, fma_s), 0.022 * H), fma_s, roll_word, roll_n));
             }
             var vert_word = array<u32, 8>(CH_SP, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP);
             var vert_n = 0u;
-            if (u.f.z > 2.5) {
+            if (u.f.z > 4.5) {
+                vert_word = array<u32, 8>(CH_F, CH_L, CH_A, CH_R, CH_E, CH_SP, CH_SP, CH_SP);
+                vert_n = 5u;
+            } else if (u.f.z > 3.5) {
+                vert_word = array<u32, 8>(CH_G, CH_SLASH, CH_S, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP);
+                vert_n = 3u;
+            } else if (u.f.z > 2.5) {
                 vert_word = array<u32, 8>(CH_L, CH_V, CH_L, CH_SP, CH_C, CH_H, CH_G, CH_SP);
                 vert_n = 7u;
             } else if (u.f.z > 1.5) {
@@ -620,10 +657,18 @@ fn pfd(u: PfdParams, p: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
                 vert_word = array<u32, 8>(CH_A, CH_L, CH_T, CH_SP, CH_H, CH_O, CH_L, CH_D);
                 vert_n = 8u;
             }
-            green = max(green, draw_word(p, vec2<f32>(center_x(0.80 * W, vert_n, fma_s), 0.022 * H), fma_s, vert_word, vert_n));
+            if (vert_n > 0u) {
+                green = max(green, draw_word(p, vec2<f32>(center_x(0.80 * W, vert_n, fma_s), 0.022 * H), fma_s, vert_word, vert_n));
+            }
 
             let cmd = array<u32, 8>(CH_C, CH_M, CH_D, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP);
             green = max(green, draw_word(p, vec2<f32>(center_x(0.5 * W, 3u, fma_s), 0.052 * H), fma_s, cmd, 3u));
+
+            // APP armed: white on the second row until both beams capture.
+            if (u.g.w > 0.5) {
+                let app = array<u32, 8>(CH_A, CH_P, CH_P, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP);
+                bright = max(bright, draw_word(p, vec2<f32>(center_x(0.62 * W, 3u, fma_s), 0.052 * H), fma_s, app, 3u));
+            }
 
             let fd = array<u32, 8>(CH_F, CH_D, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP);
             green = max(green, draw_word(p, vec2<f32>(center_x(0.5 * W, 2u, fma_s), 0.125 * H), fma_s, fd, 2u));
@@ -643,6 +688,62 @@ fn pfd(u: PfdParams, p: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
         let gx = 0.040 * W;
         bright = max(bright, draw_word(p, vec2<f32>(gx, by), bot_s, gs_word, 2u));
         bright = max(bright, draw_u(p, vec2<f32>(gx + 3.0 * 6.0 * bot_s, by), bot_s, gs, 3u));
+    }
+
+    // CONFIG status words, centred: green SPOILERS with the boards out, amber
+    // REV with thrust reverse stepped (the FDM only bites it on the ground).
+    let sb = u.h.x;
+    if (sb > 0.02) {
+        let w = array<u32, 8>(CH_S, CH_P, CH_O, CH_I, CH_L, CH_E, CH_R, CH_S);
+        green = max(green, draw_word(p, vec2<f32>(center_x(0.5 * W, 8u, bot_s), by), bot_s, w, 8u));
+    }
+    let rev = u.h.y;
+    if (rev > 0.02) {
+        let w = array<u32, 8>(CH_R, CH_E, CH_V, CH_SP, CH_SP, CH_SP, CH_SP, CH_SP);
+        amber = max(amber, draw_word(p, vec2<f32>(center_x(0.5 * W, 3u, bot_s), 0.890 * H), bot_s, w, 3u));
+    }
+
+    // --- ILS deviation scales ---------------------------------------------
+    // Shown whenever APP is armed or a beam mode is engaged. The localizer is
+    // the horizontal scale under the attitude ball, the glideslope the
+    // vertical one right of it; each dot is the receiver's half scale
+    // (1.25° LOC / 0.35° GS), and the diamonds are filled.
+    let on_ils = u.g.w > 0.5 || u.f.y > 1.5;
+    if (on_ils) {
+        let scale_y = 0.758 * H;
+        let span = 0.085 * W;
+        // The bar with a centre notch and the ±1/±2 dot ticks.
+        for (var k = 0; k < 5; k++) {
+            let tx = 0.5 * W + (f32(k) - 2.0) * span * 0.5;
+            let tw = select(0.010 * W, 0.018 * W, k == 2);
+            mag = max(mag, line(p, vec2<f32>(tx, scale_y), vec2<f32>(tx, scale_y + tw), 2.2));
+        }
+        // h.z carries the localizer deviation in *dots*.
+        let dx = 0.5 * W + clamp(u.h.z, -2.4, 2.4) * span * 0.5;
+        mag = max(mag, diamond(p, vec2<f32>(dx, scale_y + 0.016 * W), 0.012 * W));
+
+        let gs_x = 0.845 * W;
+        let vspan = 0.13 * H;
+        for (var k = 0; k < 5; k++) {
+            let ty = 0.44 * H + (f32(k) - 2.0) * vspan * 0.5;
+            let tw = select(0.010 * W, 0.018 * W, k == 2);
+            mag = max(mag, line(p, vec2<f32>(gs_x, ty), vec2<f32>(gs_x - tw, ty), 2.2));
+        }
+        // h.w carries the glideslope deviation in *dots*.
+        let dy = 0.44 * H - clamp(u.h.w, -2.4, 2.4) * vspan * 0.5;
+        mag = max(mag, diamond(p, vec2<f32>(gs_x - 0.016 * W, dy), 0.012 * W));
+    }
+
+    // --- GPWS-lite warnings: amber words left of centre on the bottom row --
+    if (u.i.x > 0.5) {
+        // GLIDESLOPE: sinking below the beam we are flying.
+        let w = array<u32, 10>(CH_G, CH_L, CH_I, CH_D, CH_E, CH_S, CH_L, CH_O, CH_P, CH_E);
+        amber = max(amber, draw_word10(p, vec2<f32>(center_x(0.38 * W, 10u, bot_s), by), bot_s, w, 10u));
+    }
+    if (u.i.y > 0.5) {
+        // SINK RATE: closing with the deck too fast.
+        let w = array<u32, 10>(CH_S, CH_I, CH_N, CH_K, CH_SP, CH_R, CH_A, CH_T, CH_E, CH_SP);
+        amber = max(amber, draw_word10(p, vec2<f32>(center_x(0.62 * W, 9u, bot_s), by), bot_s, w, 9u));
     }
 
     // Barometric setting, in green on the real display.

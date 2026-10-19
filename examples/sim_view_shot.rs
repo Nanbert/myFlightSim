@@ -7,22 +7,22 @@
 //!
 //! Run: `cargo run --example sim_view_shot`  (or `COCKPIT=1 cargo run --example sim_view_shot`)
 
-#[path = "../src/cloud_camera.rs"]
-mod cloud_camera;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
-#[path = "../src/config.rs"]
-mod config;
-#[path = "../src/input.rs"]
-mod input;
 #[path = "../src/app_state.rs"]
 mod app_state;
-#[path = "../src/hud.rs"]
-mod hud;
-#[path = "../src/lens.rs"]
-mod lens;
 #[path = "../src/autopilot.rs"]
 mod autopilot;
+#[path = "../src/cloud_camera.rs"]
+mod cloud_camera;
+#[path = "../src/config.rs"]
+mod config;
+#[path = "../src/hud.rs"]
+mod hud;
+#[path = "../src/input.rs"]
+mod input;
+#[path = "../src/lens.rs"]
+mod lens;
 #[path = "../src/sim.rs"]
 mod sim;
 #[path = "../src/view.rs"]

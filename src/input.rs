@@ -402,6 +402,15 @@ fn read_input(
             | ToggleAction::LvlChg
             | ToggleAction::AutoThrottle => ap.press_mode(action, &*sim.model),
             ToggleAction::SpeedMach => mcp.toggle_speed_unit(),
+            // The 737's speedbrake handle and reverse thrust. Reverse drops
+            // the autothrottle so it cannot fight the back-up thrust (the pilot
+            // retard the throttles to engage reverse on the real jet anyway).
+            ToggleAction::SpeedBrake => toggle_prop(&mut sim, "fcs/speedbrake-cmd-norm"),
+            ToggleAction::Reverse => {
+                toggle_prop(&mut sim, "fcs/reverse-cmd-norm");
+                ap.disconnect_autothrottle();
+            }
+            ToggleAction::Approach => ap.press_mode(ToggleAction::Approach, &*sim.model),
             // A no-op on models without these (the FDM ignores the property).
             ToggleAction::Tvc => toggle_prop(&mut sim, "fcs/tvc-enable"),
             ToggleAction::Gear => toggle_prop(&mut sim, "gear/gear-cmd-norm"),
@@ -451,6 +460,10 @@ fn read_input(
         *bindings = rebuilt;
         ap.reset();
         mcp.reset();
+        // Parked means clean-config and engines smiling forward: stow the
+        // boards and disarm whatever reverse the previous roll left behind.
+        sim.model.set("fcs/speedbrake-cmd-norm", 0.0);
+        sim.model.set("fcs/reverse-cmd-norm", 0.0);
     }
 }
 

@@ -5,14 +5,14 @@
 //!
 //! Run: `cargo run --example b737_cockpit_shot` and open `/tmp/b737_cockpit_shot.png`.
 
-#[path = "../src/cloud_camera.rs"]
-mod cloud_camera;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
 #[path = "../src/app_state.rs"]
 mod app_state;
 #[path = "../src/autopilot.rs"]
 mod autopilot;
+#[path = "../src/cloud_camera.rs"]
+mod cloud_camera;
 #[path = "../src/cockpit.rs"]
 mod cockpit;
 #[path = "../src/config.rs"]

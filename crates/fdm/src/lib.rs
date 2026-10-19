@@ -18,7 +18,8 @@
 //! a wings-level steady trim at a target airspeed and altitude and seats the
 //! model on it; the lateral correction is parked in the roll/yaw trim tabs so it
 //! survives the pilot keys. Deliberate omissions for this first cut (noted in
-//! the modules that own them): no wind and `alphadot` fixed at 0.
+//! the modules that own them): ambient wind only via the property bus
+//! (`atmosphere/wind-*-fps`, default calm) and `alphadot` fixed at 0.
 //!
 //! Kept free of Bevy, the filesystem, and threads so it compiles to `wasm32`.
 
@@ -29,20 +30,19 @@ mod atmos;
 mod engine;
 mod fcs;
 mod gear;
+mod heli_arcade;
 mod rotor;
 mod state;
 mod table;
 
 use crate::aero::{AeroResult, PropMap};
-use crate::aircraft::{
-    ah1s::AH1S, b737::B737, c172::C172, f22::F22, Aircraft, INCH_TO_FT,
-};
+use crate::aircraft::{ah1s::AH1S, b737::B737, c172::C172, f22::F22, Aircraft, INCH_TO_FT};
 use crate::atmos::{Isa, G0};
 use crate::engine::{EngineOutput, Powerplant};
 use crate::fcs::{scale, ControlSystem, Fbw, FcsInputs, Surfaces};
 use crate::gear::{ground_force, Gear, Ground};
 use crate::rotor::{Rotor, RotorControlMap};
-use crate::state::{add, rk4, State, Vec3};
+use crate::state::{add, norm, quat_rotate, rk4, sub, State, Vec3};
 use flight_model::FlightModel;
 
 const R2D: f64 = 180.0 / std::f64::consts::PI;
@@ -52,10 +52,17 @@ const KT_TO_FPS: f64 = 1.68781;
 const FPS_TO_KT: f64 = 1.0 / KT_TO_FPS;
 /// Feet per degree of latitude, chosen so the app's NED->world round-trip is
 /// exact for its `EARTH_RADIUS_M = 6_378_137 m`: `(pi/180)*R/0.3048`.
-const FT_PER_DEG_LAT: f64 = 365_221.79;
+/// `pub` because the app's `reset_final` seats its own approach-gate IC with
+/// the same conversion the FDM publishes back.
+pub const FT_PER_DEG_LAT: f64 = 365_221.79;
 /// Landing-gear full travel time (s), down <-> up. Matches the gear kinematic in
 /// the JSBSim models (both the F-22 and 737 traversals are 5 s).
 const GEAR_CYCLE_S: f64 = 5.0;
+/// Full defection *deploy* time of the 737's cockpit speedbrake handle (the
+/// model's `<kinematic>` traverse: 0 over 0 s, 1 over 0.6 s).
+const SPEEDBRAKE_TRAVEL_S: f64 = 0.6;
+/// Thrust-reverse lever throw (the app's reverse toggle ramps over this throw).
+const REVERSE_TRAVEL_S: f64 = 1.2;
 
 /// A per-step snapshot of the aero/propulsion force and moment split, published
 /// through the property bus so the validation harness can diff it against
@@ -69,6 +76,16 @@ struct Diag {
     moment_aero: Vec3,
     moment_prop: Vec3,
     thrust: f64,
+}
+
+/// Auto-hover / vertical-takeoff state machine for the arcade helicopter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum HoverState {
+    #[default]
+    Off = 0,
+    Takeoff = 1,
+    Hold = 2,
+    Land = 3,
 }
 
 /// A flight model instance for one aircraft.
@@ -117,6 +134,15 @@ pub struct Fdm {
     yaw_trim_cmd: f64,
     flap_cmd: f64,
     flap_pos_deg: f64,
+    // Flight spoilers (the 737's speedbrake) and thrust reverse. Both are
+    // command/position pairs: the position rolls toward the command at the
+    // model's traverse rate. Spoilers add drag (CDsb) and cost wing lift
+    // (kCLsb); reverse points the thrust backward, but only while the wheels
+    // carry weight — airborne it is driven to stowed.
+    speedbrake_cmd: f64,
+    speedbrake_pos: f64,
+    reverse_cmd: f64,
+    reverse_pos: f64,
     // Programmed initial conditions (read by `apply_ic`).
     ic_vc_kts: f64,
     ic_alt_ft: f64,
@@ -138,6 +164,13 @@ pub struct Fdm {
     // Arcade mode (`fcs/arcade-enable`). Off by default; when on, `advance`
     // swaps the aero/FBW force resolution for the simplified [`arcade`] rules.
     arcade: bool,
+    // Helicopter arcade helpers. The two pilot switches are `fcs/heli-hover-enable`
+    // (vertical takeoff / hover / land) and `fcs/heli-balance-enable` (auto-level).
+    heli_hover_cmd: bool,
+    heli_hover_prev: bool,
+    heli_balance: bool,
+    heli_hover_state: HoverState,
+    heli_hover_target_ft: f64,
     // Landing gear. `gear_cmd` is the pilot's selector (true = down); `gear_pos`
     // is the achieved position (1 = down, 0 = up) rolled toward the command at
     // the gear-cycle rate. Fixed-gear aircraft stay at 1.
@@ -147,12 +180,23 @@ pub struct Fdm {
     // Missions use it as a sea-surface stop: with the gear up the model has no
     // belly contact, so nothing else prevents a dive through the water.
     floor_ft: Option<f64>,
+    // Ambient wind, NED components (ft/s), written through the property bus
+    // (`atmosphere/wind-{north,east,down}-fps`, JSBSim's names). The aero
+    // evaluation and every airspeed readback see this subtracted from the
+    // ground velocity; gravity, the integrator and the tire forces stay
+    // ground-based, so parked friction and the runway contact are unaffected.
+    wind_ned_fps: Vec3,
     // Last step's force/moment breakdown, for frame-by-frame comparison against
     // JSBSim (`forces/*`, `moments/*`).
     diag: Diag,
     // Flat-earth origin, so NED can be reported as lat/lon.
     origin_lat: f64,
     origin_lon: f64,
+    // IC offsets from that origin (ft), set through `ic/lat-gc-deg` /
+    // `ic/long-gc-deg`. Default 0 = start over the origin (the runway
+    // threshold), as every parked reset does.
+    ic_north_ft: f64,
+    ic_east_ft: f64,
     dt: f64,
 }
 
@@ -170,7 +214,11 @@ impl Fdm {
         let cg_in = ac.loaded_cg_in();
         let prop_arm_ft = struct_to_body(ac.power.location_in(), cg_in);
         let rp_offset_ft = struct_to_body(ac.aero.aerorp_in, cg_in);
-        let gear_arms_ft = ac.gear.iter().map(|g| struct_to_body(g.pos_in, cg_in)).collect();
+        let gear_arms_ft = ac
+            .gear
+            .iter()
+            .map(|g| struct_to_body(g.pos_in, cg_in))
+            .collect();
         let rotors: Vec<Rotor> = ac.rotors.iter().map(|s| Rotor::new(s, dt)).collect();
         let rotor_arms_ft = ac
             .rotors
@@ -206,6 +254,10 @@ impl Fdm {
             yaw_trim_cmd: 0.0,
             flap_cmd: 0.0,
             flap_pos_deg: 0.0,
+            speedbrake_cmd: 0.0,
+            speedbrake_pos: 0.0,
+            reverse_cmd: 0.0,
+            reverse_pos: 0.0,
             ic_vc_kts: 0.0,
             ic_alt_ft: 0.0,
             ic_phi_deg: 0.0,
@@ -220,12 +272,20 @@ impl Fdm {
             wow: false,
             tvc_enable: true,
             arcade: false,
+            heli_hover_cmd: false,
+            heli_hover_prev: false,
+            heli_balance: false,
+            heli_hover_state: HoverState::Off,
+            heli_hover_target_ft: 0.0,
             gear_cmd: true,
             gear_pos: 1.0,
             floor_ft: None,
+            wind_ned_fps: [0.0; 3],
             diag: Diag::default(),
             origin_lat: 0.0,
             origin_lon: 0.0,
+            ic_north_ft: 0.0,
+            ic_east_ft: 0.0,
             dt,
         }
     }
@@ -259,6 +319,11 @@ impl Fdm {
         let vt = (u * u + v * v + w * w).sqrt().max(1e-6);
         let alpha = w.atan2(u);
         let qbar = 0.5 * rho * vt * vt;
+        let speedbrake_pos = if ac.has_speedbrake {
+            self.speedbrake_pos
+        } else {
+            0.0
+        };
         let inputs = FcsInputs {
             p: self.state.omega[0],
             q: self.state.omega[1],
@@ -282,7 +347,12 @@ impl Fdm {
             collective_cmd: self.collective_cmd,
             collective_trim_cmd: self.collective_trim_cmd,
         };
-        ac.control.resolve(&mut self.fbw, &inputs, dt)
+        let mut surf = ac.control.resolve(&mut self.fbw, &inputs, dt);
+        // The resolved position drives the CDsb drag / kCLsb lift factors. The
+        // direct and FBW laws never set this field, so it would otherwise read
+        // the struct's zero default and the boards would never bite.
+        surf.speedbrake_norm = speedbrake_pos;
+        surf
     }
 
     /// Roll the flaps toward the commanded deflection at the model's flap rate.
@@ -318,18 +388,110 @@ impl Fdm {
         };
     }
 
+    /// Drive the flight spoilers (the 737's speedbrake) and the thrust reverse
+    /// through their command/position pairs.
+    ///
+    /// Spoilers take 0.6 s of full travel, straight off the model's kinematic
+    /// traverse. Reverse is **ground-interlocked**: the position rolls toward
+    /// the command only while weight rests on the wheels, and an airborne
+    /// command is driven to stowed — so a reverse left half-way through a
+    /// touch-and-go fails closed instead of spooling the engines backwards in
+    /// the flare. Reverse travel takes 1.2 s (the real lever throw).
+    fn step_spoilers(&mut self, dt: f64) {
+        if self.ac.has_speedbrake {
+            let step = dt / SPEEDBRAKE_TRAVEL_S;
+            let err = self.speedbrake_cmd.clamp(0.0, 1.0) - self.speedbrake_pos;
+            self.speedbrake_pos = if err.abs() <= step {
+                self.speedbrake_pos + err
+            } else {
+                self.speedbrake_pos + step * err.signum()
+            };
+        }
+        let rev_target = if self.wow {
+            self.reverse_cmd.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let rev_step = dt / REVERSE_TRAVEL_S;
+        let rev_err = rev_target - self.reverse_pos;
+        self.reverse_pos = if rev_err.abs() <= rev_step {
+            self.reverse_pos + rev_err
+        } else {
+            self.reverse_pos + rev_step * rev_err.signum()
+        };
+    }
+
+    /// Drive the arcade helicopter's vertical state machine. Returns
+    /// `(vz_target_fps, lift_enabled)`.
+    fn step_heli_hover(&mut self, alt_ft: f64) -> (f64, bool) {
+        // `wow` is only valid after a step; the first hover press can arrive
+        // while the model is still seated at its parked IC, so also treat the
+        // parked height as ground.
+        let on_ground = self.wow || alt_ft <= self.ac.rest_h_ft + 2.0;
+        if self.heli_hover_cmd != self.heli_hover_prev {
+            if self.heli_hover_cmd {
+                if on_ground || self.heli_hover_state == HoverState::Land {
+                    self.heli_hover_state = HoverState::Takeoff;
+                    self.heli_hover_target_ft = alt_ft + 15.0;
+                } else {
+                    self.heli_hover_state = HoverState::Hold;
+                    self.heli_hover_target_ft = alt_ft;
+                }
+            } else if self.heli_hover_state != HoverState::Off {
+                self.heli_hover_state = HoverState::Land;
+            }
+            self.heli_hover_prev = self.heli_hover_cmd;
+        }
+
+        if self.heli_hover_state == HoverState::Takeoff && alt_ft >= self.heli_hover_target_ft - 0.8
+        {
+            self.heli_hover_state = HoverState::Hold;
+        }
+        if self.heli_hover_state == HoverState::Land && (self.wow || alt_ft <= 0.2) {
+            self.heli_hover_state = HoverState::Off;
+            self.heli_hover_cmd = false;
+            self.heli_hover_prev = false;
+        }
+
+        let vz = match self.heli_hover_state {
+            HoverState::Takeoff => ((self.heli_hover_target_ft - alt_ft) * 0.9).clamp(1.0, 8.0),
+            HoverState::Hold => ((self.heli_hover_target_ft - alt_ft) * 0.8).clamp(-4.0, 4.0),
+            HoverState::Land => {
+                if alt_ft < 6.0 {
+                    ((-alt_ft) * 0.55).clamp(-2.0, 0.5)
+                } else {
+                    ((-alt_ft) * 0.45).clamp(-5.0, -0.5)
+                }
+            }
+            HoverState::Off => (self.collective_cmd - 0.5) * 2.0 * heli_arcade::MAX_MANUAL_VZ,
+        };
+        let lift =
+            !on_ground || self.heli_hover_state != HoverState::Off || self.collective_cmd > 0.52;
+        (vz, lift)
+    }
+
     /// Advance the whole model one fixed timestep.
     fn advance(&mut self, dt: f64) {
         // Gear travels toward the commanded position first, so this step's LEF
         // schedule, aero drag and ground reaction all see the same position.
         self.step_gear(dt);
+        self.step_spoilers(dt);
         let alt = self.alt_ft();
+        let heli_mode = self.arcade && !self.rotors.is_empty();
+        let (heli_vz_target, heli_lift) = if heli_mode {
+            self.step_heli_hover(alt)
+        } else {
+            (0.0, false)
+        };
         let rho = self.isa.density(alt);
         let pressure = self.isa.pressure(alt);
         let temp = self.isa.temperature(alt);
         let sound = self.isa.sound_speed(alt);
 
-        let vt = self.state.airspeed().max(1e-6);
+        // Airspeeds are air-relative: the propeller and the Mach tables see the
+        // vehicle's motion through the air mass, not over the ground.
+        let air = self.air_vel_body();
+        let vt = norm(air).max(1e-6);
         let mach = vt / sound.max(1.0);
 
         // Powerplant spins up once per step (quasi-steady); its thrust, induced
@@ -343,13 +505,25 @@ impl Fdm {
             rho,
             pressure,
             temp,
-            self.state.vel[0],
+            air[0],
             sound,
             mach,
         );
         self.engine_rpm = out.rpm;
         self.engine_power_hp = out.power_hp;
-        let thrust = out.thrust;
+        // Thrust reverse: back up the exhaust while the wheels carry weight. The
+        // honest cell for that force is exactly where forward thrust lands —
+        // net body-axis force and its moment arm both take the difference, so
+        // the RK4 stages, trim ctx and diag all see one consistent value.
+        // Airborne (reverse already stepped to stowed) it is simply zero.
+        let reverse_thrust = if self.ac.max_reverse_lbs > 0.0 {
+            self.ac.max_reverse_lbs
+                * self.ac.power.engine_count() as f64
+                * self.reverse_pos
+        } else {
+            0.0
+        };
+        let thrust = out.thrust - reverse_thrust;
         let torque_x = out.torque_x;
         let induced = out.induced_velocity;
         // Thruster moment about the CG: the propeller's reaction torque about
@@ -397,6 +571,21 @@ impl Fdm {
             mass,
             align: arcade && !self.wow && vt > arcade::ALIGN_MIN_KT * KT_TO_FPS,
         };
+        let heli_cfg = if heli_mode {
+            Some(heli_arcade::Cfg {
+                elevator: self.elevator_cmd,
+                aileron: self.aileron_cmd,
+                rudder: self.rudder_cmd,
+                collective: self.collective_cmd,
+                mass,
+                balance: self.heli_balance,
+                on_ground: self.wow,
+                vz_target: heli_vz_target,
+                lift: heli_lift,
+            })
+        } else {
+            None
+        };
         // Reuse the scratch map's allocation across steps; take it out of `self`
         // so the aero closure can hold it mutably without borrowing all of `self`.
         let mut props = std::mem::take(&mut self.props);
@@ -414,8 +603,18 @@ impl Fdm {
         let mut diag = Diag::default();
         // Ground reaction is also recomputed per stage; keep the last stage's.
         let mut ground = Ground::default();
+        let wind_ned = self.wind_ned_fps;
         let next = rk4(&state, dt, mass, &inertia, |s: &State| {
-            fill_props(&mut props, ac, s, &surf, induced, rho, sound);
+            fill_props(
+                &mut props,
+                ac,
+                s,
+                &surf,
+                induced,
+                rho,
+                sound,
+                s.ned_to_body(wind_ned),
+            );
             props.set("gear/gear-pos-norm", gear_pos);
             let aero = ac.aero.evaluate(&mut props, rp_offset);
             ground = ground_force(s, gears, arms, rudder, brake, dt);
@@ -428,6 +627,15 @@ impl Fdm {
                 moment_prop: mprop,
                 thrust,
             };
+            if let Some(hcfg) = &heli_cfg {
+                return heli_arcade::force_moment(
+                    hcfg,
+                    s,
+                    &inertia,
+                    ground.force_body,
+                    ground.moment_body,
+                );
+            }
             if arcade {
                 // Only the airframe's axial (drag) force survives; the arcade
                 // rules supply the rate-command moment and the pinning force.
@@ -481,6 +689,34 @@ impl Fdm {
         -self.state.body_to_ned(self.state.vel)[2]
     }
 
+    /// Air-relative velocity in body axes (ft/s): the ground velocity less the
+    /// ambient wind rotated into the body frame. The aero evaluation, the
+    /// propeller inflow and the rotors all see this.
+    fn air_vel_body(&self) -> Vec3 {
+        sub(self.state.vel, self.state.ned_to_body(self.wind_ned_fps))
+    }
+
+    /// Air-relative true airspeed (ft/s).
+    fn air_airspeed_fps(&self) -> f64 {
+        norm(self.air_vel_body())
+    }
+
+    /// Air-relative sideslip (rad), same convention as `aero/beta-deg`.
+    fn air_beta_rad(&self) -> f64 {
+        let air = self.air_vel_body();
+        air[1].atan2(air[0])
+    }
+
+    /// Re-seat the vehicle *velocity* for a wind-aware world: the trims and ICs
+    /// solve and express velocities in the air frame, but the integrator works
+    /// on ground velocity, so the ambient wind is added back at seat time. A
+    /// no-op in still air (the default).
+    fn seat_air_frame(&mut self) {
+        let quat = self.state.quat;
+        let air_ned = quat_rotate(quat, self.state.vel);
+        self.state.vel = self.state.ned_to_body(add(air_ned, self.wind_ned_fps));
+    }
+
     /// Read a rotor output by index, or 0.0 when there's no such rotor
     /// (fixed-wing aircraft carry none).
     fn rotor_get(&self, i: usize, f: impl Fn(&Rotor) -> f64) -> f64 {
@@ -500,7 +736,9 @@ impl Fdm {
         if self.rotors.is_empty() {
             return ([0.0; 3], [0.0; 3]);
         }
-        let uvw = self.state.vel;
+        // The rotors see the air-relative velocity too (the AH-1S's advance
+        // ratio and flapping time-constant all key on it).
+        let uvw = self.air_vel_body();
         let pqr = self.state.omega;
         let rpm_main = self.engine_rpm.max(0.0);
         let main_gear = self.rotors[0].spec().gear_ratio;
@@ -580,6 +818,9 @@ impl Fdm {
             eng.induced_velocity,
             rho,
             sound,
+            // The trim frame *is* the air frame: `vt` here is an airspeed, so
+            // the wind must not be subtracted again.
+            [0.0; 3],
         );
         props.set("gear/gear-pos-norm", self.gear_pos);
         let aero = self.ac.aero.evaluate(&mut props, self.rp_offset_ft);
@@ -627,13 +868,26 @@ impl Fdm {
         // one-pass trick the FBW path uses). Without it the trim omits induced
         // drag and the seat drifts — visible on the 737, whose CDi is real.
         let (aero0, _, _) = self.trim_eval(x[0], 0.0, 0.0, 0.0, x[1], x[2], vt, alt, 0.0);
-        let (aero, eng, grav) =
-            self.trim_eval(x[0], 0.0, 0.0, 0.0, x[1], x[2], vt, alt, aero0.cl * aero0.cl);
+        let (aero, eng, grav) = self.trim_eval(
+            x[0],
+            0.0,
+            0.0,
+            0.0,
+            x[1],
+            x[2],
+            vt,
+            alt,
+            aero0.cl * aero0.cl,
+        );
         let weight = self.mass * G0;
         let fx = aero.force_body[0] + eng.thrust + grav[0] * self.mass;
         let fz = aero.force_body[2] + grav[2] * self.mass;
         let my = aero.moment_body[1] + self.prop_arm_ft[2] * eng.thrust;
-        [fx / weight, fz / weight, my / (weight * self.ac.wing_chord_ft)]
+        [
+            fx / weight,
+            fz / weight,
+            my / (weight * self.ac.wing_chord_ft),
+        ]
     }
 
     /// Lateral residual `[Fy, Mx, Mz]` (weight- and weight-span-normalized), zero
@@ -698,7 +952,11 @@ impl Fdm {
         let fx = aero.force_body[0] + eng.thrust + grav[0] * self.mass;
         let fz = aero.force_body[2] + grav[2] * self.mass;
         let my = aero.moment_body[1] + self.prop_arm_ft[2] * eng.thrust;
-        [fx / weight, fz / weight, my / (weight * self.ac.wing_chord_ft)]
+        [
+            fx / weight,
+            fz / weight,
+            my / (weight * self.ac.wing_chord_ft),
+        ]
     }
 
     /// Residual for the helicopter trim, weight-normalized and zero at trim: the
@@ -733,7 +991,16 @@ impl Fdm {
         let mut props = PropMap::new();
         props.set("aero/cl-squared", self.cl_sq);
         props.set("aero/mu", self.rotor_get(0, |r| r.advance_ratio()));
-        fill_props(&mut props, self.ac, &self.state, &surf, 0.0, rho, sound);
+        fill_props(
+            &mut props,
+            self.ac,
+            &self.state,
+            &surf,
+            0.0,
+            rho,
+            sound,
+            self.state.ned_to_body(self.wind_ned_fps),
+        );
         props.set("gear/gear-pos-norm", self.gear_pos);
         let aero = self.ac.aero.evaluate(&mut props, self.rp_offset_ft);
 
@@ -794,9 +1061,7 @@ impl Fdm {
         };
 
         const H: f64 = 1e-4;
-        let nrm = |r: [f64; 6]| {
-            (r.iter().map(|v| v * v).sum::<f64>()).sqrt()
-        };
+        let nrm = |r: [f64; 6]| (r.iter().map(|v| v * v).sum::<f64>()).sqrt();
         let mut x = [0.5, 0.0, 0.0, 0.0, 0.0, 0.0];
         for _ in 0..60 {
             let r = self.trim_heli_residual(x, alt_ft, v_ned);
@@ -918,6 +1183,7 @@ impl Fdm {
             quat: euler_to_quat(0.0, alpha, self.ic_psi_deg * D2R),
             omega: [0.0; 3],
         };
+        self.seat_air_frame();
         self.elevator_cmd = 0.0;
         self.aileron_cmd = 0.0;
         self.rudder_cmd = 0.0;
@@ -1114,6 +1380,7 @@ impl FlightModel for Fdm {
             quat: euler_to_quat(xa[0], alpha, self.ic_psi_deg * D2R),
             omega: [0.0; 3],
         };
+        self.seat_air_frame();
         self.flap_pos_deg = 0.0;
         self.ic_vc_kts = vc_kts;
         self.ic_alt_ft = alt_ft;
@@ -1126,7 +1393,9 @@ impl FlightModel for Fdm {
         let sound = self.isa.sound_speed(alt_ft);
         let mach = vt / sound.max(1.0);
         let (throttle, u) = (self.throttle_cmd, vt * alpha.cos());
-        let eng = self.power.steady_at(throttle, rho, pressure, temp, u, sound, mach);
+        let eng = self
+            .power
+            .steady_at(throttle, rho, pressure, temp, u, sound, mach);
         self.engine_rpm = eng.rpm;
         self.engine_power_hp = eng.power_hp;
     }
@@ -1148,7 +1417,7 @@ impl FlightModel for Fdm {
             .cas_to_tas(self.ic_vc_kts * KT_TO_FPS, self.ic_alt_ft);
         let (sb, cb) = (self.ic_beta_deg * D2R).sin_cos();
         self.state = State {
-            pos: [0.0, 0.0, -self.ic_alt_ft],
+            pos: [self.ic_north_ft, self.ic_east_ft, -self.ic_alt_ft],
             vel: [tas * cb, tas * sb, 0.0],
             quat: euler_to_quat(
                 self.ic_phi_deg * D2R,
@@ -1157,16 +1426,26 @@ impl FlightModel for Fdm {
             ),
             omega: [self.ic_p_rps, self.ic_q_rps, self.ic_r_rps],
         };
+        // Parked resets (vc-kts 0) must not drift with the wind: the wheels
+        // hold the vehicle, so a zero airspeed stays a zero ground speed.
+        // Airborne ICs carry the air -> ground conversion.
+        if self.ic_vc_kts > 0.0 {
+            self.seat_air_frame();
+        }
         self.flap_pos_deg = self.flap_cmd * self.ac.control.flap_max_deg();
+        // Every reset starts parked or trimmed, never mid-auto-hover.
+        self.heli_hover_cmd = false;
+        self.heli_hover_prev = false;
+        self.heli_hover_state = HoverState::Off;
+        self.heli_hover_target_ft = 0.0;
+        self.heli_balance = self.arcade && !self.rotors.is_empty();
     }
 
     fn get(&self, name: &str) -> f64 {
         let (phi, theta, psi) = self.state.euler();
         match name {
             "position/h-sl-ft" => self.alt_ft(),
-            "position/lat-gc-deg" => {
-                self.origin_lat + self.state.pos[0] / FT_PER_DEG_LAT
-            }
+            "position/lat-gc-deg" => self.origin_lat + self.state.pos[0] / FT_PER_DEG_LAT,
             "position/long-gc-deg" => {
                 let cos_lat = (self.origin_lat * D2R).cos().max(1e-6);
                 self.origin_lon + self.state.pos[1] / (FT_PER_DEG_LAT * cos_lat)
@@ -1178,12 +1457,14 @@ impl FlightModel for Fdm {
             "attitude/theta-deg" => theta * R2D,
             "attitude/psi-deg" => psi * R2D,
             // Reported as *calibrated* airspeed, matching JSBSim's property.
+            // Airspeeds are air-relative: the ambient wind never inflates a
+            // pitot reading even though it moves the vehicle over the ground.
             "velocities/vc-kts" => {
-                self.isa.tas_to_cas(self.state.airspeed(), self.alt_ft()) * FPS_TO_KT
+                self.isa.tas_to_cas(self.air_airspeed_fps(), self.alt_ft()) * FPS_TO_KT
             }
-            "velocities/vtrue-kts" => self.state.airspeed() * FPS_TO_KT,
-            // NED ground velocity components. The Rust model flies in still air,
-            // so these are the true air-mass velocity components as well.
+            "velocities/vtrue-kts" => self.air_airspeed_fps() * FPS_TO_KT,
+            // NED ground velocity components (the wind is *not* subtracted
+            // here; it moves the vehicle and carries the HUD's FPM marker).
             "velocities/v-north-fps" => self.state.body_to_ned(self.state.vel)[0],
             "velocities/v-east-fps" => self.state.body_to_ned(self.state.vel)[1],
             "velocities/vg-fps" => {
@@ -1198,10 +1479,14 @@ impl FlightModel for Fdm {
             "forces/load-factor" => -self.diag.force_aero[2] / (self.mass * G0),
             // Sideslip: body lateral over forward velocity, positive when the
             // relative wind comes from the right.
-            "aero/beta-deg" => self.state.vel[1].atan2(self.state.vel[0]) * R2D,
+            "aero/beta-deg" => self.air_beta_rad() * R2D,
             "velocities/mach" => {
-                self.state.airspeed() / self.isa.sound_speed(self.alt_ft()).max(1.0)
+                self.air_airspeed_fps() / self.isa.sound_speed(self.alt_ft()).max(1.0)
             }
+            // Ambient wind readback (NED, fps), same scales as JSBSim's bus.
+            "atmosphere/wind-north-fps" => self.wind_ned_fps[0],
+            "atmosphere/wind-east-fps" => self.wind_ned_fps[1],
+            "atmosphere/wind-down-fps" => self.wind_ned_fps[2],
             "velocities/p-rad_sec" => self.state.omega[0],
             "velocities/q-rad_sec" => self.state.omega[1],
             "velocities/r-rad_sec" => self.state.omega[2],
@@ -1217,6 +1502,11 @@ impl FlightModel for Fdm {
             "gear/gear-pos-norm" => self.gear_pos,
             "gear/gear-cmd-norm" => self.gear_cmd as i32 as f64,
             "fcs/flap-pos-deg" => self.flap_pos_deg,
+            // SpoILER/reverse readback (positions, not commands).
+            "fcs/speedbrake-pos-norm" => self.speedbrake_pos,
+            "fcs/speedbrake-cmd-norm" => self.speedbrake_cmd,
+            "fcs/reverse-pos-norm" => self.reverse_pos,
+            "fcs/reverse-cmd-norm" => self.reverse_cmd,
             // Last-step resolved surface positions (radians) and the normalized
             // thrust the aero model saw.
             "fcs/elevator-pos-rad" => self.surf.elevator_rad,
@@ -1227,11 +1517,17 @@ impl FlightModel for Fdm {
             "fcs/tvc-pos-rad" => self.surf.tvc_rad,
             "fcs/tvc-enable" => self.tvc_enable as i32 as f64,
             "fcs/arcade-enable" => self.arcade as i32 as f64,
+            // Arcade-helicopter switches and state (no-op for other aircraft).
+            "fcs/heli-hover-enable" => self.heli_hover_cmd as i32 as f64,
+            "fcs/heli-balance-enable" => self.heli_balance as i32 as f64,
+            "fcs/heli-hover-state" => self.heli_hover_state as i32 as f64,
             "fcs/thrust-norm" => self.surf.thrust_norm,
             "fcs/elevator-cmd-norm" => self.elevator_cmd,
             "fcs/aileron-cmd-norm" => self.aileron_cmd,
             "fcs/rudder-cmd-norm" => self.rudder_cmd,
             "fcs/throttle-cmd-norm" => self.throttle_cmd,
+            "fcs/left-brake-cmd-norm" => self.left_brake_cmd,
+            "fcs/right-brake-cmd-norm" => self.right_brake_cmd,
             "fcs/collective-cmd-norm" => self.collective_cmd,
             "fcs/pitch-trim-cmd-norm" => self.pitch_trim_cmd,
             "fcs/roll-trim-cmd-norm" => self.roll_trim_cmd,
@@ -1248,15 +1544,15 @@ impl FlightModel for Fdm {
             }
             "propulsion/engine[0]/torque-lbsft" => self.rotor_get(0, |r| r.torque()),
             "propulsion/engine[0]/vi-fps" => self.rotor_get(0, |r| r.induced_velocity()),
-            "propulsion/engine[0]/induced-inflow-ratio" => {
-                self.rotor_get(0, |r| r.inflow_ratio())
-            }
+            "propulsion/engine[0]/induced-inflow-ratio" => self.rotor_get(0, |r| r.inflow_ratio()),
             "propulsion/engine[0]/engine-rpm" => self.engine_rpm,
             "propulsion/engine[0]/power-hp" => self.engine_power_hp,
             // Propeller/fan thrust for fixed-wing aircraft; the main rotor's
             // thrust for a helicopter (JSBSim ties this to the thruster's
             // `GetThrust`, which for an `FGRotor` is the rotor thrust).
-            "propulsion/engine[0]/thrust-lbs" => self.diag.thrust + self.rotor_get(0, |r| r.thrust()),
+            "propulsion/engine[0]/thrust-lbs" => {
+                self.diag.thrust + self.rotor_get(0, |r| r.thrust())
+            }
             "propulsion/engine[1]/thrust-lbs" => self.rotor_get(1, |r| r.thrust()),
             // Last-step aero/propulsion split (same spelling JSBSim uses), so
             // the validation harness can diff forces and moments frame by frame.
@@ -1292,6 +1588,14 @@ impl FlightModel for Fdm {
             "ic/p-rad_sec" => self.ic_p_rps = value,
             "ic/q-rad_sec" => self.ic_q_rps = value,
             "ic/r-rad_sec" => self.ic_r_rps = value,
+            // Flat-earth position over the origin: degrees -> feet offsets so
+            // apply_ic can seat the IC away from the threshold (the approach
+            // gate).
+            "ic/lat-gc-deg" => self.ic_north_ft = (value - self.origin_lat) * FT_PER_DEG_LAT,
+            "ic/long-gc-deg" => {
+                let cos_lat = (self.origin_lat * D2R).cos().max(1e-6);
+                self.ic_east_ft = (value - self.origin_lon) * FT_PER_DEG_LAT * cos_lat;
+            }
             // Any non-zero `set-running` lights the engine and spools it to a
             // steady state at the current flight condition (JSBSim's convention).
             "propulsion/set-running" => {
@@ -1311,14 +1615,42 @@ impl FlightModel for Fdm {
             "fcs/rudder-cmd-norm" => self.rudder_cmd = value,
             "fcs/throttle-cmd-norm" => self.throttle_cmd = value,
             "fcs/collective-cmd-norm" => self.collective_cmd = value,
+            // Ambient wind (NED components, ft/s). Zero everywhere by default,
+            // so models without a wind stage fly exactly as they did before.
+            "atmosphere/wind-north-fps" => self.wind_ned_fps[0] = value,
+            "atmosphere/wind-east-fps" => self.wind_ned_fps[1] = value,
+            "atmosphere/wind-down-fps" => self.wind_ned_fps[2] = value,
             "fcs/pitch-trim-cmd-norm" => self.pitch_trim_cmd = value,
             "fcs/roll-trim-cmd-norm" => self.roll_trim_cmd = value,
             "fcs/yaw-trim-cmd-norm" => self.yaw_trim_cmd = value,
             "fcs/flap-cmd-norm" => self.flap_cmd = value,
+            // Flight spoilers / thrust reverse. Both are 0..1 commands; the
+            // positions roll toward them in `step_spoilers`. Airframes that
+            // lack the channels (gear-fixed singles, the F-22) store the
+            // command but its position never deploys and the thrust term is
+            // zeroed by `max_reverse_lbs`.
+            "fcs/speedbrake-cmd-norm" => self.speedbrake_cmd = value,
+            "fcs/reverse-cmd-norm" => self.reverse_cmd = value,
             "fcs/tvc-enable" => self.tvc_enable = value != 0.0,
             // Arcade ("game") mode: swaps the aero/FBW force resolution for the
-            // simplified rules in `arcade`. Off by default.
-            "fcs/arcade-enable" => self.arcade = value != 0.0,
+            // simplified rules in `arcade`. Off by default. On a rotorcraft it
+            // selects the helicopter variant and arms auto-balance by default.
+            "fcs/arcade-enable" => {
+                let on = value != 0.0;
+                if on && !self.arcade && !self.rotors.is_empty() {
+                    self.heli_balance = true;
+                }
+                if !on {
+                    self.heli_hover_cmd = false;
+                    self.heli_hover_prev = false;
+                    self.heli_hover_state = HoverState::Off;
+                    self.heli_hover_target_ft = 0.0;
+                    self.heli_balance = false;
+                }
+                self.arcade = on;
+            }
+            "fcs/heli-hover-enable" => self.heli_hover_cmd = value != 0.0,
+            "fcs/heli-balance-enable" => self.heli_balance = value != 0.0,
             // Gear selector: 1 = down, 0 = up (JSBSim's convention). The
             // achieved position rolls toward it; fixed-gear aircraft ignore it.
             "gear/gear-cmd-norm" => self.gear_cmd = value > 0.5,
@@ -1354,8 +1686,16 @@ fn fill_props(
     induced_fps: f64,
     rho: f64,
     sound_speed: f64,
+    wind_body: Vec3,
 ) {
-    let (u, v, w) = (s.vel[0], s.vel[1], s.vel[2]);
+    // Aerodynamic inputs are *air-relative*: the state velocity is ground
+    // velocity in the presence of wind, so the ambient wind comes off before
+    // any alpha/beta/qbar is derived.
+    let (u, v, w) = (
+        s.vel[0] - wind_body[0],
+        s.vel[1] - wind_body[1],
+        s.vel[2] - wind_body[2],
+    );
     let vt = (u * u + v * v + w * w).sqrt().max(1e-6);
     let alpha = w.atan2(u);
     let beta = v.atan2((u * u + w * w).sqrt());
@@ -1523,6 +1863,51 @@ mod tests {
         m
     }
 
+    #[test]
+    fn wind_round_trips_through_the_property_bus() {
+        let mut m = Fdm::new("c172p");
+        m.set("atmosphere/wind-north-fps", 10.0);
+        m.set("atmosphere/wind-east-fps", 20.0);
+        m.set("atmosphere/wind-down-fps", 1.0);
+        assert_eq!(m.get("atmosphere/wind-north-fps"), 10.0);
+        assert_eq!(m.get("atmosphere/wind-east-fps"), 20.0);
+        assert_eq!(m.get("atmosphere/wind-down-fps"), 1.0);
+    }
+
+    /// Airspeeds are air-relative: in a 10 kt tailwind the pitot still reads the
+    /// programmed 30 kt, while the vehicle sits 10 kt faster over the ground.
+    #[test]
+    fn pitot_readings_ignore_the_wind() {
+        let mut m = Fdm::new("c172p");
+        m.set("ic/vc-kts", 30.0);
+        m.set("ic/h-sl-ft", 1000.0);
+        m.set("ic/psi-true-deg", 0.0);
+        // 10 kt of wind blowing *toward* the north (a tailwind for a heading-0
+        // flight), so the vehicle has to cover the same air distance at the
+        // same airspeed and drift downwind over the ground.
+        m.set("atmosphere/wind-north-fps", 10.0 * KT_TO_FPS);
+        m.apply_ic();
+        // vc-kts is calibrated; at sea level TAS == CAS within roundoff.
+        let vc = m.get("velocities/vc-kts");
+        assert!((vc - 30.0).abs() < 0.5, "vc = {vc}");
+        // Ground velocity = air velocity + wind. `ic/vc-kts` is calibrated, and
+        // at 1000 ft the converted TAS is a little over 30 kt, so the vehicle
+        // sits between 40 and 41 kt over the ground.
+        let north = m.get("velocities/v-north-fps");
+        let min = 40.0 * KT_TO_FPS;
+        let max = 41.0 * KT_TO_FPS;
+        assert!(
+            north > min && north < max,
+            "v-north = {north}, expected within [{} .. {}]",
+            min,
+            max
+        );
+        // ...and the reported Mach is sane while the wind echoes back.
+        let mach = m.get("velocities/mach");
+        assert_eq!(m.get("atmosphere/wind-north-fps"), 10.0 * KT_TO_FPS);
+        assert!(mach > 0.0, "mach = {mach}");
+    }
+
     /// Parked on the runway at the threshold, engine running — the state the
     /// app's `reset_ground` programs.
     fn parked() -> Fdm {
@@ -1547,7 +1932,32 @@ mod tests {
         assert!(h > 0.0, "the aircraft sank through the ground: h = {h}");
         assert!((3.0..6.0).contains(&h), "unexpected settled height: {h}");
         assert!(m.get("gear/wow") > 0.5, "should report weight-on-wheels");
-        assert!(m.get("velocities/h-dot-fps").abs() < 1.0, "should be at rest");
+        assert!(
+            m.get("velocities/h-dot-fps").abs() < 1.0,
+            "should be at rest"
+        );
+    }
+
+    /// Full brakes hold a parked aircraft against idle thrust plus a 15 kt
+    /// quartering headwind, so a windy spawn does not creep down the runway
+    /// (the app's parking-brake hook relies on this).
+    #[test]
+    fn full_brakes_hold_against_wind_and_idle_thrust() {
+        let mut m = parked();
+        // 15 kt from 300 deg: NED roughly (-0.5, +0.87) * 15 kt in fps.
+        let kts = 15.0 * KT_TO_FPS;
+        m.set("atmosphere/wind-north-fps", -0.5 * kts);
+        m.set("atmosphere/wind-east-fps", 0.866 * kts);
+        m.set("fcs/left-brake-cmd-norm", 1.0);
+        m.set("fcs/right-brake-cmd-norm", 1.0);
+        for _ in 0..120 * 10 {
+            m.step();
+        }
+        let drift = (m.get("velocities/v-north-fps").powi(2)
+            + m.get("velocities/v-east-fps").powi(2))
+        .sqrt();
+        assert!(drift < 0.5, "the parked aircraft crept: {drift} fps");
+        assert!(m.get("gear/wow") > 0.5);
     }
 
     #[test]
@@ -1575,14 +1985,20 @@ mod tests {
         for _ in 0..120 {
             m.step();
         }
-        assert!(m.get("gear/wow") > 0.5, "a parked aircraft is on the wheels");
+        assert!(
+            m.get("gear/wow") > 0.5,
+            "a parked aircraft is on the wheels"
+        );
         m.set("ic/vc-kts", 120.0);
         m.set("ic/h-sl-ft", 3000.0);
         m.apply_ic();
         m.set("propulsion/set-running", -1.0);
         m.step();
         m.step();
-        assert!(m.get("gear/wow") < 0.5, "an airborne aircraft is off the wheels");
+        assert!(
+            m.get("gear/wow") < 0.5,
+            "an airborne aircraft is off the wheels"
+        );
     }
 
     #[test]
@@ -1596,9 +2012,15 @@ mod tests {
             m.step();
             min_h = min_h.min(m.get("position/h-sl-ft"));
         }
-        assert!(min_h > 0.0, "sank through the ground during the roll: {min_h}");
+        assert!(
+            min_h > 0.0,
+            "sank through the ground during the roll: {min_h}"
+        );
         // Heading 0 = north, so lat-gc rises with the northward displacement.
-        assert!(m.get("position/lat-gc-deg") > 0.0, "should have rolled forward");
+        assert!(
+            m.get("position/lat-gc-deg") > 0.0,
+            "should have rolled forward"
+        );
         assert!(m.get("velocities/vc-kts") > 10.0, "should have accelerated");
     }
 
@@ -1610,7 +2032,10 @@ mod tests {
             m.step();
         }
         let vc_peak = m.get("velocities/vc-kts");
-        assert!(vc_peak > 5.0, "should build speed before braking, got {vc_peak}");
+        assert!(
+            vc_peak > 5.0,
+            "should build speed before braking, got {vc_peak}"
+        );
         m.set("fcs/throttle-cmd-norm", 0.0);
         m.set("fcs/left-brake-cmd-norm", 1.0);
         m.set("fcs/right-brake-cmd-norm", 1.0);
@@ -1618,7 +2043,10 @@ mod tests {
             m.step();
         }
         let vc = m.get("velocities/vc-kts");
-        assert!(vc < 0.5 * vc_peak, "brakes should slow the aircraft: {vc_peak} -> {vc}");
+        assert!(
+            vc < 0.5 * vc_peak,
+            "brakes should slow the aircraft: {vc_peak} -> {vc}"
+        );
     }
 
     #[test]
@@ -1636,7 +2064,10 @@ mod tests {
             m.step();
         }
         let dpsi = m.get("attitude/psi-deg") - psi0;
-        assert!(dpsi < -5.0, "left rudder should turn the nose left, dpsi = {dpsi}");
+        assert!(
+            dpsi < -5.0,
+            "left rudder should turn the nose left, dpsi = {dpsi}"
+        );
     }
 
     #[test]
@@ -1717,8 +2148,14 @@ mod tests {
         }
         let h = m.get("position/h-sl-ft");
         let vc = m.get("velocities/vc-kts");
-        assert!((h - h0).abs() < 15.0, "trim drifted in altitude: {h0} -> {h}");
-        assert!((vc - vc0).abs() < 1.0, "trim drifted in airspeed: {vc0} -> {vc}");
+        assert!(
+            (h - h0).abs() < 15.0,
+            "trim drifted in altitude: {h0} -> {h}"
+        );
+        assert!(
+            (vc - vc0).abs() < 1.0,
+            "trim drifted in airspeed: {vc0} -> {vc}"
+        );
     }
 
     #[test]
@@ -1733,7 +2170,10 @@ mod tests {
                 m.step();
             }
             let dh = m.get("position/h-sl-ft") - h0;
-            assert!(dh.abs() < 25.0, "trim at {vc} kt drifted {dh:.1} ft over 20 s");
+            assert!(
+                dh.abs() < 25.0,
+                "trim at {vc} kt drifted {dh:.1} ft over 20 s"
+            );
         }
     }
 
@@ -1749,8 +2189,14 @@ mod tests {
             "trim should be near wings-level, phi = {}",
             m.get("attitude/phi-deg")
         );
-        assert!(m.get("fcs/throttle-cmd-norm") < 1.0, "cruise trim should be part-throttle");
-        assert!(m.get("velocities/q-rad_sec").abs() < 1e-6, "trim should have no pitch rate");
+        assert!(
+            m.get("fcs/throttle-cmd-norm") < 1.0,
+            "cruise trim should be part-throttle"
+        );
+        assert!(
+            m.get("velocities/q-rad_sec").abs() < 1e-6,
+            "trim should have no pitch rate"
+        );
         // One step from the trim point leaves the attitude essentially unchanged.
         let theta0 = m.get("attitude/theta-deg");
         m.step();
@@ -1877,8 +2323,14 @@ mod tests {
         let q_after = m.get("velocities/q-rad_sec");
         let theta = m.get("attitude/theta-deg");
         println!("q held {q_held:.4}, q after release {q_after:.4}, theta {theta:.1}");
-        assert!(q_held > 0.1, "should pitch nose-up under the command: q = {q_held}");
-        assert!(q_after.abs() < 0.05, "pitch rate should damp back to ~0: {q_after}");
+        assert!(
+            q_held > 0.1,
+            "should pitch nose-up under the command: q = {q_held}"
+        );
+        assert!(
+            q_after.abs() < 0.05,
+            "pitch rate should damp back to ~0: {q_after}"
+        );
         assert!(theta.abs() < 45.0, "attitude should stay bounded: {theta}");
     }
 
@@ -1989,7 +2441,10 @@ mod tests {
         for _ in 0..120 * 8 {
             m.step();
         }
-        assert!(m.get("gear/gear-pos-norm") > 0.99, "the 172's gear is welded down");
+        assert!(
+            m.get("gear/gear-pos-norm") > 0.99,
+            "the 172's gear is welded down"
+        );
     }
 
     #[test]
@@ -2058,7 +2513,10 @@ mod tests {
         // past vertical into a tumble.
         let peak = f22_pull_then_release(true);
         println!("TVC ON peak alpha = {peak:.1}");
-        assert!(peak < 90.0, "TVC on should hold alpha below 90: peak = {peak:.1}");
+        assert!(
+            peak < 90.0,
+            "TVC on should hold alpha below 90: peak = {peak:.1}"
+        );
     }
 
     #[test]
@@ -2067,7 +2525,10 @@ mod tests {
         // so the same pull departs into a tumble (alpha runs past inverted).
         let peak = f22_pull_then_release(false);
         println!("TVC OFF peak alpha = {peak:.1}");
-        assert!(peak > 120.0, "TVC off should depart into a tumble: peak = {peak:.1}");
+        assert!(
+            peak > 120.0,
+            "TVC off should depart into a tumble: peak = {peak:.1}"
+        );
     }
 
     #[test]
@@ -2086,7 +2547,11 @@ mod tests {
             m.step();
         }
         assert!(m.get("gear/wow") > 0.5, "should still be on the wheels");
-        assert_eq!(m.get("fcs/tvc-pos-rad"), 0.0, "TVC must be inhibited on the ground");
+        assert_eq!(
+            m.get("fcs/tvc-pos-rad"),
+            0.0,
+            "TVC must be inhibited on the ground"
+        );
     }
 
     /// A level, cruising F-22 with arcade mode on. No trim is applied: the FBW
@@ -2130,7 +2595,10 @@ mod tests {
             (q - want).abs() < 0.15 * want,
             "pitch rate should reach the command: q = {q:.3}, want {want:.3}"
         );
-        assert!(m.get("attitude/theta-deg") > 5.0, "the nose should have come up");
+        assert!(
+            m.get("attitude/theta-deg") > 5.0,
+            "the nose should have come up"
+        );
     }
 
     #[test]
@@ -2169,7 +2637,10 @@ mod tests {
             p > 0.5 * arcade::RATE_P,
             "full aileron should roll right fast: p = {p:.3}"
         );
-        assert!(m.get("attitude/phi-deg") > 10.0, "the roll should have banked the jet");
+        assert!(
+            m.get("attitude/phi-deg") > 10.0,
+            "the roll should have banked the jet"
+        );
     }
 
     #[test]
@@ -2219,6 +2690,27 @@ mod tests {
     }
 
     #[test]
+    fn position_ics_seat_off_the_origin() {
+        // The approach gate: 5140 m south (negative lat), parked altitude.
+        let mut m = Fdm::new("737");
+        m.set("ic/lat-gc-deg", -0.046_206);
+        m.set("ic/h-sl-ft", 1300.0);
+        m.set("ic/vc-kts", 155.0);
+        m.apply_ic();
+        let lat = m.get("position/lat-gc-deg");
+        let north_m = (lat * D2R) * 6_378_137.0;
+        assert!(
+            (north_m + 5140.0).abs() < 5.0,
+            "should be 5140 m south, got {north_m}"
+        );
+        // And a parked reset at the default puts it back over the origin.
+        let mut m = Fdm::new("737");
+        m.set("ic/vc-kts", 0.0);
+        m.apply_ic();
+        assert!((m.get("position/lat-gc-deg")).abs() < 1e-9);
+    }
+
+    #[test]
     fn b737_constructs_and_is_named() {
         let m = Fdm::new("737");
         assert_eq!(m.aircraft(), "737");
@@ -2239,7 +2731,10 @@ mod tests {
         assert!(h > 0.0, "the aircraft sank through the ground: h = {h}");
         assert!((3.0..6.0).contains(&h), "unexpected settled height: {h}");
         assert!(m.get("gear/wow") > 0.5, "should report weight-on-wheels");
-        assert!(m.get("velocities/h-dot-fps").abs() < 1.0, "should be at rest");
+        assert!(
+            m.get("velocities/h-dot-fps").abs() < 1.0,
+            "should be at rest"
+        );
     }
 
     #[test]
@@ -2253,8 +2748,14 @@ mod tests {
             m.step();
             min_h = min_h.min(m.get("position/h-sl-ft"));
         }
-        assert!(min_h > 0.0, "sank through the ground during the roll: {min_h}");
-        assert!(m.get("position/lat-gc-deg") > 0.0, "should have rolled forward");
+        assert!(
+            min_h > 0.0,
+            "sank through the ground during the roll: {min_h}"
+        );
+        assert!(
+            m.get("position/lat-gc-deg") > 0.0,
+            "should have rolled forward"
+        );
         assert!(m.get("velocities/vc-kts") > 10.0, "should have accelerated");
     }
 
@@ -2266,7 +2767,10 @@ mod tests {
             m.step();
         }
         let vc_peak = m.get("velocities/vc-kts");
-        assert!(vc_peak > 5.0, "should build speed before braking, got {vc_peak}");
+        assert!(
+            vc_peak > 5.0,
+            "should build speed before braking, got {vc_peak}"
+        );
         m.set("fcs/throttle-cmd-norm", 0.0);
         m.set("fcs/left-brake-cmd-norm", 1.0);
         m.set("fcs/right-brake-cmd-norm", 1.0);
@@ -2274,7 +2778,10 @@ mod tests {
             m.step();
         }
         let vc = m.get("velocities/vc-kts");
-        assert!(vc < 0.5 * vc_peak, "brakes should slow the aircraft: {vc_peak} -> {vc}");
+        assert!(
+            vc < 0.5 * vc_peak,
+            "brakes should slow the aircraft: {vc_peak} -> {vc}"
+        );
     }
 
     #[test]
@@ -2292,7 +2799,73 @@ mod tests {
             m.step();
         }
         let dpsi = m.get("attitude/psi-deg") - psi0;
-        assert!(dpsi < -5.0, "left rudder should turn the nose left, dpsi = {dpsi}");
+        assert!(
+            dpsi < -5.0,
+            "left rudder should turn the nose left, dpsi = {dpsi}"
+        );
+    }
+
+    #[test]
+    fn b737_speedbrake_deploys_slow_and_costs_lift() {
+        // Command the boards out and confirm the 0.6 s kinematic traverse, then
+        // hold wings-level at the same speed and confirm the aerodynamic lift
+        // coefficient falls (the kCLsb factor) versus the clean wing.
+        let mut m = cruise_737(160.0, 3_000.0);
+        // Flush the one-frame induced-drag feedback into a live weight.
+        for _ in 0..2 {
+            m.step();
+        }
+        let cl_clean = m.get("aero/cl-squared");
+        m.set("fcs/speedbrake-cmd-norm", 1.0);
+        for _ in 0..120 * 1 {
+            m.step();
+        }
+        let pos = m.get("fcs/speedbrake-pos-norm");
+        assert!(pos > 0.9, "boards should be out after 1 s, got {pos}");
+        let cl_open = m.get("aero/cl-squared");
+        assert!(
+            cl_open < cl_clean * 0.95,
+            "spoilers should shed lift: {cl_clean} -> {cl_open}"
+        );
+        // Stow back down; the position drives back to zero.
+        m.set("fcs/speedbrake-cmd-norm", 0.0);
+        for _ in 0..120 {
+            m.step();
+        }
+        assert!(
+            m.get("fcs/speedbrake-pos-norm") < 0.05,
+            "boards should stow"
+        );
+    }
+
+    #[test]
+    fn b737_reverse_bites_on_the_ground_and_stows_airborne() {
+        // Parked: reverse the thrust and confirm `engine-thrust-lbs` goes
+        // negative (a net backward force) at full reverse.
+        let mut m = parked_737();
+        m.set("fcs/reverse-cmd-norm", 1.0);
+        for _ in 0..120 * 2 {
+            m.step();
+        }
+        assert!(m.get("fcs/reverse-pos-norm") > 0.9, "levers should be back");
+        let t = m.get("propulsion/engine[0]/thrust-lbs");
+        assert!(t < -1000.0, "full reverse should push backward, got {t}");
+
+        // Airborne: the interlock drives the levers stowed and the thrust term
+        // returns to forward-only.
+        let mut m = cruise_737(250.0, 10_000.0);
+        m.set("fcs/reverse-cmd-norm", 1.0);
+        for _ in 0..120 * 2 {
+            m.step();
+        }
+        assert!(
+            m.get("fcs/reverse-pos-norm") < 0.05,
+            "reverse must not deploy in the air"
+        );
+        assert!(
+            m.get("propulsion/engine[0]/thrust-lbs") > 0.0,
+            "thrust stays forward airborne"
+        );
     }
 
     #[test]
@@ -2310,7 +2883,10 @@ mod tests {
         );
         assert!(thr < 1.0, "cruise should not need full throttle: {thr}");
         assert!(thr > 0.05, "trim throttle collapsed to idle: {thr}");
-        assert!((0.0..10.0).contains(&alpha), "unexpected cruise alpha: {alpha}");
+        assert!(
+            (0.0..10.0).contains(&alpha),
+            "unexpected cruise alpha: {alpha}"
+        );
     }
 
     #[test]
@@ -2325,8 +2901,14 @@ mod tests {
         let h = m.get("position/h-sl-ft");
         let vc = m.get("velocities/vc-kts");
         println!("737 cruise 30 s: h {h0:.0} -> {h:.0}, vc {vc0:.1} -> {vc:.1}");
-        assert!((h - h0).abs() < 50.0, "trim drifted in altitude: {h0} -> {h}");
-        assert!((vc - vc0).abs() < 2.0, "trim drifted in airspeed: {vc0} -> {vc}");
+        assert!(
+            (h - h0).abs() < 50.0,
+            "trim drifted in altitude: {h0} -> {h}"
+        );
+        assert!(
+            (vc - vc0).abs() < 2.0,
+            "trim drifted in airspeed: {vc0} -> {vc}"
+        );
     }
 
     #[test]
@@ -2341,13 +2923,22 @@ mod tests {
         m.set("fcs/aileron-cmd-norm", 0.0);
         let phi0 = m.get("attitude/phi-deg");
         let psi0 = m.get("attitude/psi-deg");
-        assert!(phi0.abs() > 3.0, "aileron should bank the aircraft: phi = {phi0}");
+        assert!(
+            phi0.abs() > 3.0,
+            "aileron should bank the aircraft: phi = {phi0}"
+        );
         for _ in 0..120 * 20 {
             m.step();
         }
         let dpsi = m.get("attitude/psi-deg") - psi0;
-        println!("737 roll-into-turn: phi {phi0:.1} -> {}, dpsi {dpsi:.1}", m.get("attitude/phi-deg"));
-        assert!(dpsi.abs() > 5.0, "a banked aircraft should turn: dpsi = {dpsi}");
+        println!(
+            "737 roll-into-turn: phi {phi0:.1} -> {}, dpsi {dpsi:.1}",
+            m.get("attitude/phi-deg")
+        );
+        assert!(
+            dpsi.abs() > 5.0,
+            "a banked aircraft should turn: dpsi = {dpsi}"
+        );
     }
 
     /// An AH-1S hovering at `alt` ft: still and level, engine lit (the governor
@@ -2551,7 +3142,10 @@ mod tests {
             "longitudinal cyclic should pitch the nose down: theta = {}",
             m.get("attitude/theta-rad")
         );
-        assert!(m.get("velocities/vc-kts") > 1.0, "should accelerate forward");
+        assert!(
+            m.get("velocities/vc-kts") > 1.0,
+            "should accelerate forward"
+        );
 
         let mut m = hovering(2000.0);
         m.set("fcs/aileron-cmd-norm", 0.5);
@@ -2635,5 +3229,103 @@ mod tests {
             "the airframe should make drag at cruise: {} lbs",
             m.get("forces/fbx-aero-lbs")
         );
+    }
+}
+
+#[cfg(test)]
+mod heli_arcade_tests {
+    use super::*;
+
+    fn parked_heli() -> Fdm {
+        let mut m = Fdm::new("ah1s");
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", m.rest_h_ft());
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("gear/gear-cmd-norm", 1.0);
+        m.set("gear/gear-pos-norm", 1.0);
+        m.set("propulsion/set-running", -1.0);
+        m.set("fcs/arcade-enable", 1.0);
+        for _ in 0..240 {
+            m.step();
+        }
+        m
+    }
+
+    #[test]
+    fn heli_arcade_hover_from_the_parked_ic() {
+        // The player can press J before the first ground step; the parked
+        // height must still count as "ground" so it takes off vertically.
+        let mut m = Fdm::new("ah1s");
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", m.rest_h_ft());
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("gear/gear-cmd-norm", 1.0);
+        m.set("gear/gear-pos-norm", 1.0);
+        m.set("propulsion/set-running", -1.0);
+        m.set("fcs/arcade-enable", 1.0);
+        m.set("fcs/heli-hover-enable", 1.0);
+        for _ in 0..120 * 4 {
+            m.step();
+        }
+        assert!(m.get("position/h-sl-ft") > m.rest_h_ft() + 5.0);
+        assert!(m.get("gear/wow") < 0.5);
+        assert!((m.get("fcs/heli-hover-state") - 2.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn heli_arcade_takes_off_hovers_and_lands() {
+        let mut m = parked_heli();
+        let ground = m.get("position/h-sl-ft");
+        assert!(m.get("gear/wow") > 0.5, "should be parked on the gear");
+
+        m.set("fcs/heli-hover-enable", 1.0);
+        for _ in 0..120 * 8 {
+            m.step();
+        }
+        let hover = m.get("position/h-sl-ft");
+        assert!(hover > ground + 5.0, "hover altitude {hover} vs {ground}");
+        assert!(m.get("gear/wow") < 0.5, "should be airborne");
+        assert!(
+            (m.get("fcs/heli-hover-state") - 2.0).abs() < 0.1,
+            "state should be Hold"
+        );
+
+        m.set("fcs/heli-hover-enable", 0.0);
+        for _ in 0..120 * 15 {
+            m.step();
+        }
+        let landed = m.get("position/h-sl-ft");
+        assert!(landed < hover - 5.0, "should descend: {landed} vs {hover}");
+        assert!(m.get("gear/wow") > 0.5, "should touch down");
+        assert!(
+            m.get("fcs/heli-hover-enable") < 0.5,
+            "auto-hover should switch off on landing"
+        );
+    }
+
+    #[test]
+    fn heli_arcade_auto_balance_levels_after_a_bank() {
+        let mut m = parked_heli();
+        m.set("ic/vc-kts", 0.0);
+        m.set("ic/h-sl-ft", 60.0);
+        m.apply_ic();
+        m.set("fcs/arcade-enable", 1.0);
+        m.set("fcs/heli-balance-enable", 1.0);
+        // Hold an aileron input long enough to establish a bank.
+        m.set("fcs/aileron-cmd-norm", 1.0);
+        for _ in 0..120 * 2 {
+            m.step();
+        }
+        let banked = m.get("attitude/phi-deg");
+        assert!(banked > 10.0, "should bank right, got {banked}");
+        // Release: the attitude loop should bring it back toward level.
+        m.set("fcs/aileron-cmd-norm", 0.0);
+        for _ in 0..120 * 5 {
+            m.step();
+        }
+        let level = m.get("attitude/phi-deg");
+        assert!(level.abs() < 5.0, "should return to level, got {level}");
     }
 }

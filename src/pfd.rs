@@ -20,6 +20,7 @@ use bevy::window::PrimaryWindow;
 use crate::aircraft_profile;
 use crate::app_state::AppState;
 use crate::autopilot::{AtMode, Autopilot, LatMode, Mcp, SpeedUnit, VertMode};
+use crate::ils;
 use crate::mcp_ui::PANEL_W;
 use crate::sim::{AircraftState, Sim};
 use crate::view::{CockpitModel, Ui};
@@ -48,11 +49,16 @@ struct PfdParams {
     d: Vec4,
     /// engaged, ap_disc, on_ground, speed_is_mach
     e: Vec4,
-    /// at_mode (0 off / 1 SPD / 2 N1), lat_mode (0 off / 1 HDG SEL),
-    /// vert_mode (0 off / 1 ALT HOLD / 2 V/S / 3 LVL CHG), mach
+    /// at_mode (0 off / 1 SPD / 2 N1), lat_mode (0 off / 1 HDG SEL / 2 LOC),
+    /// vert_mode (0 off / 1 ALT HOLD / 2 V/S / 3 LVL CHG / 4 G/S / 5 FLARE),
+    /// mach
     f: Vec4,
-    /// time_s, slip, tas_kts, unused
+    /// time_s, slip, tas_kts, app_armed
     g: Vec4,
+    /// speedbrake_pos, reverse_pos, loc_dev_dots, gs_dev_dots
+    h: Vec4,
+    /// gpws_glideslope, gpws_sink_rate, unused, unused
+    i: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone, Default)]
@@ -113,10 +119,7 @@ struct Pfd3d;
 /// cockpit model's frame (+X left, +Y up, nose +Z), measured from the glTF.
 /// The black screen islands are ~0.101 square; the quad sits a couple of
 /// millimetres in front of them, facing aft toward the pilots.
-const PFD3D_CENTRES: [[f32; 3]; 2] = [
-    [0.1983, 1.8782, 1.455],
-    [-0.1549, 1.8782, 1.455],
-];
+const PFD3D_CENTRES: [[f32; 3]; 2] = [[0.1983, 1.8782, 1.455], [-0.1549, 1.8782, 1.455]];
 const PFD3D_W: f32 = 0.098;
 const PFD3D_H: f32 = 0.105;
 
@@ -185,10 +188,7 @@ fn pfd_width(window_w: f32) -> f32 {
     room.clamp(MIN_W, PFD_W)
 }
 
-fn fit_to_window(
-    windows: Query<&Window, With<PrimaryWindow>>,
-    mut q: Query<&mut Node, With<Pfd>>,
-) {
+fn fit_to_window(windows: Query<&Window, With<PrimaryWindow>>, mut q: Query<&mut Node, With<Pfd>>) {
     let Ok(window) = windows.single() else {
         return;
     };
@@ -255,6 +255,7 @@ fn update_params(
     state: Res<AircraftState>,
     mcp: Res<Mcp>,
     ap: Res<Autopilot>,
+    ils: Res<crate::ils::Ils>,
     time: Res<Time>,
     ui_handle: Option<Res<PfdMaterialHandle>>,
     du_handle: Option<Res<Pfd3dMaterialHandle>>,
@@ -267,6 +268,21 @@ fn update_params(
 
     let flap_norm = (state.flap_deg / 40.0).clamp(0.0, 1.0);
     let speed_is_mach = mcp.speed_unit == SpeedUnit::Mach;
+
+    // The on-ils view: the scales show while APP is armed (satisfying the
+    // armed word too) or while LOC/GS is engaged.
+    let on_ils = ap.engaged && (ap.app_armed || ap.lat == LatMode::Loc);
+    let info = on_ils && ils.available;
+
+    // GPWS-lite: a beam we are flying and dropping under, or too much sink
+    // with the ground closing.
+    let gs_below = info
+        && matches!(ap.vert, VertMode::Gs | VertMode::Flare)
+        && ils.gs_dev_deg < -ils::GS_WARN_DEG;
+    let sink_rate = !state.on_ground
+        && state.radar_alt_ft < 2_000.0
+        && state.vs_fpm < -1_400.0;
+
     let params = PfdParams {
         a: Vec4::new(
             state.cas_kts as f32,
@@ -277,7 +293,11 @@ fn update_params(
         b: Vec4::new(
             state.roll_deg as f32,
             state.heading_deg as f32,
-            if speed_is_mach { 0.0 } else { mcp.ias_kts as f32 },
+            if speed_is_mach {
+                0.0
+            } else {
+                mcp.ias_kts as f32
+            },
             mcp.alt_ft as f32,
         ),
         c: Vec4::new(
@@ -304,7 +324,25 @@ fn update_params(
             vert_mode(ap.vert),
             state.mach as f32,
         ),
-        g: Vec4::new(time.elapsed_secs() as f32, state.slip as f32, state.tas_kts as f32, 0.0),
+        g: Vec4::new(
+            time.elapsed_secs() as f32,
+            state.slip as f32,
+            state.tas_kts as f32,
+            (on_ils && ap.app_armed) as u8 as f32,
+        ),
+        h: Vec4::new(
+            state.speedbrake_pos as f32,
+            state.reverse_pos as f32,
+            // Deviations in receiver dots while the ILS is live.
+            if info { (ils.loc_dev_deg / ils::LOC_DOT_DEG) as f32 } else { 0.0 },
+            if info { (ils.gs_dev_deg / ils::GS_DOT_DEG) as f32 } else { 0.0 },
+        ),
+        i: Vec4::new(
+            gs_below as u8 as f32,
+            sink_rate as u8 as f32,
+            0.0,
+            0.0,
+        ),
     };
     if let Some(mut material) = materials.get_mut(&ui_handle.0) {
         material.params = params;
@@ -333,6 +371,7 @@ fn lat_mode(mode: LatMode) -> f32 {
     match mode {
         LatMode::Off => 0.0,
         LatMode::HdgSel => 1.0,
+        LatMode::Loc => 2.0,
     }
 }
 
@@ -342,6 +381,8 @@ fn vert_mode(mode: VertMode) -> f32 {
         VertMode::AltHold => 1.0,
         VertMode::Vs => 2.0,
         VertMode::LvlChg => 3.0,
+        VertMode::Gs => 4.0,
+        VertMode::Flare => 5.0,
     }
 }
 

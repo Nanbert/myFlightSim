@@ -62,6 +62,9 @@ enum McpPress {
     AltHold,
     Vs,
     LvlChg,
+    /// APP: arm the ILS beams (LOC + GS). On the photo this sits one row below
+    /// the LNAV/VNAV column, left of ALT HOLD.
+    Approach,
     /// The speed window itself switches between kt and Mach, like pushing the
     /// speed knob on the real MCP.
     SpeedUnit,
@@ -103,7 +106,9 @@ enum LedPart {
         slot: usize,
     },
     /// A plus/minus bar in the leading slot of the V/S window.
-    Sign { horizontal: bool },
+    Sign {
+        horizontal: bool,
+    },
 }
 
 #[derive(Component)]
@@ -498,6 +503,7 @@ fn spawn_hotspots(panel: &mut ChildSpawnerCommands) {
         (McpPress::Cmd, Area::new(2679.0, 146.0, 2784.0, 255.0)),
         (McpPress::LvlChg, Area::new(1524.0, 361.0, 1628.0, 463.0)),
         (McpPress::HdgSel, Area::new(1694.0, 361.0, 1798.0, 463.0)),
+        (McpPress::Approach, Area::new(1102.0, 310.0, 1208.0, 430.0)),
         (McpPress::AltHold, Area::new(2090.0, 355.0, 2205.0, 470.0)),
         (McpPress::Vs, Area::new(2208.0, 355.0, 2323.0, 470.0)),
     ] {
@@ -515,7 +521,11 @@ fn spawn_hotspots(panel: &mut ChildSpawnerCommands) {
         spawn_window_box(panel, area, window);
     }
 
-    spawn_knob(panel, McpWindow::Speed, Area::new(1340.0, 272.0, 1450.0, 390.0));
+    spawn_knob(
+        panel,
+        McpWindow::Speed,
+        Area::new(1340.0, 272.0, 1450.0, 390.0),
+    );
     spawn_knob(
         panel,
         McpWindow::Heading,
@@ -572,6 +582,10 @@ fn press_help(press: McpPress) -> McpHelp {
             title: "LVL CHG",
             body: "Level change: full climb or descent at the speed window's speed.",
         },
+        McpPress::Approach => McpHelp {
+            title: "APP",
+            body: "Arm the ILS approach: captures the localizer, then the glideslope. Push again to disarm.",
+        },
         McpPress::SpeedUnit => McpHelp {
             title: "SPEED WINDOW",
             body: "Click: switch KIAS / MACH. Scroll: coarse speed step. Knob halves: 1 kt.",
@@ -621,12 +635,7 @@ fn knob_help(window: McpWindow) -> McpHelp {
     }
 }
 
-fn spawn_press(
-    panel: &mut ChildSpawnerCommands,
-    area: Area,
-    press: McpPress,
-    radius: f32,
-) {
+fn spawn_press(panel: &mut ChildSpawnerCommands, area: Area, press: McpPress, radius: f32) {
     let (x, y, w, h) = area.px();
     panel.spawn((
         Button,
@@ -705,6 +714,7 @@ fn on_mcp_activate(
         McpPress::AltHold => ap.press_mode(ToggleAction::AltHold, &*sim.model),
         McpPress::Vs => ap.press_mode(ToggleAction::VsMode, &*sim.model),
         McpPress::LvlChg => ap.press_mode(ToggleAction::LvlChg, &*sim.model),
+        McpPress::Approach => ap.press_mode(ToggleAction::Approach, &*sim.model),
         McpPress::SpeedUnit => mcp.toggle_speed_unit(),
     }
 }
@@ -777,11 +787,7 @@ fn focus_input(
 }
 
 /// Clicking the dimmed backdrop closes focus.
-fn on_focus_dim(
-    activate: On<Activate>,
-    dims: Query<(), With<FocusDim>>,
-    ui: Option<ResMut<Ui>>,
-) {
+fn on_focus_dim(activate: On<Activate>, dims: Query<(), With<FocusDim>>, ui: Option<ResMut<Ui>>) {
     if dims.get(activate.entity).is_err() {
         return;
     }
@@ -936,9 +942,7 @@ fn sync_panel(
                 let ch = chars(window).get(slot).copied().unwrap_or(' ');
                 seg_lit(ch, seg)
             }
-            LedPart::Dot { window, slot } => {
-                chars(window).get(slot).copied().unwrap_or(' ') == '.'
-            }
+            LedPart::Dot { window, slot } => chars(window).get(slot).copied().unwrap_or(' ') == '.',
             LedPart::Sign { horizontal } => {
                 match (chars(McpWindow::VerticalSpeed)[0], horizontal) {
                     ('+', _) | ('-', true) => true,
@@ -971,6 +975,9 @@ fn sync_panel(
             McpPress::AltHold => ap.engaged && ap.vert == VertMode::AltHold,
             McpPress::Vs => ap.engaged && ap.vert == VertMode::Vs,
             McpPress::LvlChg => ap.engaged && ap.vert == VertMode::LvlChg,
+            // The APP lamp burns while armed or while a captured beam mode is
+            // flying (LOC, G/S), as on the real panel.
+            McpPress::Approach => ap.engaged && (ap.app_armed || ap.lat == LatMode::Loc),
             McpPress::SpeedUnit => false,
         };
         bg.0 = glow(active, hover.0, pressed);
@@ -1138,7 +1145,10 @@ mod tests {
             app.update();
         }
         let after_hold = app.world().resource::<Mcp>().hdg_deg;
-        assert!(after_hold > after_press + 1.0, "expected repeat, got {after_hold}");
+        assert!(
+            after_hold > after_press + 1.0,
+            "expected repeat, got {after_hold}"
+        );
 
         app.world_mut().entity_mut(arrow).remove::<Pressed>();
         app.update();

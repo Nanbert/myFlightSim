@@ -114,10 +114,8 @@ fn yaw_damper_term(r: f64, mach: f64, schedule: Option<(f64, f64)>) -> f64 {
 
 impl DirectFcs {
     fn resolve(&self, i: &FcsInputs) -> Surfaces {
-        let elevator_rad = scale(
-            i.elevator_cmd + i.pitch_trim_cmd,
-            self.elevator_lim_deg,
-        ) * self.elevator_gain;
+        let elevator_rad =
+            scale(i.elevator_cmd + i.pitch_trim_cmd, self.elevator_lim_deg) * self.elevator_gain;
         let aileron_rad =
             scale(i.aileron_cmd + i.roll_trim_cmd, self.aileron_lim_deg) * self.aileron_gain;
         // Yaw damper: mix the aero yaw rate into the rudder command. Positive r
@@ -333,7 +331,14 @@ impl FbwSpec {
     /// `gear/gear-pos-norm == 0`) and below M0.9, so `inhibit` is set on the
     /// ground or whenever the gear is out. Shared by the live loop and the trim
     /// solver so a trim seat is a true fixed point.
-    pub fn lef_rad(&self, alpha: f64, qbar: f64, pressure_psf: f64, inhibit: bool, mach: f64) -> f64 {
+    pub fn lef_rad(
+        &self,
+        alpha: f64,
+        qbar: f64,
+        pressure_psf: f64,
+        inhibit: bool,
+        mach: f64,
+    ) -> f64 {
         if inhibit || mach > 0.9 {
             return 0.0;
         }
@@ -407,10 +412,15 @@ impl Fbw {
             .clamp(-s.rudder_lim_rad, s.rudder_lim_rad);
 
         // --- leading-edge flaps: alpha- and dynamic-pressure-scheduled ---
-        let lef_rad = s.lef_rad(i.alpha, i.qbar, i.pressure_psf, i.wow || i.gear_down, i.mach);
+        let lef_rad = s.lef_rad(
+            i.alpha,
+            i.qbar,
+            i.pressure_psf,
+            i.wow || i.gear_down,
+            i.mach,
+        );
 
-        let thrust_norm =
-            (i.thrust_lbs / i.engine_count.max(1) as f64 / 26550.0).clamp(0.0, 1.5);
+        let thrust_norm = (i.thrust_lbs / i.engine_count.max(1) as f64 / 26550.0).clamp(0.0, 1.5);
 
         Surfaces {
             elevator_rad,

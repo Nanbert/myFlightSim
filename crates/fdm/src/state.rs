@@ -271,7 +271,8 @@ where
     for i in 0..3 {
         out.pos[i] = s.pos[i] + dt * combine(k1.pos[i], k2.pos[i], k3.pos[i], k4.pos[i]);
         out.vel[i] = s.vel[i] + dt * combine(k1.vel[i], k2.vel[i], k3.vel[i], k4.vel[i]);
-        out.omega[i] = s.omega[i] + dt * combine(k1.omega[i], k2.omega[i], k3.omega[i], k4.omega[i]);
+        out.omega[i] =
+            s.omega[i] + dt * combine(k1.omega[i], k2.omega[i], k3.omega[i], k4.omega[i]);
     }
     for i in 0..4 {
         out.quat[i] = s.quat[i] + dt * combine(k1.quat[i], k2.quat[i], k3.quat[i], k4.quat[i]);
@@ -369,7 +370,7 @@ mod tests {
         let d = eom(&s, [0.0; 3], [0.0; 3], 50.0, &j);
         assert!((d.vel[2] - G0).abs() < 1e-9); // w_dot = +g0 (body z down)
         assert!(d.pos[2].abs() < 1e-9); // not moving yet
-        // Integrate one second and check distance ~ 0.5 g t^2.
+                                        // Integrate one second and check distance ~ 0.5 g t^2.
         let s1 = rk4(&s, 1.0, 50.0, &j, |_| ([0.0; 3], [0.0; 3]));
         assert!((s1.pos[2] - 0.5 * G0).abs() < 1e-6);
         assert!((s1.vel[2] - G0).abs() < 1e-6);

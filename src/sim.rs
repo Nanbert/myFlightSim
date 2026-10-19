@@ -172,6 +172,35 @@ impl Sim {
         self.model.trim(vc, alt);
     }
 
+    /// Seat on a 3° final for runway 36, just inside the ILS gate: ~5 km south
+    /// of the threshold at 1300 ft, gear down, flaps coming to approach, in a
+    /// clean trim. The autopilot's APP mode takes it from there.
+    ///
+    /// Unlike every other reset this keeps the world origin anchored at the
+    /// aerodrome (the scenery is static); re-anchoring here would carry the
+    /// runway along with the aircraft.
+    pub fn reset_final(&mut self) {
+        // 5140 m south of the origin: z_world = 140 (threshold) + 5000.
+        const GATE_M: f64 = 5140.0;
+        let dlat = -(GATE_M / 0.3048) / fdm::FT_PER_DEG_LAT;
+        self.model.set("ic/lat-gc-deg", dlat);
+        self.model.set("ic/long-gc-deg", 0.0);
+        self.model.set("ic/vc-kts", 155.0);
+        self.model.set("ic/h-sl-ft", 1300.0);
+        self.model.set("ic/psi-true-deg", 0.0);
+        // Approach config first, so apply_ic seats the flap position and the
+        // trim solver sees the gear/flap jet, not a clean airframe.
+        self.model.set("fcs/flap-cmd-norm", 0.33);
+        self.model.set("gear/gear-cmd-norm", 1.0);
+        self.model.apply_ic();
+        self.model.set("gear/gear-pos-norm", 1.0);
+        self.model.set("propulsion/set-running", -1.0);
+        self.model.trim(155.0, 1300.0);
+        self.reset_hud_memory();
+        self.origin_lat = 0.0;
+        self.origin_lon = 0.0;
+    }
+
     /// World-space position (meters) and orientation for the aircraft mesh.
     pub(crate) fn pose(&self) -> (Vec3, Quat, f32) {
         let lat = self.model.get("position/lat-gc-deg");
@@ -240,6 +269,12 @@ pub struct AircraftState {
     pub brake_left: f64,
     pub brake_right: f64,
     pub rpm: f64,
+    /// Flight-spoiler position (`fcs/speedbrake-pos-norm`), 0..1. Zeros for
+    /// aircraft without the boards (737 only for now).
+    pub speedbrake_pos: f64,
+    /// Thrust-reverse lever position (`fcs/reverse-pos-norm`), 0..1. The FDM
+    /// only extends it while the wheels carry weight.
+    pub reverse_pos: f64,
     /// Whether the loaded aircraft has an autopilot at all (737 only).
     pub autopilot_available: bool,
     /// Thrust vectoring switched on (`fcs/tvc-enable`).
@@ -319,6 +354,8 @@ impl Plugin for SimPlugin {
         app.insert_resource(sim)
             .init_resource::<AircraftState>()
             .init_resource::<RenderPose>()
+            // MYFS beams, recomputed inside `advance_fdm` each step.
+            .init_resource::<crate::ils::Ils>()
             .add_systems(
                 FixedUpdate,
                 (advance_fdm, capture_render_pose)
@@ -334,8 +371,16 @@ fn advance_fdm(
     bindings: Res<crate::input::Bindings>,
     mcp: Res<Mcp>,
     mut ap: ResMut<Autopilot>,
+    mut ils_res: ResMut<crate::ils::Ils>,
     map: Res<crate::map::ActiveMap>,
+    weather: Res<crate::weather::Weather>,
 ) {
+    // Ambient wind from the weather settings, pushed through the same property
+    // JSBSim exposes. The Rust model treats it as the air-mass velocity; on the
+    // JSBSim backend this is a native set.
+    let (wind_n, wind_e) = weather.wind_ned_fps();
+    sim.model.set("atmosphere/wind-north-fps", wind_n);
+    sim.model.set("atmosphere/wind-east-fps", wind_e);
     // Pilot bindings drive every property the loaded model exposes. This runs
     // unconditionally so flaps and brakes stay live even under the autopilot.
     // `effective()` folds in the trim offset (a rotorcraft's solved cyclic).
@@ -343,9 +388,25 @@ fn advance_fdm(
         sim.model.set(b.property, b.effective());
     }
 
+    // Parking brake: a stopped aircraft with cold throttle and untouched
+    // brakes is held in place (brakes full), so a windy spawn does not creep
+    // down the runway. Any throttle or brake input releases it for the step.
+    let braked = sim.model.get("fcs/left-brake-cmd-norm").abs()
+        + sim.model.get("fcs/right-brake-cmd-norm").abs();
+    if sim.model.get("gear/wow") > 0.5
+        && sim.model.get("velocities/vg-fps") < 2.0
+        && sim.model.get("fcs/throttle-cmd-norm") < 0.02
+        && braked < 1e-3
+    {
+        sim.model.set("fcs/left-brake-cmd-norm", 1.0);
+        sim.model.set("fcs/right-brake-cmd-norm", 1.0);
+    }
+
     // The autothrottle and the engaged modes write their own channels after
     // the bindings, so the automation wins the step.
-    crate::autopilot::advance(&mut *sim.model, &mcp, &mut ap, DT);
+    let ils = crate::ils::compute(&sim);
+    *ils_res = ils;
+    crate::autopilot::advance(&mut *sim.model, &mcp, &mut ap, DT, &ils);
 
     // Mission assist last: it may add nose-up or bank after the pilot's
     // commands, so terrain and the arena edge always win the step.
@@ -450,6 +511,8 @@ fn publish_state(mut sim: ResMut<Sim>, time: Res<Time>, mut state: ResMut<Aircra
         brake_left: m.get("fcs/left-brake-cmd-norm"),
         brake_right: m.get("fcs/right-brake-cmd-norm"),
         rpm: m.get("propulsion/engine[0]/engine-rpm"),
+        speedbrake_pos: m.get("fcs/speedbrake-pos-norm"),
+        reverse_pos: m.get("fcs/reverse-pos-norm"),
         autopilot_available: crate::aircraft_profile::profile(name).has_autopilot,
         tvc_on: m.get("fcs/tvc-enable") > 0.5,
         tvc_available: m.has_tvc(),
@@ -493,6 +556,27 @@ mod tests {
     fn rust_f22() -> Sim {
         std::env::set_var("FDM_BACKEND", "rust");
         Sim::new("f22")
+    }
+
+    #[test]
+    fn reset_final_seats_inside_the_ils_gate() {
+        std::env::set_var("FDM_BACKEND", "rust");
+        let mut sim = Sim::new("737");
+        sim.reset_final();
+        let (pos, _, _) = sim.pose();
+        let ils = crate::ils::compute(&sim);
+        assert!(ils.available, "should be inside the approach gate {ils:?} pos={pos:?}");
+        assert!(ils.loc_dev_deg.abs() < 1.0, "{:?}", ils.loc_dev_deg);
+        // 1300 ft against a beam 5 km out (~850 ft): spawned above the beam.
+        assert!(ils.gs_dev_deg > 0.6, "{:?}", ils.gs_dev_deg);
+        assert!(
+            ils.dist_m > 4900.0 && ils.dist_m < 5400.0,
+            "{:?}",
+            ils.dist_m
+        );
+        // And the runway reset is *behind* both antennas, not on scale.
+        sim.reset_ground();
+        assert!(!crate::ils::compute(&sim).available);
     }
 
     #[test]

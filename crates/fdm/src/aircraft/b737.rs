@@ -12,15 +12,22 @@
 //!   c172p uses, so no new control code is needed.
 //! * **Two turbofans.** The CFM56 is non-afterburning, so idle + mil thrust
 //!   tables keyed on (mach, density altitude) cover the whole envelope.
+//!   Reverse thrust is available on the ground (the `fcs/reverse-cmd-norm`
+//!   command drives a stepped `fcs/reverse-pos-norm`; thrust backs up at up to
+//!   `max_reverse_lbs` per engine while the wheels carry weight).
+//! * **Flight spoilers wired.** The `fcs/speedbrake-cmd-norm` command runs a
+//!   0.6 s traverse onto `fcs/speedbrake-pos-norm`, feeding the CDsb drag term
+//!   (0.02) and the kCLsb lift-loss factor (15% at full deploy).
 //! * **The inertia cross-product is sign-flipped**: the model sets
 //!   `negated_crossproduct_inertia="true"`, so JSBSim builds `J_xz = +ixz`.
 //!   `crate::state::Inertia::new` uses `J_xz = -ixz`, so the transcribed
 //!   `empty_inertia[4]` is the *negated* model value: `-8000`.
 //!
 //! The 737 also carries flight- and ground-spoiler terms (`CDsb`/`CDsp`,
-//! `kCLsb`/`kCLsp`); they are omitted here — the `DirectFcs` has no speedbrake
-//! channel. The effect is a slightly low drag/lift without the boards out.
-//!
+//! `kCLsb`/`kCLsp`). The *flight*-spoiler terms are wired below; the ground
+//! spoilers (CDsp = 0.04, kCLsp = 0.6) stay unwired — the app drives the
+//! speedbrake channel only, and the CDsb term plus thrust reverse cover the
+//! landing-roll deceleration this sim models.
 //! Values are imperial: areas ft², arms ft, moments slug·ft², positions inches.
 
 use super::{Aircraft, MassSpec, PointMass};
@@ -56,6 +63,10 @@ const AIL: Factor = Factor::Prop("fcs/left-aileron-pos-rad");
 const RUD: Factor = Factor::Prop("fcs/rudder-pos-rad");
 const FLAPN: Factor = Factor::Prop("fcs/flap-pos-norm");
 const GEARN: Factor = Factor::Prop("gear/gear-pos-norm");
+/// Flight-spoiler (speedbrake) position, 0..1, driving the CDsb drag term and
+/// the kCLsb lift-loss factor. Zero during trim, so cruise solves see the
+/// clean wing.
+const SB_POS: Factor = Factor::Prop("fcs/speedbrake-pos-norm");
 
 /// A literal factor.
 macro_rules! val {
@@ -75,15 +86,27 @@ macro_rules! prod {
 
 const T_KCDGE: Table1 = Table1::new(
     &[0.0, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
-    &[0.0480, 0.5150, 0.6290, 0.7090, 0.8150, 0.8820, 0.9280, 0.9620, 0.9880, 1.0000],
-);
-const T_KCLGE: Table1 = Table1::new(
-    &[0.0, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1],
     &[
-        1.2030, 1.1270, 1.0900, 1.0730, 1.0460, 1.0280, 1.0190, 1.0130, 1.0080, 1.0060,
-        1.0030, 1.0020, 1.0000,
+        0.0480, 0.5150, 0.6290, 0.7090, 0.8150, 0.8820, 0.9280, 0.9620, 0.9880, 1.0000,
     ],
 );
+const T_KCLGE: Table1 = Table1::new(
+    &[
+        0.0, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1,
+    ],
+    &[
+        1.2030, 1.1270, 1.0900, 1.0730, 1.0460, 1.0280, 1.0190, 1.0130, 1.0080, 1.0060, 1.0030,
+        1.0020, 1.0000,
+    ],
+);
+
+/// Lift loss with the boards out (`aero/function/kCLsb`): 15% down at 0.1, so
+/// fully deployed costs ~15% of wing lift.
+const T_KCLSB: Table1 = Table1::new(&[0.0, 0.1], &[1.0, 0.85]);
+const KCLSB: Factor = Factor::Table1 {
+    var: "fcs/speedbrake-pos-norm",
+    table: T_KCLSB,
+};
 
 // --- 1-D tables -----------------------------------------------------------
 
@@ -106,17 +129,40 @@ const T_CMDE_M: Table1 = Table1::new(&[0.0, 2.0], &[-1.20, -0.30]);
 /// Force axes are DRAG, SIDE, LIFT (wind frame).
 const DRAG: Axis = Axis::new(&[
     // CD0 — drag at zero lift
-    prod!(QBAR, SW, Factor::Table1 { var: "aero/alpha-rad", table: T_CD0 }),
+    prod!(
+        QBAR,
+        SW,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CD0
+        }
+    ),
     // CDi — induced drag (needs the previous frame's CL²)
     prod!(QBAR, SW, CL2, KCDGE, val!(0.043)),
     // CDmach — drag rise with Mach
-    prod!(QBAR, SW, Factor::Table1 { var: "velocities/mach", table: T_CDMACH }),
+    prod!(
+        QBAR,
+        SW,
+        Factor::Table1 {
+            var: "velocities/mach",
+            table: T_CDMACH
+        }
+    ),
     // CDflap — trailing-edge flaps
     prod!(QBAR, SW, FLAPN, val!(0.059)),
+    // CDsb — drag due to flight spoilers (speedbrake deployed)
+    prod!(QBAR, SW, SB_POS, val!(0.02)),
     // CDgear — landing gear
     prod!(QBAR, SW, GEARN, val!(0.015)),
     // CDbeta — sideslip
-    prod!(QBAR, SW, Factor::Table1 { var: "aero/beta-rad", table: T_CDBETA }),
+    prod!(
+        QBAR,
+        SW,
+        Factor::Table1 {
+            var: "aero/beta-rad",
+            table: T_CDBETA
+        }
+    ),
     // CDde — elevator deflection
     prod!(QBAR, SW, ELEV_MAG, val!(0.059)),
 ]);
@@ -127,10 +173,20 @@ const SIDE: Axis = Axis::new(&[
 ]);
 
 const LIFT: Axis = Axis::new(&[
-    // CLalpha — lift due to alpha
-    prod!(QBAR, SW, KCLGE, Factor::Table1 { var: "aero/alpha-rad", table: T_CLALPHA }),
+    // CLalpha — lift due to alpha (the JSBSim build-up multiplies the
+    // ground-effect and speedbrake loss factors into both alpha and flap terms)
+    prod!(
+        QBAR,
+        SW,
+        KCLGE,
+        KCLSB,
+        Factor::Table1 {
+            var: "aero/alpha-rad",
+            table: T_CLALPHA
+        }
+    ),
     // dCLflap — trailing-edge flaps
-    prod!(QBAR, SW, FLAPN, KCLGE, val!(0.9)),
+    prod!(QBAR, SW, FLAPN, KCLGE, KCLSB, val!(0.9)),
     // CLde — elevator
     prod!(QBAR, SW, ELEV, val!(0.2)),
 ]);
@@ -144,7 +200,16 @@ const ROLL: Axis = Axis::new(&[
     // Clr — roll due to yaw rate
     prod!(QBAR, SW, BW, BI2VEL, R_AERO, val!(0.09)),
     // Clda — aileron
-    prod!(QBAR, SW, BW, AIL, Factor::Table1 { var: "velocities/mach", table: T_CLDA_M }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        AIL,
+        Factor::Table1 {
+            var: "velocities/mach",
+            table: T_CLDA_M
+        }
+    ),
     // Cldr — rudder
     prod!(QBAR, SW, BW, RUD, val!(0.01)),
 ]);
@@ -153,7 +218,16 @@ const PITCH: Axis = Axis::new(&[
     // Cmalpha — pitch stiffness
     prod!(QBAR, SW, CBAR, ALPHA, val!(-0.6)),
     // Cmde — elevator
-    prod!(QBAR, SW, CBAR, ELEV, Factor::Table1 { var: "velocities/mach", table: T_CMDE_M }),
+    prod!(
+        QBAR,
+        SW,
+        CBAR,
+        ELEV,
+        Factor::Table1 {
+            var: "velocities/mach",
+            table: T_CMDE_M
+        }
+    ),
     // Cmq — pitch damping
     prod!(QBAR, SW, CBAR, CI2VEL, Q_AERO, val!(-27.0)),
     // Cmadot — pitch due to alpha rate
@@ -173,11 +247,17 @@ const YAW: Axis = Axis::new(&[
 const PRE: &[NamedFn] = &[
     NamedFn {
         name: "aero/function/kCDge",
-        func: Function::product(&[Factor::Table1 { var: "aero/h_b-mac-ft", table: T_KCDGE }]),
+        func: Function::product(&[Factor::Table1 {
+            var: "aero/h_b-mac-ft",
+            table: T_KCDGE,
+        }]),
     },
     NamedFn {
         name: "aero/function/kCLge",
-        func: Function::product(&[Factor::Table1 { var: "aero/h_b-mac-ft", table: T_KCLGE }]),
+        func: Function::product(&[Factor::Table1 {
+            var: "aero/h_b-mac-ft",
+            table: T_KCLGE,
+        }]),
     },
 ];
 
@@ -187,9 +267,18 @@ const PRE: &[NamedFn] = &[
 /// center tank (4000 lb). Positions are structural-frame inches, matching the
 /// `<tank>` locations.
 const POINTS: &[PointMass] = &[
-    PointMass { weight_lb: 10000.0, pos_in: [520.0, -80.0, -18.0] },
-    PointMass { weight_lb: 10000.0, pos_in: [520.0, 80.0, -18.0] },
-    PointMass { weight_lb: 4000.0, pos_in: [480.0, 0.0, -18.0] },
+    PointMass {
+        weight_lb: 10000.0,
+        pos_in: [520.0, -80.0, -18.0],
+    },
+    PointMass {
+        weight_lb: 10000.0,
+        pos_in: [520.0, 80.0, -18.0],
+    },
+    PointMass {
+        weight_lb: 4000.0,
+        pos_in: [480.0, 0.0, -18.0],
+    },
 ];
 
 const MASS: MassSpec = MassSpec {
@@ -206,7 +295,9 @@ const MASS: MassSpec = MassSpec {
 /// Idle-thrust fraction, row = Mach, col = density altitude (ft).
 const IDLE_THRUST: Table2 = Table2::new(
     &[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
-    &[-10000.0, 0.0, 10000.0, 20000.0, 30000.0, 40000.0, 50000.0, 60000.0],
+    &[
+        -10000.0, 0.0, 10000.0, 20000.0, 30000.0, 40000.0, 50000.0, 60000.0,
+    ],
     &[
         0.0420, 0.0436, 0.0528, 0.0694, 0.0899, 0.1183, 0.1467, 0.0, //
         0.0500, 0.0501, 0.0335, 0.0544, 0.0797, 0.1049, 0.1342, 0.0, //
@@ -221,7 +312,9 @@ const IDLE_THRUST: Table2 = Table2::new(
 /// row is all-zero (the 737's CFM56 has no thrust there).
 const MIL_THRUST: Table2 = Table2::new(
     &[0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2],
-    &[-10000.0, 0.0, 10000.0, 20000.0, 30000.0, 40000.0, 50000.0, 60000.0],
+    &[
+        -10000.0, 0.0, 10000.0, 20000.0, 30000.0, 40000.0, 50000.0, 60000.0,
+    ],
     &[
         1.2600, 1.0000, 0.7400, 0.5340, 0.3720, 0.2410, 0.1490, 0.0, //
         1.1710, 0.9340, 0.6970, 0.5060, 0.3550, 0.2310, 0.1430, 0.0, //
@@ -299,9 +392,30 @@ const fn bogey(
 
 /// Nosewheel steers (max 35 deg); the mains carry the brakes.
 const GEAR: &[Gear] = &[
-    bogey([158.0, 0.0, -84.0], 90000.0, 4000.0, 8000.0, 35.0, BrakeGroup::None),
-    bogey([648.0, -100.0, -84.0], 120000.0, 10000.0, 20000.0, 0.0, BrakeGroup::Left),
-    bogey([648.0, 100.0, -84.0], 120000.0, 10000.0, 20000.0, 0.0, BrakeGroup::Right),
+    bogey(
+        [158.0, 0.0, -84.0],
+        90000.0,
+        4000.0,
+        8000.0,
+        35.0,
+        BrakeGroup::None,
+    ),
+    bogey(
+        [648.0, -100.0, -84.0],
+        120000.0,
+        10000.0,
+        20000.0,
+        0.0,
+        BrakeGroup::Left,
+    ),
+    bogey(
+        [648.0, 100.0, -84.0],
+        120000.0,
+        10000.0,
+        20000.0,
+        0.0,
+        BrakeGroup::Right,
+    ),
 ];
 
 /// The Boeing 737. `AERORP` (625, 0, 24) inches; the FDM shifts moments from
@@ -328,4 +442,8 @@ pub const B737: Aircraft = Aircraft {
     gear_retractable: true,
     rotors: &[],
     rest_h_ft: 49.0 / 12.0,
+    // Flight spoilers (the speedbrake handle) and ground thrust reverse.
+    has_speedbrake: true,
+    // CFM56 max reverse, per engine: ~45% of forward military thrust.
+    max_reverse_lbs: 0.45 * 20000.0,
 };

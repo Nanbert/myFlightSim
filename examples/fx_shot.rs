@@ -6,20 +6,20 @@
 //!
 //! `VIEW=side` swaps the camera to a broadside view of the exhaust.
 
-#[path = "../src/cloud_camera.rs"]
-mod cloud_camera;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
 #[path = "../src/app_state.rs"]
 mod app_state;
+#[path = "../src/autopilot.rs"]
+mod autopilot;
+#[path = "../src/cloud_camera.rs"]
+mod cloud_camera;
 #[path = "../src/config.rs"]
 mod config;
 #[path = "../src/fx.rs"]
 mod fx;
 #[path = "../src/input.rs"]
 mod input;
-#[path = "../src/autopilot.rs"]
-mod autopilot;
 #[path = "../src/sim.rs"]
 mod sim;
 #[path = "../src/view.rs"]

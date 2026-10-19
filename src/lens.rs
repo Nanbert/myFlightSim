@@ -450,7 +450,10 @@ fn manage_lens(
     sim: Res<Sim>,
     ui: Res<Ui>,
     mut film: ResMut<Film>,
-    cameras: Query<(Entity, Option<&RainLens>), (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
+    cameras: Query<
+        (Entity, Option<&RainLens>),
+        (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>),
+    >,
 ) {
     let dt = time.delta_secs().min(0.1);
     let flying = *app_state.get() == AppState::Flying;
@@ -595,12 +598,21 @@ mod tests {
         assert_eq!(lens.glass, 1.0, "the 737 must use the window mask");
         // Ahead and a little up is windshield.
         let ahead = body_dir(0.0, 10.0_f32.to_radians());
-        assert!(window_margin(&lens, ahead) > 0.0, "the forward pane is missing");
+        assert!(
+            window_margin(&lens, ahead) > 0.0,
+            "the forward pane is missing"
+        );
         // The sliding windows are off each shoulder.
         let left = body_dir(-70.0_f32.to_radians(), 10.0_f32.to_radians());
-        assert!(window_margin(&lens, left) > 0.0, "the left window is missing");
+        assert!(
+            window_margin(&lens, left) > 0.0,
+            "the left window is missing"
+        );
         let right = body_dir(80.0_f32.to_radians(), 5.0_f32.to_radians());
-        assert!(window_margin(&lens, right) > 0.0, "the right window is missing");
+        assert!(
+            window_margin(&lens, right) > 0.0,
+            "the right window is missing"
+        );
         // The MCP and the rest of the panel are below the windows.
         let panel = body_dir(0.0, -17.0_f32.to_radians());
         assert!(window_margin(&lens, panel) < 0.0);
@@ -648,7 +660,10 @@ mod tests {
     fn rain_coverage_thins_as_dynamic_pressure_rises() {
         assert_eq!(rain_coverage(0.9, 0.0), 1.0);
         let fast = rain_coverage(0.9, 1.0);
-        assert!(fast > 0.0 && fast < 0.5, "fast rain should be thin, got {fast}");
+        assert!(
+            fast > 0.0 && fast < 0.5,
+            "fast rain should be thin, got {fast}"
+        );
         assert_eq!(rain_coverage(0.0, 0.5), 0.0);
     }
 

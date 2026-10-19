@@ -56,23 +56,29 @@ const T_CDDF: Table1 = Table1::new(&[0.0, 10.0, 20.0, 30.0], &[0.0, 0.0070, 0.01
 /// Delta lift vs flap deflection.
 const T_CLDF: Table1 = Table1::new(&[0.0, 10.0, 20.0, 30.0], &[0.0, 0.2000, 0.3000, 0.3500]);
 /// Delta pitching moment vs flap deflection.
-const T_CMDF: Table1 =
-    Table1::new(&[0.0, 10.0, 20.0, 30.0], &[0.0, -0.0654, -0.0981, -0.1140]);
+const T_CMDF: Table1 = Table1::new(&[0.0, 10.0, 20.0, 30.0], &[0.0, -0.0654, -0.0981, -0.1140]);
 /// Roll moment vs sideslip.
 const T_CLB: Table1 = Table1::new(&[-0.3490, 0.0, 0.3490], &[0.0322, 0.0, -0.0322]);
 /// Yaw moment vs sideslip.
 const T_CNB: Table1 = Table1::new(&[-0.3490, 0.0, 0.3490], &[-0.0205, 0.0, 0.0205]);
 /// Drag change from ground effect, vs height / MAC.
 const T_KCDGE: Table1 = Table1::new(
-    &[0.0, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1],
-    &[0.4800, 0.5150, 0.6290, 0.7090, 0.8150, 0.8820, 0.9280, 0.9620, 0.9880, 1.0, 1.0,
-      1.0, 1.0],
+    &[
+        0.0, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1,
+    ],
+    &[
+        0.4800, 0.5150, 0.6290, 0.7090, 0.8150, 0.8820, 0.9280, 0.9620, 0.9880, 1.0, 1.0, 1.0, 1.0,
+    ],
 );
 /// Lift change from ground effect, vs height / MAC.
 const T_KCLGE: Table1 = Table1::new(
-    &[0.0, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1],
-    &[1.2030, 1.1270, 1.0900, 1.0730, 1.0460, 1.0550, 1.0190, 1.0130, 1.0080, 1.0060,
-      1.0030, 1.0020, 1.0],
+    &[
+        0.0, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1,
+    ],
+    &[
+        1.2030, 1.1270, 1.0900, 1.0730, 1.0460, 1.0550, 1.0190, 1.0130, 1.0080, 1.0060, 1.0030,
+        1.0020, 1.0,
+    ],
 );
 
 // --- 2-D tables (row-major: ys[row*ncol + col]) ---------------------------
@@ -80,9 +86,9 @@ const T_KCLGE: Table1 = Table1::new(
 /// DRAG_due_to_alpha: rows = alpha, cols = flap.
 const T_CDWBH: Table2 = Table2::new(
     &[
-        -0.0873, -0.0698, -0.0524, -0.0349, -0.0175, 0.0000, 0.0175, 0.0349, 0.0524,
-        0.0698, 0.0873, 0.1047, 0.1222, 0.1396, 0.1571, 0.1745, 0.1920, 0.2094,
-        0.2269, 0.2443, 0.2618, 0.2793, 0.2967, 0.3142, 0.3316, 0.3491,
+        -0.0873, -0.0698, -0.0524, -0.0349, -0.0175, 0.0000, 0.0175, 0.0349, 0.0524, 0.0698,
+        0.0873, 0.1047, 0.1222, 0.1396, 0.1571, 0.1745, 0.1920, 0.2094, 0.2269, 0.2443, 0.2618,
+        0.2793, 0.2967, 0.3142, 0.3316, 0.3491,
     ],
     &[0.0, 10.0, 20.0, 30.0],
     &[
@@ -139,8 +145,8 @@ const T_CYR: Table2 = Table2::new(
 /// LIFT_due_to_alpha: rows = alpha, cols = stall hysteresis.
 const T_CLWBH: Table2 = Table2::new(
     &[
-        -0.0900, 0.0000, 0.0900, 0.1000, 0.1200, 0.1400, 0.1600, 0.1700, 0.1900, 0.2100,
-        0.2400, 0.2600, 0.2800, 0.3000, 0.3200, 0.3400, 0.3600,
+        -0.0900, 0.0000, 0.0900, 0.1000, 0.1200, 0.1400, 0.1600, 0.1700, 0.1900, 0.2100, 0.2400,
+        0.2600, 0.2800, 0.3000, 0.3200, 0.3400, 0.3600,
     ],
     &[0.0, 1.0],
     &[
@@ -178,10 +184,26 @@ const DRAG: Axis = Axis::new(&[
     // CDo — drag at zero lift
     prod!(QBAR, SW, val!(0.027)),
     // CDDf — delta drag from flaps
-    prod!(QBAR, SW, KCDGE, Factor::Table1 { var: "fcs/flap-pos-deg", table: T_CDDF }),
+    prod!(
+        QBAR,
+        SW,
+        KCDGE,
+        Factor::Table1 {
+            var: "fcs/flap-pos-deg",
+            table: T_CDDF
+        }
+    ),
     // CDwbh — drag due to alpha
-    prod!(QBAR, SW, KCDGE, Factor::Table2 {
-        rvar: "aero/alpha-rad", cvar: "fcs/flap-pos-deg", table: T_CDWBH }),
+    prod!(
+        QBAR,
+        SW,
+        KCDGE,
+        Factor::Table2 {
+            rvar: "aero/alpha-rad",
+            cvar: "fcs/flap-pos-deg",
+            table: T_CDWBH
+        }
+    ),
     // CDDe — drag due to elevator
     prod!(QBAR, SW, ELEV_MAG, val!(0.06)),
     // CDbeta — drag due to sideslip
@@ -190,24 +212,65 @@ const DRAG: Axis = Axis::new(&[
 
 const SIDE: Axis = Axis::new(&[
     // CYb — side force due to beta
-    prod!(QBAR, SW, Factor::Table2 {
-        rvar: "aero/beta-rad", cvar: "fcs/flap-pos-deg", table: T_CYB }),
+    prod!(
+        QBAR,
+        SW,
+        Factor::Table2 {
+            rvar: "aero/beta-rad",
+            cvar: "fcs/flap-pos-deg",
+            table: T_CYB
+        }
+    ),
     // CYdr — side force due to rudder
     prod!(QBAR, SW, RUD, val!(0.187)),
     // CYp — side force due to roll rate
-    prod!(QBAR, SW, BI2VEL, P_AERO, Factor::Table2 {
-        rvar: "aero/alpha-rad", cvar: "fcs/flap-pos-deg", table: T_CYP }),
+    prod!(
+        QBAR,
+        SW,
+        BI2VEL,
+        P_AERO,
+        Factor::Table2 {
+            rvar: "aero/alpha-rad",
+            cvar: "fcs/flap-pos-deg",
+            table: T_CYP
+        }
+    ),
     // CYr — side force due to yaw rate
-    prod!(QBAR, SW, BI2VEL, R_AERO, Factor::Table2 {
-        rvar: "aero/alpha-rad", cvar: "fcs/flap-pos-deg", table: T_CYR }),
+    prod!(
+        QBAR,
+        SW,
+        BI2VEL,
+        R_AERO,
+        Factor::Table2 {
+            rvar: "aero/alpha-rad",
+            cvar: "fcs/flap-pos-deg",
+            table: T_CYR
+        }
+    ),
 ]);
 
 const LIFT: Axis = Axis::new(&[
     // CLwbh — lift due to alpha (with ground effect and stall hysteresis)
-    prod!(QBAR, SW, KCLGE, Factor::Table2 {
-        rvar: "aero/alpha-rad", cvar: "aero/stall-hyst-norm", table: T_CLWBH }),
+    prod!(
+        QBAR,
+        SW,
+        KCLGE,
+        Factor::Table2 {
+            rvar: "aero/alpha-rad",
+            cvar: "aero/stall-hyst-norm",
+            table: T_CLWBH
+        }
+    ),
     // CLDf — delta lift from flaps
-    prod!(QBAR, SW, KCLGE, Factor::Table1 { var: "fcs/flap-pos-deg", table: T_CLDF }),
+    prod!(
+        QBAR,
+        SW,
+        KCLGE,
+        Factor::Table1 {
+            var: "fcs/flap-pos-deg",
+            table: T_CLDF
+        }
+    ),
     // CLDe — lift due to elevator
     prod!(QBAR, SW, ELEV, val!(0.43)),
     // CLadot — lift due to alpha rate
@@ -219,12 +282,30 @@ const LIFT: Axis = Axis::new(&[
 /// Moment axes are ROLL, PITCH, YAW (body frame).
 const ROLL: Axis = Axis::new(&[
     // Clb — roll due to beta
-    prod!(QBAR, SW, BW, Factor::Table1 { var: "aero/beta-rad", table: T_CLB }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        Factor::Table1 {
+            var: "aero/beta-rad",
+            table: T_CLB
+        }
+    ),
     // Clp — roll damping
     prod!(QBAR, SW, BW, BI2VEL, P_AERO, val!(-0.484)),
     // Clr — roll due to yaw rate
-    prod!(QBAR, SW, BW, BI2VEL, R_AERO, Factor::Table2 {
-        rvar: "aero/alpha-rad", cvar: "fcs/flap-pos-deg", table: T_CLR }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        BI2VEL,
+        R_AERO,
+        Factor::Table2 {
+            rvar: "aero/alpha-rad",
+            cvar: "fcs/flap-pos-deg",
+            table: T_CLR
+        }
+    ),
     // ClDa — roll due to aileron
     prod!(QBAR, SW, BW, AIL, val!(0.229)),
     // Cldr — roll due to rudder
@@ -243,12 +324,28 @@ const PITCH: Axis = Axis::new(&[
     // Cmde — pitch due to elevator (uses prop-wash-augmented qbar)
     prod!(QBAR_IND, SW, CBAR, ELEV, val!(-1.122)),
     // Cmdf — delta pitch from flaps
-    prod!(QBAR, SW, CBAR, Factor::Table1 { var: "fcs/flap-pos-deg", table: T_CMDF }),
+    prod!(
+        QBAR,
+        SW,
+        CBAR,
+        Factor::Table1 {
+            var: "fcs/flap-pos-deg",
+            table: T_CMDF
+        }
+    ),
 ]);
 
 const YAW: Axis = Axis::new(&[
     // Cnb — weathercock stability
-    prod!(QBAR, SW, BW, Factor::Table1 { var: "aero/beta-rad", table: T_CNB }),
+    prod!(
+        QBAR,
+        SW,
+        BW,
+        Factor::Table1 {
+            var: "aero/beta-rad",
+            table: T_CNB
+        }
+    ),
     // Cnp — yaw due to roll rate
     prod!(QBAR, SW, BW, BI2VEL, P_AERO, val!(-0.0278)),
     // Cnr — yaw damping
@@ -263,11 +360,17 @@ const YAW: Axis = Axis::new(&[
 const PRE: &[NamedFn] = &[
     NamedFn {
         name: "aero/function/kCDge",
-        func: Function::product(&[Factor::Table1 { var: "aero/h_b-mac-ft", table: T_KCDGE }]),
+        func: Function::product(&[Factor::Table1 {
+            var: "aero/h_b-mac-ft",
+            table: T_KCDGE,
+        }]),
     },
     NamedFn {
         name: "aero/function/kCLge",
-        func: Function::product(&[Factor::Table1 { var: "aero/h_b-mac-ft", table: T_KCLGE }]),
+        func: Function::product(&[Factor::Table1 {
+            var: "aero/h_b-mac-ft",
+            table: T_KCLGE,
+        }]),
     },
     NamedFn {
         // velocity-induced = u_aero + 2 * prop-induced
@@ -295,9 +398,18 @@ const PRE: &[NamedFn] = &[
 /// Pilot (180 lb) plus two 100-lb fuel tanks. Positions are structural-frame
 /// inches, matching `<mass_balance>`.
 const POINTS: &[PointMass] = &[
-    PointMass { weight_lb: 180.0, pos_in: [36.0, -14.0, 24.0] },
-    PointMass { weight_lb: 100.0, pos_in: [56.0, -112.0, 59.4] },
-    PointMass { weight_lb: 100.0, pos_in: [56.0, 112.0, 59.4] },
+    PointMass {
+        weight_lb: 180.0,
+        pos_in: [36.0, -14.0, 24.0],
+    },
+    PointMass {
+        weight_lb: 100.0,
+        pos_in: [56.0, -112.0, 59.4],
+    },
+    PointMass {
+        weight_lb: 100.0,
+        pos_in: [56.0, 112.0, 59.4],
+    },
 ];
 
 const MASS: MassSpec = MassSpec {
@@ -334,18 +446,26 @@ const PROP: PropSpec = PropSpec {
     diameter_ft: 75.0 / 12.0,
     ixx: 1.67,
     c_thrust: Table1::new(
-        &[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5,
-          1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 5.0],
-        &[0.073, 0.073, 0.072, 0.071, 0.069, 0.066, 0.062, 0.055, 0.045, 0.034, 0.024,
-          0.013, -0.006, -0.013, -0.024, -0.034, -0.045, -0.055, -0.062, -0.066, -0.069,
-          -0.071, -0.072, -0.073, -0.073],
+        &[
+            0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6,
+            1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 5.0,
+        ],
+        &[
+            0.073, 0.073, 0.072, 0.071, 0.069, 0.066, 0.062, 0.055, 0.045, 0.034, 0.024, 0.013,
+            -0.006, -0.013, -0.024, -0.034, -0.045, -0.055, -0.062, -0.066, -0.069, -0.071, -0.072,
+            -0.073, -0.073,
+        ],
     ),
     c_power: Table1::new(
-        &[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5,
-          1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4, 5.0],
-        &[0.0660, 0.0700, 0.0700, 0.0660, 0.0600, 0.0530, 0.0501, 0.0469, 0.0426, 0.0360,
-          0.0282, 0.0191, 0.0155, 0.0191, 0.0282, 0.0360, 0.0426, 0.0469, 0.0501, 0.0516,
-          0.0525, 0.0525, 0.0522, 0.0511, 0.0504, 0.0493],
+        &[
+            0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6,
+            1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4, 5.0,
+        ],
+        &[
+            0.0660, 0.0700, 0.0700, 0.0660, 0.0600, 0.0530, 0.0501, 0.0469, 0.0426, 0.0360, 0.0282,
+            0.0191, 0.0155, 0.0191, 0.0282, 0.0360, 0.0426, 0.0469, 0.0501, 0.0516, 0.0525, 0.0525,
+            0.0522, 0.0511, 0.0504, 0.0493,
+        ],
     ),
     ct_mach: Table1::new(&[0.85, 1.05], &[1.0, 0.8]),
     cp_mach: Table1::new(&[0.85, 1.05, 2.0], &[1.0, 1.8, 1.4]),
@@ -443,4 +563,6 @@ pub const C172: Aircraft = Aircraft {
     gear_retractable: false,
     rotors: &[],
     rest_h_ft: 4.7,
+    has_speedbrake: false,
+    max_reverse_lbs: 0.0,
 };

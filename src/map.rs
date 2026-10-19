@@ -18,8 +18,8 @@ use bevy::render::render_resource::{
 use bevy::shader::ShaderRef;
 
 use crate::app_state::AppState;
-use crate::sky::{coverage_for, CloudField};
 use crate::sim::StartFlight;
+use crate::sky::{coverage_for, CloudField};
 
 /// Half-width of the square arena, metres. The terrain spans ±48 km.
 pub const ARENA_HALF: f32 = 48_000.0;
@@ -258,10 +258,7 @@ impl Plugin for MapPlugin {
         .init_resource::<PendingMission>()
         .init_resource::<ActiveMap>()
         .init_resource::<MapHandles>()
-        .add_systems(
-            OnEnter(AppState::Flying),
-            enter_mission.after(StartFlight),
-        )
+        .add_systems(OnEnter(AppState::Flying), enter_mission.after(StartFlight))
         .add_systems(OnExit(AppState::Flying), leave_mission)
         .add_systems(Update, update_map_params.run_if(in_state(AppState::Flying)));
     }
@@ -288,7 +285,12 @@ fn enter_mission(
 
     let pal = map.palette();
     let fog = fog_color(0.0);
-    let cloud_params = Vec4::new(cloud.base, cloud.top, coverage_for(weather.rain), cloud.wind);
+    let cloud_params = Vec4::new(
+        cloud.base,
+        cloud.top,
+        coverage_for(weather.rain),
+        cloud.wind,
+    );
     let material = terrain_mats.add(TerrainMaterial {
         params: TerrainParams {
             camera: Vec4::ZERO,
@@ -438,10 +440,8 @@ fn archipelago_height(x: f32, z: f32) -> f32 {
     let crags = ridged(wx * 0.00070, wz * 0.00070, 4, 3121);
     let hills = fbm(wx * 0.0011, wz * 0.0011, 3, 4041);
     let fine = fbm(x * 0.004, z * 0.004, 2, 5051);
-    let inland = ridge * ridge * 760.0
-        + crags.powf(2.0) * 90.0
-        + hills * 90.0
-        + (fine - 0.5) * 12.0;
+    let inland =
+        ridge * ridge * 760.0 + crags.powf(2.0) * 90.0 + hills * 90.0 + (fine - 0.5) * 12.0;
     land * inland - (1.0 - land) * 55.0
 }
 
@@ -502,7 +502,10 @@ fn terrain_mesh(map: MapId) -> Mesh {
         }
     }
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_indices(Indices::U32(indices));
@@ -695,7 +698,8 @@ fn ridged(x: f32, z: f32, octaves: u32, seed: u32) -> f32 {
     let mut amp = 0.5;
     let mut freq = 1.0;
     for o in 0..octaves {
-        let n = 1.0 - (2.0 * value_noise(x * freq, z * freq, seed.wrapping_add(o * 53)) - 1.0).abs();
+        let n =
+            1.0 - (2.0 * value_noise(x * freq, z * freq, seed.wrapping_add(o * 53)) - 1.0).abs();
         sum += amp * n * n;
         norm += amp;
         amp *= 0.5;
@@ -774,7 +778,10 @@ mod tests {
             }
         }
         assert!(sea > samples / 10, "expected open sea, got {sea}/{samples}");
-        assert!(high > samples / 50, "expected islands, got {high}/{samples}");
+        assert!(
+            high > samples / 50,
+            "expected islands, got {high}/{samples}"
+        );
     }
 
     #[test]

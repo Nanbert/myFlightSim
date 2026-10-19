@@ -49,6 +49,36 @@ struct HudParams {
     f: Vec4,
 }
 
+/// Uniform for the AH-64D IHADSS overlay. Field order matches `Ah64Params` in
+/// `assets/shaders/ah64_hud_sym.wesl` exactly.
+#[derive(Clone, Copy, ShaderType, Default)]
+struct Ah64Params {
+    /// cas_kts, alt_ft, vs_fpm, radar_alt_ft
+    a: Vec4,
+    /// heading_deg, pitch_deg, roll_deg, collective_pct
+    b: Vec4,
+    /// torque_pct, rotor_rpm_pct, fpm_x_deg, fpm_y_deg
+    c: Vec4,
+    /// gs_kts, g, waypoint_km, waypoint_bearing_deg
+    d: Vec4,
+    /// arcade, hover_state (0 off/1 takeoff/2 hold/3 land), balance, on_ground
+    e: Vec4,
+    /// layout (unused by the screen overlay)
+    f: Vec4,
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Clone, Default)]
+struct Ah64Material {
+    #[uniform(0)]
+    params: Ah64Params,
+}
+
+impl UiMaterial for Ah64Material {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/ah64_hud.wesl".into()
+    }
+}
+
 #[derive(Asset, TypePath, AsBindGroup, Clone, Default)]
 struct HudMaterial {
     #[uniform(0)]
@@ -92,6 +122,10 @@ struct GlassMaterial(Handle<HudGlassMaterial>);
 
 #[derive(Component)]
 struct HudOverlay;
+
+/// Full-screen AH-64D IHADSS overlay (shown in both chase and cockpit views).
+#[derive(Component)]
+struct Ah64Overlay;
 
 /// The quad on the combiner glass. A child of the cockpit model, so it lives
 /// in that model's frame and hides with it outside the cockpit view.
@@ -156,6 +190,7 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             UiMaterialPlugin::<HudMaterial>::default(),
+            UiMaterialPlugin::<Ah64Material>::default(),
             MaterialPlugin::<HudGlassMaterial>::default(),
         ))
         .init_resource::<HudShown>()
@@ -167,8 +202,10 @@ impl Plugin for HudPlugin {
                 spawn_glass,
                 tune_glass,
                 update,
+                update_ah64,
                 toggle_shown.run_if(in_state(AppState::Flying)),
                 sync_visibility,
+                sync_visibility_ah64,
             ),
         );
     }
@@ -177,6 +214,7 @@ impl Plugin for HudPlugin {
 fn setup(
     mut commands: Commands,
     mut materials: ResMut<Assets<HudMaterial>>,
+    mut ah64_materials: ResMut<Assets<Ah64Material>>,
     mut glass: ResMut<Assets<HudGlassMaterial>>,
 ) {
     let glass = glass.add(HudGlassMaterial {
@@ -202,6 +240,22 @@ fn setup(
             ..default()
         },
         // Above the gauges and the in-world UI.
+        GlobalZIndex(20),
+    ));
+
+    let ah64 = ah64_materials.add(Ah64Material::default());
+    commands.spawn((
+        Ah64Overlay,
+        MaterialNode(ah64),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(0.0),
+            top: Val::Px(0.0),
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            display: Display::None,
+            ..default()
+        },
         GlobalZIndex(20),
     ));
 }
@@ -403,6 +457,86 @@ fn wind(north_fps: f64, east_fps: f64) -> (f32, f32) {
     }
     let from = (-east_fps).atan2(-north_fps).to_degrees().rem_euclid(360.0);
     (from as f32, kt as f32)
+}
+
+/// Pack the AH-64D state into the IHADSS uniform.
+fn update_ah64(
+    sim: Res<Sim>,
+    state: Res<AircraftState>,
+    mut materials: ResMut<Assets<Ah64Material>>,
+    overlay: Query<&MaterialNode<Ah64Material>>,
+) {
+    if sim.name != "ah1s" {
+        return;
+    }
+
+    // The AH-1S rotor governor runs at 324 rpm; display it as a percentage.
+    let nr_pct = if state.main_rotor_rpm > 1.0 {
+        (state.main_rotor_rpm / 324.0 * 100.0) as f32
+    } else {
+        0.0
+    };
+    // Rotor reaction torque is in lbf·ft; 20,000 ft·lb is the nominal 100%.
+    let tq_pct = (state.torque_lbsft / 200.0) as f32;
+
+    let params = Ah64Params {
+        a: Vec4::new(
+            state.cas_kts as f32,
+            state.alt_ft as f32,
+            state.vs_fpm as f32,
+            if state.radar_alt_ft < 10_000.0 {
+                state.radar_alt_ft as f32
+            } else {
+                -1.0
+            },
+        ),
+        b: Vec4::new(
+            state.heading_deg as f32,
+            state.pitch_deg as f32,
+            state.roll_deg as f32,
+            (state.collective * 100.0) as f32,
+        ),
+        c: Vec4::new(
+            tq_pct,
+            nr_pct,
+            wrap180(state.track_deg - state.heading_deg) as f32,
+            (state.pitch_deg - state.flight_path_deg) as f32,
+        ),
+        d: Vec4::new(state.gs_kts as f32, state.g_norm as f32, 5.2, 0.0),
+        e: Vec4::new(
+            state.arcade as i32 as f32,
+            state.heli_hover_state as f32,
+            state.heli_balance as i32 as f32,
+            state.on_ground as i32 as f32,
+        ),
+        f: Vec4::ZERO,
+    };
+
+    if let Ok(node) = overlay.single() {
+        if let Some(mut mat) = materials.get_mut(&node.0) {
+            mat.params = params;
+        }
+    }
+}
+
+/// The AH-64D overlay lives in both the chase and cockpit views (the real
+/// aircraft has an IHADSS monocle, not a fixed combiner glass).
+fn sync_visibility_ah64(
+    state: Res<State<AppState>>,
+    sim: Res<Sim>,
+    shown: Res<HudShown>,
+    mut overlay: Query<&mut Node, With<Ah64Overlay>>,
+) {
+    let want = if *state.get() == AppState::Flying && sim.name == "ah1s" && shown.0 {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    for mut node in &mut overlay {
+        if node.display != want {
+            node.display = want;
+        }
+    }
 }
 
 #[cfg(test)]

@@ -16,18 +16,18 @@
 //!
 //! Run: `cargo run --example panel_calib`
 
-#[path = "../src/cloud_camera.rs"]
-mod cloud_camera;
 #[path = "../src/aircraft_profile.rs"]
 mod aircraft_profile;
-#[path = "../src/config.rs"]
-mod config;
-#[path = "../src/input.rs"]
-mod input;
 #[path = "../src/app_state.rs"]
 mod app_state;
 #[path = "../src/autopilot.rs"]
 mod autopilot;
+#[path = "../src/cloud_camera.rs"]
+mod cloud_camera;
+#[path = "../src/config.rs"]
+mod config;
+#[path = "../src/input.rs"]
+mod input;
 #[path = "../src/sim.rs"]
 mod sim;
 #[path = "../src/view.rs"]
@@ -111,12 +111,9 @@ fn dials() -> Vec<(String, f32, f32, f32, f32)> {
             }
             let p: Vec<&str> = line.split_whitespace().collect();
             if p.len() >= 5 {
-                if let (Ok(a), Ok(b), Ok(c), Ok(d)) = (
-                    p[1].parse(),
-                    p[2].parse(),
-                    p[3].parse(),
-                    p[4].parse(),
-                ) {
+                if let (Ok(a), Ok(b), Ok(c), Ok(d)) =
+                    (p[1].parse(), p[2].parse(), p[3].parse(), p[4].parse())
+                {
                     v.push((p[0].to_string(), a, b, c, d));
                 }
             }
@@ -162,9 +159,15 @@ fn shots(
             info!("raw screenshot -> /tmp/panel_calib_raw.png");
         }
         200 => {
-            let Ok((camera, cam_tf)) = cam.single() else { return };
-            let Ok((root_e, root_tf)) = root.single() else { return };
-            let Some(size) = camera.logical_viewport_size() else { return };
+            let Ok((camera, cam_tf)) = cam.single() else {
+                return;
+            };
+            let Ok((root_e, root_tf)) = root.single() else {
+                return;
+            };
+            let Some(size) = camera.logical_viewport_size() else {
+                return;
+            };
             let inv = root_tf.affine().inverse();
             let p_w = root_tf.transform_point(PANEL_POINT);
             let n_w = root_tf.rotation() * PANEL_NORMAL;
@@ -178,7 +181,9 @@ fn shots(
 
             for (name, fx, fy, rfx, rfy) in dials() {
                 let at = |x: f32, y: f32| -> Option<Vec3> {
-                    let ray = camera.viewport_to_world(cam_tf, Vec2::new(x * size.x, y * size.y)).ok()?;
+                    let ray = camera
+                        .viewport_to_world(cam_tf, Vec2::new(x * size.x, y * size.y))
+                        .ok()?;
                     hit_plane(ray, p_w, n_w).map(|h| inv.transform_point(h))
                 };
                 let (Some(anchor), Some(u), Some(v)) =
