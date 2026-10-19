@@ -311,6 +311,10 @@ pub struct AircraftState {
     pub vs_fpm: f64,
     /// Angle of attack (`aero/alpha-rad`), degrees — drives the F-22's wingtip
     /// vapor trails (`vapor.rs`), which feed with the wing's load.
+    ///
+    /// Note this is the FDM's raw reading: at a standstill it is `atan2` of
+    /// drift noise, so every consumer near rest must gate it on airspeed (the
+    /// chase camera does, see `buffet_weight`).
     pub alpha_deg: f64,
     /// Mach number (`velocities/mach`) — drives the transonic vapor cone.
     pub mach: f64,

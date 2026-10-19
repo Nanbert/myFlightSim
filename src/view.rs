@@ -1083,6 +1083,11 @@ const CAM_BANK_COUPLING: f32 = 0.25;
 /// so the view — shakes as dynamic pressure builds.
 const SHAKE0_KT: f32 = 120.0;
 const SHAKE1_KT: f32 = 420.0;
+/// Airspeed (kt) the buffet's angle-of-attack share gates on. Below this band
+/// the wing carries no load worth shaking over, and alpha is only drift noise.
+const AIRFLOW0_KT: f32 = 30.0;
+/// Airspeed (kt) where the alpha share is fully trusted.
+const AIRFLOW1_KT: f32 = 70.0;
 /// Peak buffet amplitude at full weight: metres of camera position and degrees
 /// of camera rotation. Small on purpose — a shake you notice, not one you fight.
 const SHAKE_POS_M: f32 = 0.30;
@@ -1279,9 +1284,20 @@ pub(crate) fn follow_camera(
 /// flow looks far rougher than the airspeed alone suggests), but capped below
 /// full so a slow high-alpha hold still reads as speed-related. Take the worse
 /// of the two: either one alone can shake the jet.
+///
+/// The alpha share is *gated on airflow*. Near a standstill the FDM's
+/// `aero/alpha` is `w.atan2(u)` of drift noise — a parked plane settling and
+/// creeping metres-millimetres-per-second flips the reading around ±90°/±180°
+/// and sweeps through the stall band, and the raw alpha term then eased the
+/// chase lens between its rest and boosted FOV for minutes: the C172's
+/// cold-start sit grew a slow zoom that came and went for no visible reason.
+/// The gate ramps in over the gentle-approach band (`AIRFLOW0_KT`..full by
+/// `AIRFLOW1_KT`) so a real low-speed stall still bites, while taxiing and
+/// parking — where the wing carries no load — can't.
 fn buffet_weight(cas_kts: f64, alpha_deg: f64) -> f32 {
     let speed01 = ((cas_kts as f32 - SHAKE0_KT) / (SHAKE1_KT - SHAKE0_KT)).clamp(0.0, 1.0);
-    let alpha01 = (((alpha_deg as f32) - 12.0) / 18.0).clamp(0.0, 1.0) * 0.6;
+    let airflow01 = ((cas_kts as f32 - AIRFLOW0_KT) / (AIRFLOW1_KT - AIRFLOW0_KT)).clamp(0.0, 1.0);
+    let alpha01 = (((alpha_deg as f32) - 12.0) / 18.0).clamp(0.0, 1.0) * 0.6 * airflow01;
     speed01.max(alpha01)
 }
 
@@ -1794,8 +1810,10 @@ mod tests {
 
     #[test]
     fn buffet_rises_with_angle_of_attack_but_below_full() {
-        // A slow, high-alpha hold: no speed ramp, but the airframe is still busy.
-        let slow_high_alpha = buffet_weight(0.0, 30.0);
+        // A slow, high-alpha hold (jet-fighter stall speeds): the airspeed ramp
+        // is barely moving, but the airflow gate is fully open, so the
+        // airframe reads as busy anyway.
+        let slow_high_alpha = buffet_weight(160.0, 30.0);
         assert!(slow_high_alpha > 0.0);
         assert!(
             slow_high_alpha < 0.7,
@@ -1805,6 +1823,20 @@ mod tests {
         assert_eq!(buffet_weight(100.0, 10.0), 0.0);
         // Speed still wins when it's the worse of the two.
         assert_eq!(buffet_weight(SHAKE1_KT as f64, 30.0), 1.0);
+    }
+
+    #[test]
+    fn parked_alpha_noise_cannot_breathe_the_lens() {
+        // The regressed cold-start sit: the parked C172 reports ±90-180° of
+        // bogus alpha while creeping a few centimetres a second. No airflow,
+        // no lens movement — the FOV must rest at its authored angle even with
+        // the wildest alpha readings drifting through the stall band.
+        assert_eq!(buffet_weight(0.05, 170.0), 0.0);
+        assert_eq!(buffet_weight(0.05, -173.9), 0.0);
+        // Taxiing stays silent too: the wing still carries no load at 25 kt.
+        assert_eq!(buffet_weight(25.0, 90.0), 0.0);
+        // A real stall just after the gate's lower edge reads through.
+        assert!(buffet_weight(40.0, 30.0) > 0.0);
     }
 
     #[test]
