@@ -45,7 +45,7 @@ struct Touchdown {
 }
 
 #[derive(Resource, Default)]
-struct LandingState {
+pub(crate) struct LandingState {
     was_ground: bool,
     /// Unbroken seconds of *real* air time (weight-on-wheels false and the
     /// vehicle actually moving over the ground) since leaving the runway. The
@@ -59,6 +59,8 @@ struct LandingState {
     bounces: u32,
     report_until: f32,
     best: Option<u32>,
+    /// The last graded landing score, for the hop ledger to read.
+    pub(crate) last: Option<u32>,
     vs_smooth: f64,
 }
 
@@ -218,6 +220,7 @@ fn update_landing(
             if state.best.map_or(true, |b| score > b) {
                 state.best = Some(score);
             }
+            state.last = Some(score);
             text.0 = format!(
                 "LANDING  MYFS RWY {}\n\
                  RATE    {:>5.0} fpm\n\
@@ -328,8 +331,9 @@ fn score(td: Touchdown, bounces: u32) -> (u32, &'static str) {
 
 /// Approach reference speed the jet should carry over the fence, scheduled on
 /// the flap handle (the PFD's VR line uses the same schedule): full boards
-/// touch down under 120, a no-flap approach over the water wants ~145.
-fn vref(flap_norm: f64) -> f64 {
+/// touch down under 120, a no-flap approach over the water wants ~145. The
+/// stability gate grades the 1000 ft gate against this too.
+pub(crate) fn vref(flap_norm: f64) -> f64 {
     (145.0 - 25.0 * flap_norm).clamp(118.0, 145.0)
 }
 

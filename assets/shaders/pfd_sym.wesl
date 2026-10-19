@@ -85,6 +85,7 @@ const CH_F: u32 = 15u;
 const CH_G: u32 = 16u;
 const CH_H: u32 = 17u;
 const CH_I: u32 = 18u;
+const CH_K: u32 = 20u;
 const CH_L: u32 = 21u;
 const CH_M: u32 = 22u;
 const CH_N: u32 = 23u;

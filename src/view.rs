@@ -1327,7 +1327,10 @@ fn reset_camera_feel(
 /// The buffet is a deterministic sum of sines — no state, the same every run —
 /// and rises with dynamic pressure and with angle of attack, the two things that
 /// actually shake an airframe. It is squared so the view stays calm in cruise
-/// and comes alive only as the jet gets busy.
+/// and comes alive only as the jet gets busy. The shake belongs to the F-22
+/// alone: a fighter riding high q *should* rattle, but the airliner and light
+/// planes fly smooth air — on them the feel is the wider lens and the blur
+/// only, no wobble.
 ///
 /// This is all a chase-camera trick. In the cockpit the pilot's eye is pinned to
 /// the airframe and the lens is the eye, so the view gets none of it: the panel
@@ -1336,6 +1339,7 @@ fn reset_camera_feel(
 fn camera_feel(
     time: Res<Time>,
     state: Res<AircraftState>,
+    sim: Res<Sim>,
     ui: Res<Ui>,
     tune: Res<CockpitTune>,
     mut q: Query<
@@ -1361,21 +1365,23 @@ fn camera_feel(
     let now = time.elapsed_secs();
 
     let feel = buffet_weight(state.cas_kts, state.alpha_deg);
-    let amp = feel * feel;
 
-    // Three incommensurate frequencies per axis, seeded apart, so the shake
-    // never repeats on a visible beat. 2–6 Hz: buffet, not electrical noise
-    // (which would alias badly at 60 fps).
-    let noise = |seed: f32| {
-        (now * 12.9 + seed).sin() * 0.55
-            + (now * 23.3 + seed * 1.7).sin() * 0.30
-            + (now * 37.1 + seed * 2.3).sin() * 0.15
-    };
-
-    t.translation += Vec3::new(noise(0.0), noise(11.3), noise(21.7)) * (SHAKE_POS_M * amp);
-    let rot = Vec3::new(noise(31.1), noise(41.9), noise(51.7)) * (SHAKE_ROT_DEG.to_radians() * amp);
-    // `YXZ` takes (yaw, pitch, roll).
-    t.rotation *= Quat::from_euler(EulerRot::YXZ, rot.y, rot.x, rot.z);
+    if aircraft_profile::normalized(&sim.name) == "f22" {
+        let amp = feel * feel;
+        // Three incommensurate frequencies per axis, seeded apart, so the shake
+        // never repeats on a visible beat. 2–6 Hz: buffet, not electrical noise
+        // (which would alias badly at 60 fps).
+        let noise = |seed: f32| {
+            (now * 12.9 + seed).sin() * 0.55
+                + (now * 23.3 + seed * 1.7).sin() * 0.30
+                + (now * 37.1 + seed * 2.3).sin() * 0.15
+        };
+        t.translation += Vec3::new(noise(0.0), noise(11.3), noise(21.7)) * (SHAKE_POS_M * amp);
+        let rot =
+            Vec3::new(noise(31.1), noise(41.9), noise(51.7)) * (SHAKE_ROT_DEG.to_radians() * amp);
+        // `YXZ` takes (yaw, pitch, roll).
+        t.rotation *= Quat::from_euler(EulerRot::YXZ, rot.y, rot.x, rot.z);
+    }
 
     if let Projection::Perspective(p) = &mut *projection {
         let want = std::f32::consts::FRAC_PI_4 + FOV_BOOST_DEG.to_radians() * feel;

@@ -498,6 +498,19 @@ fn b737(keymap: &Keymap) -> Vec<String> {
     p.line("  4. Y gives an airborne trimmed start at 3000 ft / 110 kt if you");
     p.line("     want to practise the A/P without a takeoff.");
 
+    p.heading("CHECKLIST PANEL (GAME)");
+    p.line("  The bottom-left panel ticks itself off as you fly: flaps 5 and");
+    p.line("  full throttle on the ground, then positive rate, gear up and");
+    p.line("  flaps up in the climb. There is nothing to click - it reads the");
+    p.line("  airframe directly, and a touch-and-go rolls the ground card");
+    p.line("  back open by itself.");
+    p.line("  Leaving the ground with the roll established another card");
+    p.line("  grades the takeoff: liftoff speed against the PFD's VR line,");
+    p.line("  the rotation attitude, bank, and how fast the gear came up.");
+    p.line("  Descending through 1000 ft AAL a stability gate counts the");
+    p.line("  approach setup: gear down, flaps 15, inside Vref + 25 and a");
+    p.line("  gentle sink. UNSTABLE names what to fix before the fence.");
+
     p.heading("REAL 737 PROCEDURE (PUBLIC INFO)");
     p.line("  Preflight: walk-around, fuel, oil, hydraulics, tires and");
     p.line("  brakes; FMC route, performance and takeoff data; trim.");

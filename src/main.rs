@@ -1,5 +1,6 @@
 mod aerodrome;
 mod aircraft_profile;
+mod approach;
 mod app_state;
 mod assist;
 mod autopilot;
@@ -10,6 +11,7 @@ mod config;
 mod controls;
 mod fx;
 mod gauge;
+mod hop;
 mod hud;
 mod ils;
 mod input;
@@ -23,6 +25,7 @@ mod pfd;
 mod sim;
 mod sky;
 mod taxi;
+mod takeoff;
 mod tutorial;
 mod vapor;
 mod view;
@@ -84,6 +87,9 @@ fn main() {
         .add_plugins(assist::AssistPlugin)
         .add_plugins(aerodrome::AerodromePlugin)
         .add_plugins(landing::LandingPlugin)
+        .add_plugins(takeoff::TakeoffPlugin)
+        .add_plugins(approach::ApproachPlugin)
+        .add_plugins(hop::HopPlugin)
         .add_plugins(checklist::ChecklistPlugin)
         .add_plugins(taxi::TaxiPlugin)
         .add_plugins(lights::LightsPlugin)
