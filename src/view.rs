@@ -204,6 +204,10 @@ fn cockpit_spec(name: &str) -> Option<ModelSpec> {
 
 /// Deflection at full command, radians (~20°).
 const MAX_DEFLECT: f32 = 0.35;
+/// How much of the aileron command the F-22's differential stabilators take.
+/// The real jet blends all-moving tail into roll; this is a visual share, not a
+/// flight-model term, so it is deliberately below the flaperons' full authority.
+const STAB_ROLL_SHARE: f32 = 0.65;
 /// Visual prop-spin rate per RPM. Tuned so cruise reads as a fast blur.
 const PROP_SPIN: f32 = 0.01;
 
@@ -996,6 +1000,11 @@ fn drive_surfaces(
     .rem_euclid(std::f32::consts::TAU);
     let main_rotor_phase = rig.main_rotor_phase;
     let tail_rotor_phase = rig.tail_rotor_phase;
+    // Differential stabilator: pitch and roll share the same all-moving tail.
+    // A positive aileron command (right roll) lifts the right tail surface and
+    // drops the left one, matching the flaperons.
+    let stab_l = (state.elevator as f32 + STAB_ROLL_SHARE * state.aileron as f32).clamp(-1.0, 1.0);
+    let stab_r = (state.elevator as f32 - STAB_ROLL_SHARE * state.aileron as f32).clamp(-1.0, 1.0);
     for (name, e, mut tf) in &mut q {
         let Some(base) = rig.rest.get(&e) else {
             continue;
@@ -1026,19 +1035,13 @@ fn drive_surfaces(
         // top of the bind pose is enough. The F-22's per-surface signs live in
         // the axis consts (see `F22_*`).
         let (axis, angle) = match name.as_str() {
-            // F-22 model-A pivots. Stabilators take the elevator command; the
-            // four flaperons take aileron (per-side sign already in the const,
+            // F-22 model-A pivots. Stabilators take pitch plus a share of roll
+            // (the real jet's differential tail); the four flaperons take the
+            // rest of the aileron command (per-side sign already in the const,
             // so left drops and right lifts for a positive roll); both v-tails
-            // take rudder. (The real jet also rolls with differential tail and
-            // vectors with TVC — neither is shown on the mesh.)
-            "Cube.043_66" => (
-                F22_STAB_L.0,
-                F22_STAB_L.1 * state.elevator as f32 * MAX_DEFLECT,
-            ),
-            "Cube.044_79" => (
-                F22_STAB_R.0,
-                F22_STAB_R.1 * state.elevator as f32 * MAX_DEFLECT,
-            ),
+            // take rudder. TVC is animated on the nozzles in `fx.rs`.
+            "Cube.043_66" => (F22_STAB_L.0, F22_STAB_L.1 * stab_l * MAX_DEFLECT),
+            "Cube.044_79" => (F22_STAB_R.0, F22_STAB_R.1 * stab_r * MAX_DEFLECT),
             "Empty.009_39" => (
                 F22_AIL_LI.0,
                 F22_AIL_LI.1 * state.aileron as f32 * MAX_DEFLECT,
@@ -1394,7 +1397,10 @@ fn camera_feel(
     let feel = buffet_weight(state.cas_kts, state.alpha_deg);
 
     if aircraft_profile::normalized(&sim.name) == "f22" {
-        let amp = feel * feel;
+        // High load adds an airframe tremor of its own; a hard pull at low
+        // speed shakes even when dynamic pressure alone is calm.
+        let load = ((state.g_norm as f32 - 6.0) / 3.0).clamp(0.0, 1.0);
+        let amp = (feel * feel).max(load * load);
         // Three incommensurate frequencies per axis, seeded apart, so the shake
         // never repeats on a visible beat. 2–6 Hz: buffet, not electrical noise
         // (which would alias badly at 60 fps).

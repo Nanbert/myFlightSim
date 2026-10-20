@@ -83,7 +83,11 @@ impl Plugin for FocusPlugin {
                 Update,
                 (update_focus, place_rings, sync_overlay)
                     .chain()
+                    // Same reason as `gauge::seat_panel`: project with this
+                    // frame's airframe pose, or the rings trail the panel by a
+                    // frame whenever the aircraft is moving.
                     .after(crate::view::follow_camera)
+                    .after(crate::view::sync_aircraft)
                     .run_if(in_state(AppState::Flying)),
             );
     }

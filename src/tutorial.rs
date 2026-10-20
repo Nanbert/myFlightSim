@@ -3,28 +3,27 @@
 //! Each page walks through the same three things: what the sim does today,
 //! what the real aircraft's procedure looks like, and which systems are not
 //! modelled yet (marked `TODO`). The game-key rows are generated from the
-//! aircraft's current [`Keymap`], so a rebind in SETTINGS shows up here too.
+//! aircraft's fixed profile in [`crate::aircraft_profile`].
 //!
 //! The built-in font is ASCII-only, so every string in this module has to stay
 //! ASCII. The long text is shown through a fixed-height window; `Up/Down`
 //! scroll one line and `PageUp/PageDown` one screen.
 
 use crate::aircraft_profile::{self, Action, ToggleAction};
-use crate::config::Keymap;
 use crate::input::Bindings;
 
 /// Body lines visible at once. Chosen so the page still fits a 720p window at
 /// the menu's 20 px font, with the header and padding.
 pub const ROWS: usize = 20;
 
-/// Highest valid scroll offset for `id` under the current `keymap`.
-pub fn max_scroll(id: &str, keymap: &Keymap) -> usize {
-    lines(id, keymap).len().saturating_sub(ROWS)
+/// Highest valid scroll offset for `id`.
+pub fn max_scroll(id: &str) -> usize {
+    lines(id).len().saturating_sub(ROWS)
 }
 
 /// Render the visible window of the aircraft's tutorial, with a page counter.
-pub fn render(id: &str, keymap: &Keymap, scroll: usize) -> String {
-    let lines = lines(id, keymap);
+pub fn render(id: &str, scroll: usize) -> String {
+    let lines = lines(id);
     let max = lines.len().saturating_sub(ROWS);
     let scroll = scroll.min(max);
     let first = if max == 0 { 1 } else { scroll / ROWS + 1 };
@@ -85,8 +84,8 @@ impl Page {
 
 // --- key lookup --------------------------------------------------------------
 
-/// The `pos` / `neg` key pair for one axis, ordered so the label reads
-/// naturally: e.g. pitch is `W (up) / S (down)`.
+/// The `pos` / `neg` key pair for one axis, labelled in command order: the
+/// positive key first, e.g. pitch is `S (down) / W (up)`.
 fn axis(b: &Bindings, action: Action, pos: &str, neg: &str) -> String {
     match b.list.iter().find(|x| x.action == action) {
         Some(x) => match x.neg {
@@ -111,8 +110,8 @@ fn toggle(b: &Bindings, action: ToggleAction) -> String {
 
 /// The four controls every fixed-wing profile shares, in reading order.
 fn fixed_wing_rows(p: &mut Page, b: &Bindings) {
-    p.row("Pitch", axis(b, Action::Elevator, "up", "down"));
-    p.row("Roll", axis(b, Action::Aileron, "left", "right"));
+    p.row("Pitch", axis(b, Action::Elevator, "down", "up"));
+    p.row("Roll", axis(b, Action::Aileron, "right", "left"));
     p.row("Yaw", axis(b, Action::Rudder, "left", "right"));
     p.row("Throttle", axis(b, Action::Throttle, "more", "less"));
     p.row("Pitch trim", axis(b, Action::PitchTrim, "down", "up"));
@@ -121,8 +120,8 @@ fn fixed_wing_rows(p: &mut Page, b: &Bindings) {
 }
 
 /// The rows every aircraft has after its type-specific controls. Spawns live
-/// in the menu now (lesson rows under the aircraft, map missions on the top
-/// row) — the fly-time relocate keys R/P/Y are gone.
+/// in the menu now (PLAY under the aircraft, the F-22's MISSIONS row) — the
+/// fly-time relocate keys R/P/Y are gone.
 fn common_tail_rows(p: &mut Page, b: &Bindings) {
     p.row("Re-trim", toggle(b, ToggleAction::Trim));
     p.row("Spawn states", "MENU (fixed)");
@@ -132,8 +131,8 @@ fn common_tail_rows(p: &mut Page, b: &Bindings) {
 
 // --- Cessna 172 --------------------------------------------------------------
 
-fn c172(keymap: &Keymap) -> Vec<String> {
-    let b = Bindings::for_aircraft("c172p", keymap);
+fn c172() -> Vec<String> {
+    let b = Bindings::for_aircraft("c172p");
     let mut p = Page::new();
 
     p.heading("GAME vs REAL");
@@ -143,7 +142,7 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  The Cessna has fixed gear and no autopilot, so there is no");
     p.line("  gear key and G does nothing.");
 
-    p.heading("GAME CONTROLS (your current keys)");
+    p.heading("GAME CONTROLS (fixed keys)");
     fixed_wing_rows(&mut p, &b);
     p.row("Starter crank", axis(&b, Action::Starter, "crank", ""));
     p.row("Master switch", toggle(&b, ToggleAction::Master));
@@ -307,21 +306,27 @@ fn c172(keymap: &Keymap) -> Vec<String> {
 
 // --- F-22 --------------------------------------------------------------------
 
-fn f22(keymap: &Keymap) -> Vec<String> {
-    let b = Bindings::for_aircraft("f22", keymap);
+fn f22() -> Vec<String> {
+    let b = Bindings::for_aircraft("f22");
     let mut p = Page::new();
 
     p.heading("GAME vs REAL");
     p.line("  The real F-22 is fly-by-wire; here you drive pitch, roll and");
     p.line("  yaw directly and the FDM enforces its own limits.");
-    p.line("  Realistic uses the normal F-22 aero and TVC model. Arcade");
-    p.line("  spools the burner faster, manages energy automatically and");
-    p.line("  is easier to handle. Choose the mode in SETTINGS.");
+    p.line("  FREE FLY uses the normal F-22 aero and TVC model. MISSIONS");
+    p.line("  fly the arcade jet: faster burner spool, automatic energy");
+    p.line("  management and the combat systems. There is no mode switch.");
 
-    p.heading("GAME CONTROLS (your current keys)");
+    p.heading("GAME CONTROLS (fixed keys)");
     fixed_wing_rows(&mut p, &b);
     p.row("Landing gear", toggle(&b, ToggleAction::Gear));
     p.row("Thrust vector", toggle(&b, ToggleAction::Tvc));
+    p.row("Lock / cycle target", toggle(&b, ToggleAction::CycleTarget));
+    p.row("Weapon select", toggle(&b, ToggleAction::CycleWeapon));
+    p.row("TSD range", toggle(&b, ToggleAction::RadarRange));
+    p.row("Fire missile", toggle(&b, ToggleAction::FireMissile));
+    p.row("Gun (hold)", toggle(&b, ToggleAction::FireGun));
+    p.row("Flares", toggle(&b, ToggleAction::Flares));
     common_tail_rows(&mut p, &b);
 
     p.heading("FIRST FLIGHT (GAME)");
@@ -329,15 +334,35 @@ fn f22(keymap: &Keymap) -> Vec<String> {
     p.line("     to idle, then taxi with short taps of Space.");
     p.line("  2. Takeoff: full Space, then hold W at about 150-160 kt to");
     p.line("     rotate. Press U to raise the gear once climbing.");
-    p.line("  3. Arcade mode manages the burner: straight flight spools it");
-    p.line("     to full, a hard pull drains it toward cruise. Tap Space");
-    p.line("     to top it up. In Realistic the lever stays where you set");
-    p.line("     it, so watch the speed.");
+    p.line("  3. FREE FLY gives you a plain throttle lever: it stays where");
+    p.line("     you set it, so watch the speed. In MISSIONS the arcade jet");
+    p.line("     manages the burner itself: straight flight spools it to");
+    p.line("     full, a hard pull drains it toward cruise, Space tops it up.");
     p.line("  4. J enables the 2D thrust-vectoring nozzles. TVC adds pitch");
     p.line("     authority at low speed and high angle of attack; it is");
     p.line("     not a roll or yaw control.");
-    p.line("  5. T re-trims for the current speed and altitude. Y respawns");
-    p.line("     airborne at the cruise condition if you get lost.");
+    p.line("  5. T re-trims for the current speed and altitude. Spawns live");
+    p.line("     in the menu: F-22 > FREE FLY or F-22 > MISSIONS.");
+
+    p.heading("AIR COMBAT (ARCADE, MISSIONS)");
+    p.line("  A mission map (F-22 > MISSIONS > ARCHIPELAGO / ALPINE) puts two");
+    p.line("  circling drones and one orange escort ahead of you. Tab locks");
+    p.line("  the nearest target in the nose cone and cycles to the next;");
+    p.line("  the locked box turns gold and shows the range. Enter launches");
+    p.line("  one of your two AIM-9s - the side bays open by themselves and");
+    p.line("  the missile leads the turn. Hold G for the gun, L pops flares.");
+    p.line("  K switches AIM-9 / AIM-120: the AIM-120 locks out to 18 km and");
+    p.line("  flies farther, but turns less. The box marks the selected store.");
+    p.line("  The corner TSD is heading-up (nose at the top); R cycles 10/20/40");
+    p.line("  km. Red dots are drones, orange the escort, gold your lock; the");
+    p.line("  locked contact also shows range, closure, heading and altitude.");
+    p.line("  The escort chases and fires IR missiles. Edge arrows point at");
+    p.line("  each inbound round and show its range: break hard or pop flares");
+    p.line("  to seduce it. With a locked target inside gun range, a ring");
+    p.line("  marks the bullets' lead point: put the nose cross on it. A hit");
+    p.line("  respawns you at the mission start with a fresh loadout; kills");
+    p.line("  and the wave survive. FREE FLY carries no weapons; enter");
+    p.line("  MISSIONS when you want the fight.");
 
     p.heading("REAL F-22 PROCEDURE (PUBLIC INFO)");
     p.line("  Preflight: walk-around, canopy, ejection seat, fuel and");
@@ -369,8 +394,8 @@ fn f22(keymap: &Keymap) -> Vec<String> {
 
 // --- AH-64D ------------------------------------------------------------------
 
-fn ah64(keymap: &Keymap) -> Vec<String> {
-    let b = Bindings::for_aircraft("ah1s", keymap);
+fn ah64() -> Vec<String> {
+    let b = Bindings::for_aircraft("ah1s");
     let mut p = Page::new();
 
     p.heading("GAME vs REAL");
@@ -379,7 +404,7 @@ fn ah64(keymap: &Keymap) -> Vec<String> {
     p.line("  Realistic uses the rotor model; Arcade adds hover and");
     p.line("  auto-balance helpers. Select the mode in SETTINGS.");
 
-    p.heading("GAME CONTROLS (your current keys)");
+    p.heading("GAME CONTROLS (fixed keys)");
     p.row("Cyclic pitch", axis(&b, Action::Elevator, "up", "down"));
     p.row("Cyclic roll", axis(&b, Action::Aileron, "left", "right"));
     p.row("Pedals", axis(&b, Action::Rudder, "left", "right"));
@@ -440,8 +465,8 @@ fn ah64(keymap: &Keymap) -> Vec<String> {
 
 // --- 737 ---------------------------------------------------------------------
 
-fn b737(keymap: &Keymap) -> Vec<String> {
-    let b = Bindings::for_aircraft("737", keymap);
+fn b737() -> Vec<String> {
+    let b = Bindings::for_aircraft("737");
     let mut p = Page::new();
 
     p.heading("GAME vs REAL");
@@ -449,7 +474,7 @@ fn b737(keymap: &Keymap) -> Vec<String> {
     p.line("  autothrottle. You start on the runway; the A/P can only");
     p.line("  engage airborne.");
 
-    p.heading("GAME CONTROLS (your current keys)");
+    p.heading("GAME CONTROLS (fixed keys)");
     fixed_wing_rows(&mut p, &b);
     p.row("Landing gear", toggle(&b, ToggleAction::Gear));
     p.row("Autopilot", toggle(&b, ToggleAction::Autopilot));
@@ -547,12 +572,12 @@ fn b737(keymap: &Keymap) -> Vec<String> {
     p.0
 }
 
-fn lines(id: &str, keymap: &Keymap) -> Vec<String> {
+fn lines(id: &str) -> Vec<String> {
     match aircraft_profile::normalized(id) {
-        "f22" => f22(keymap),
-        "ah1s" => ah64(keymap),
-        "737" => b737(keymap),
-        _ => c172(keymap),
+        "f22" => f22(),
+        "ah1s" => ah64(),
+        "737" => b737(),
+        _ => c172(),
     }
 }
 
@@ -567,7 +592,7 @@ mod tests {
     #[test]
     fn every_aircraft_page_covers_game_real_and_todo() {
         for id in ids() {
-            let text = render(id, &Keymap::default(), 0);
+            let text = render(id, 0);
             assert!(text.contains("GAME CONTROLS"), "{id} has no game keys");
             assert!(text.contains("REAL"), "{id} has no real procedure");
             assert!(text.contains("TODO"), "{id} has no TODO section");
@@ -577,7 +602,7 @@ mod tests {
     #[test]
     fn pages_are_ascii_and_fit_the_panel_width() {
         for id in ids() {
-            for line in lines(id, &Keymap::default()) {
+            for line in lines(id) {
                 assert!(line.is_ascii(), "non-ASCII in {id}: {line}");
                 assert!(
                     line.chars().count() <= 88,
@@ -591,18 +616,15 @@ mod tests {
     #[test]
     fn every_page_scrolls() {
         for id in ids() {
-            assert!(
-                max_scroll(id, &Keymap::default()) > 0,
-                "{id} tutorial fits on one screen"
-            );
+            assert!(max_scroll(id) > 0, "{id} tutorial fits on one screen");
         }
     }
 
     #[test]
     fn rendering_clamps_the_scroll_and_keeps_a_full_window() {
         for id in ids() {
-            let max = max_scroll(id, &Keymap::default());
-            let text = render(id, &Keymap::default(), usize::MAX);
+            let max = max_scroll(id);
+            let text = render(id, usize::MAX);
             // Header + page line + blank + ROWS body lines + blank + footer.
             assert_eq!(text.lines().count(), ROWS + 5);
             assert!(
@@ -615,22 +637,16 @@ mod tests {
     }
 
     #[test]
-    fn game_key_rows_follow_the_current_bindings() {
-        let mut keymap = Keymap::default();
-        keymap.set_axis(
-            Action::Elevator,
-            bevy::prelude::KeyCode::KeyK,
-            Some(bevy::prelude::KeyCode::KeyI),
-        );
-        let text = render("c172p", &keymap, 0);
-        assert!(text.contains("K (up) / I (down)"), "{text}");
+    fn game_key_rows_show_the_profile_defaults() {
+        let text = render("c172p", 0);
+        assert!(text.contains("S (down) / W (up)"), "{text}");
         // The F-22's throttle really is the space bar.
-        assert!(render("f22", &Keymap::default(), 0).contains("Space (more)"));
+        assert!(render("f22", 0).contains("Space (more)"));
     }
 
     #[test]
     fn helicopter_page_has_helicopter_controls() {
-        let text = render("ah1s", &Keymap::default(), 0);
+        let text = render("ah1s", 0);
         assert!(text.contains("Collective"));
         assert!(text.contains("Hover / VTOL"));
         assert!(text.contains("Rotor trim"));

@@ -33,6 +33,11 @@ struct HudParams {
     // downward shift applied to the layout so it centres on the glass. Unused
     // by the screen overlay, which lays out against the real viewport.
     f: vec4<f32>,
+    // Arcade combat stores: IR missiles, BVR missiles, gun rounds, flares.
+    // A negative IR count hides the block (no combat in this flight).
+    g: vec4<f32>,
+    // Kills, selected weapon (0 IR / 1 BVR), unused, unused.
+    h: vec4<f32>,
 };
 
 
@@ -144,12 +149,18 @@ const BANK_TICKS: array<f32, 11> = array<f32, 11>(
 );
 
 // Letter glyph ids used by the fixed labels.
+const CH_A: u32 = 10u;
+const CH_F: u32 = 15u;
 const CH_G: u32 = 16u;
+const CH_I: u32 = 18u;
 const CH_K: u32 = 20u;
+const CH_L: u32 = 21u;
 const CH_M: u32 = 22u;
+const CH_N: u32 = 23u;
 const CH_R: u32 = 27u;
 const CH_S: u32 = 28u;
 const CH_T: u32 = 29u;
+const CH_U: u32 = 30u;
 const CH_V: u32 = 31u;
 const CH_DOT: u32 = 36u;
 const CH_ALPHA: u32 = 42u;
@@ -323,6 +334,12 @@ fn sym(u: HudParams, p: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
     let wind_from = u.e.y;
     let wind_kt = u.e.z;
     let gear = u.e.w;
+    let ir = u.g.x;
+    let bvr = u.g.y;
+    let gun = u.g.z;
+    let flr = u.g.w;
+    let kills = u.h.x;
+    let sel = u.h.y;
 
     // Screen pixels per degree of pitch/offset.
     let ppd = S * 0.0155;
@@ -555,6 +572,58 @@ fn sym(u: HudParams, p: vec2<f32>, size: vec2<f32>) -> vec4<f32> {
     if (ralt >= 0.0) {
         bright = max(bright, glyph_at(p, vec2<f32>(rx, ry), ts, CH_R));
         bright = max(bright, draw_u(p, vec2<f32>(rvx + 6.0 * ts, ry), ts, ralt, 4));
+    }
+
+    // --- weapon stores (arcade combat only) --------------------------------
+    // Two compact rows below the flight path marker. The selected missile type
+    // is drawn bright, the other dim, so the 2- and 4-character labels read as
+    // one store line.
+    if (ir >= 0.0) {
+        let wx = c.x - 0.105 * S;
+        let wy = c.y + 0.300 * S;
+
+        var a9 = 0.0;
+        a9 = max(a9, glyph_at(p, vec2<f32>(wx, wy), ts, CH_A));
+        a9 = max(a9, glyph_at(p, vec2<f32>(wx + 6.0 * ts, wy), ts, 9u));
+        a9 = max(a9, draw_u(p, vec2<f32>(wx + 18.0 * ts, wy), ts, ir, 1));
+        if (sel < 0.5) {
+            bright = max(bright, a9);
+            bright = max(bright, box_outline(p, vec2<f32>(wx + 12.0 * ts, wy + 3.5 * ts), vec2<f32>(14.0 * ts, 5.0 * ts), 1.0));
+        } else {
+            dim = max(dim, a9);
+        }
+
+        let b1 = wx + 30.0 * ts;
+        var a120 = 0.0;
+        a120 = max(a120, glyph_at(p, vec2<f32>(b1, wy), ts, CH_A));
+        a120 = max(a120, glyph_at(p, vec2<f32>(b1 + 6.0 * ts, wy), ts, 1u));
+        a120 = max(a120, glyph_at(p, vec2<f32>(b1 + 12.0 * ts, wy), ts, 2u));
+        a120 = max(a120, glyph_at(p, vec2<f32>(b1 + 18.0 * ts, wy), ts, 0u));
+        a120 = max(a120, draw_u(p, vec2<f32>(b1 + 30.0 * ts, wy), ts, bvr, 1));
+        if (sel >= 0.5) {
+            bright = max(bright, a120);
+            bright = max(bright, box_outline(p, vec2<f32>(b1 + 18.0 * ts, wy + 3.5 * ts), vec2<f32>(20.0 * ts, 5.0 * ts), 1.0));
+        } else {
+            dim = max(dim, a120);
+        }
+
+        let wy2 = wy + lh;
+        bright = max(bright, glyph_at(p, vec2<f32>(wx, wy2), ts, CH_G));
+        bright = max(bright, glyph_at(p, vec2<f32>(wx + 6.0 * ts, wy2), ts, CH_U));
+        bright = max(bright, glyph_at(p, vec2<f32>(wx + 12.0 * ts, wy2), ts, CH_N));
+        bright = max(bright, draw_u(p, vec2<f32>(wx + 24.0 * ts, wy2), ts, gun, 3));
+
+        let f1 = wx + 46.0 * ts;
+        bright = max(bright, glyph_at(p, vec2<f32>(f1, wy2), ts, CH_F));
+        bright = max(bright, glyph_at(p, vec2<f32>(f1 + 6.0 * ts, wy2), ts, CH_L));
+        bright = max(bright, glyph_at(p, vec2<f32>(f1 + 12.0 * ts, wy2), ts, CH_R));
+        bright = max(bright, draw_u(p, vec2<f32>(f1 + 24.0 * ts, wy2), ts, flr, 1));
+
+        let k1 = f1 + 35.0 * ts;
+        bright = max(bright, glyph_at(p, vec2<f32>(k1, wy2), ts, CH_K));
+        bright = max(bright, glyph_at(p, vec2<f32>(k1 + 6.0 * ts, wy2), ts, CH_I));
+        bright = max(bright, glyph_at(p, vec2<f32>(k1 + 12.0 * ts, wy2), ts, CH_L));
+        bright = max(bright, draw_u(p, vec2<f32>(k1 + 24.0 * ts, wy2), ts, kills, 2));
     }
 
     let a = max(bright, dim * DIM_ALPHA);

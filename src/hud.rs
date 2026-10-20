@@ -47,6 +47,38 @@ struct HudParams {
     /// Combiner layout only: xy = virtual screen size, z = downward shift that
     /// centres the layout on the glass, w = unused.
     f: Vec4,
+    /// Arcade combat stores: IR missiles, BVR missiles, gun rounds, flares.
+    /// A negative IR count hides the block (no combat in this flight).
+    g: Vec4,
+    /// Kills, selected weapon (0 IR / 1 BVR), unused.
+    h: Vec4,
+}
+
+/// Arcade combat stores shown in the HUD's weapon block. `combat.rs` fills
+/// this each frame; a negative missile count hides the block (no fight).
+#[derive(Resource)]
+pub(crate) struct HudWeapons {
+    /// Sidewinder-class rounds; negative hides the whole stores block.
+    pub(crate) ir: i32,
+    pub(crate) bvr: i32,
+    /// 0 = IR selected, 1 = BVR.
+    pub(crate) selected: u32,
+    pub(crate) rounds: i32,
+    pub(crate) flares: i32,
+    pub(crate) kills: u32,
+}
+
+impl Default for HudWeapons {
+    fn default() -> Self {
+        HudWeapons {
+            ir: -1,
+            bvr: 0,
+            selected: 0,
+            rounds: 0,
+            flares: 0,
+            kills: 0,
+        }
+    }
 }
 
 /// Uniform for the AH-64D IHADSS overlay. Field order matches `Ah64Params` in
@@ -195,6 +227,7 @@ impl Plugin for HudPlugin {
         ))
         .init_resource::<HudShown>()
         .init_resource::<GlassTune>()
+        .init_resource::<HudWeapons>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -270,6 +303,7 @@ fn glass_layout() -> Vec4 {
 fn update(
     sim: Res<Sim>,
     state: Res<AircraftState>,
+    weapons: Res<HudWeapons>,
     mut materials: ResMut<Assets<HudMaterial>>,
     mut glass: ResMut<Assets<HudGlassMaterial>>,
     overlay: Query<&MaterialNode<HudMaterial>>,
@@ -317,6 +351,14 @@ fn update(
             state.gear_pos as f32,
         ),
         f: glass_layout(),
+        // Negative IR count hides the stores block outside an arcade fight.
+        g: Vec4::new(
+            weapons.ir as f32,
+            weapons.bvr as f32,
+            weapons.rounds as f32,
+            weapons.flares as f32,
+        ),
+        h: Vec4::new(weapons.kills as f32, weapons.selected as f32, 0.0, 0.0),
     };
 
     if let Ok(node) = overlay.single() {

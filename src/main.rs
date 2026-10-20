@@ -7,9 +7,11 @@ mod autopilot;
 mod checklist;
 mod cloud_camera;
 mod cockpit;
+mod combat;
 mod config;
 mod controls;
 mod fx;
+mod g_strain;
 mod gauge;
 mod hop;
 mod hud;
@@ -65,8 +67,8 @@ fn main() {
             autopilot::AutopilotPlugin,
             mcp_ui::McpUiPlugin,
             pfd::PfdPlugin,
-            // Before `InputPlugin`: it needs `GameConfig` to build the startup
-            // aircraft's bindings from the saved keymap.
+            // Before `InputPlugin`: it needs `GameConfig` for the startup
+            // aircraft's arcade setting.
             config::ConfigPlugin,
             input::InputPlugin,
             view::ViewPlugin,
@@ -79,6 +81,7 @@ fn main() {
             lens::LensPlugin,
             menu::MenuPlugin,
         ))
+        .add_plugins(g_strain::GStrainPlugin)
         // After the menu: it builds terrain for whatever mission
         // `start_flight` just launched. (A separate call: Bevy's plugin tuples
         // top out at 15.)
@@ -94,6 +97,7 @@ fn main() {
         .add_plugins(checklist::ChecklistPlugin)
         .add_plugins(taxi::TaxiPlugin)
         .add_plugins(mission::MissionPlugin)
+        .add_plugins(combat::CombatPlugin)
         .add_plugins(lights::LightsPlugin)
         .init_resource::<ShotTimer>()
         .add_systems(Update, auto_shot)

@@ -1,5 +1,5 @@
-// Rain on glass: a screen-space droplet post-process, on the lens in the
-// chase views and on the canopy in the cockpit.
+// Rain on the lens: a screen-space droplet post-process for the chase views.
+// The cockpit view removes the pass entirely (`src/lens.rs`).
 //
 // Port of the droplet field from *The Drive Home* by Martijn Steinrucken
 // (BigWings), shadertoy.com/view/MdfBRX. The original is a night-drive scene
@@ -22,12 +22,6 @@
 // (`intensity`) is supplied by `src/lens.rs`, which only feeds the film when
 // there is rain or condensing air to deposit.
 //
-// In the cockpit the field is anchored to the canopy rather than the screen:
-// `canopy` switches on a direction-based lookup (through the pilot's head
-// look), so turning the head reveals different droplets instead of dragging
-// the same screen-space film around. The effect is also faded out over the
-// instrument panel, which rain never reaches.
-//
 // License: *The Drive Home* is published under Shadertoy's default
 // CC BY-NC-SA 3.0 (non-commercial, share-alike) — resolve before shipping the
 // sim commercially. The Bevy plumbing around it (`src/lens.rs`) is original.
@@ -39,66 +33,15 @@ struct RainLens {
     phase: f32,
     flow: f32,
     rain_share: f32,
-    // 1 in the cockpit view: the droplet field is indexed by canopy direction
-    // rather than screen position, so it behaves like water on the glass around
-    // the pilot instead of on the camera lens.
-    canopy: f32,
-    // Cockpit head-look relative to the airframe (radians).
-    look_yaw: f32,
-    look_pitch: f32,
-    // 1 when the cockpit's real window outlines gate the film (C172, 737), 0
-    // for the plain screen-space fade (F-22).
-    glass: f32,
-    // Vertex count of each window slot, four slots per `vec4`.
-    glass_counts: array<vec4<f32>, 2>,
-    // Window outlines in airframe azimuth/elevation (radians): twelve vertices
-    // per slot, two per `vec4`.
-    glass_verts: array<vec4<f32>, 48>,
+    // `.x` = weather rain intensity, 0 (clear) .. 1 (downpour): heavier rain
+    // falls faster. `.yzw` pad the row; the droplet speed is also scattered
+    // per drop below.
+    rain_pad: vec4<f32>,
 };
 
 @group(0) @binding(0) var screenTexture: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 @group(0) @binding(2) var<uniform> settings: RainLens;
-
-const GLASS_VERTS: u32 = 12u;
-const GLASS_SLOTS: u32 = 8u;
-const GLASS_VECS: u32 = 6u;
-
-fn glass_vertex(first: u32, i: u32) -> vec2<f32> {
-    let v = settings.glass_verts[first + i / 2u];
-    return select(v.xy, v.zw, (i & 1u) == 1u);
-}
-
-fn seg_dist(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
-    let ab = b - a;
-    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-9), 0.0, 1.0);
-    return length(p - a - ab * t);
-}
-
-// Signed angular distance (radians) to one window outline: positive inside.
-// The even-odd crossing test allows concave outlines — the C172's windshield
-// dips at its lower corners, and its convex hull would swallow the panel.
-fn glass_margin(p: vec2<f32>, slot: u32) -> f32 {
-    let first = slot * GLASS_VECS;
-    let n = u32(settings.glass_counts[slot / 4u][slot % 4u] + 0.5);
-    var inside = false;
-    var dist = 1e6;
-    for (var i = 0u; i < n; i = i + 1u) {
-        let a = glass_vertex(first, i);
-        let b = glass_vertex(first, (i + 1u) % n);
-        if ((a.y > p.y) != (b.y > p.y)) {
-            let t = (p.y - a.y) / (b.y - a.y);
-            if (p.x < a.x + t * (b.x - a.x)) {
-                inside = !inside;
-            }
-        }
-        dist = min(dist, seg_dist(p, a, b));
-    }
-    if inside {
-        return dist;
-    }
-    return -dist;
-}
 
 // --- tuning ---
 const REFRACT: f32 = 0.8;     // drop lens strength (screen-UV offset scale)
@@ -107,6 +50,13 @@ const RIM_DARK: f32 = 0.008;  // how dark the shadowed (upper) rim goes
 const RIM_BODY: f32 = 0.003;  // faint sheen filling the body of a drop
 const VIGNETTE: f32 = 0.15;   // corner darkening
 const TAU: f32 = 6.2831853;
+// Whole-field drift, in screen heights per unit of `t`. Bevy's UV points down,
+// so a negative value sinks the film under gravity while a positive one streams
+// it up the glass in the slipstream. The original shader was a moving car's
+// windshield and used a positive constant even at rest; parked, that reads as
+// rain floating upward.
+const REST_SCROLL: f32 = -0.05;
+const FLOW_SCROLL: f32 = 0.80;
 
 // smoothstep that also accepts `a > b`: the droplet field relies on reversed
 // edges, which WGSL's builtin does not guarantee.
@@ -126,14 +76,25 @@ fn N31(p: f32) -> vec3<f32> {
     ));
 }
 
-// A drop's vertical slide over its life, plus its velocity (used to bulge the
-// drop where the water piles up as it accelerates).
-fn SawTooth(t: f32) -> f32 {
-    return cos(t + cos(t)) + sin(2.0 * t) * 0.2 + sin(4.0 * t) * 0.02;
+// A drop's vertical slide over its life. A true sawtooth: every drop travels
+// only downward (Bevy's UV y points down) and recycles at the top of its cell.
+// The original used an oscillating cosine, so half the drops climbed the glass
+// and the rain read as floating upward whenever the airframe was parked.
+// `rate` is the drop's own fall speed, scattered per cell in `GetDrops`, and
+// `phase` gives every cell its own place in the fall (a full cycle, so a
+// random rate cannot bunch the drops into a visible wave).
+const DROP_SLIDE_RATE: f32 = 2.0 / TAU;
+fn SawTooth(t: f32, rate: f32, phase: f32) -> f32 {
+    return 0.5 - fract(t * rate + phase);
 }
 
-fn DeltaSawTooth(t: f32) -> f32 {
-    return 0.4 * cos(2.0 * t) + 0.08 * cos(4.0 * t) - (1.0 - sin(t)) * sin(t + cos(t));
+// Weather rain-rate -> mean fall-speed multiplier. A drizzle crawls and a
+// storm drives the film down; the square keeps light rain clearly slower
+// instead of splitting the range linearly. (0.9 is the heaviest preset.)
+const RAIN_FALL_BASE: f32 = 0.35;
+const RAIN_FALL_GAIN: f32 = 3.9;
+fn rain_fall(rain: f32) -> f32 {
+    return RAIN_FALL_BASE + RAIN_FALL_GAIN * rain * rain;
 }
 
 // What one droplet layer contributes at a pixel: `offset` is where the water
@@ -167,21 +128,26 @@ fn GetDrops(uv_in: vec2<f32>, seed: f32, m: f32, time: f32, scroll: f32) -> Drop
     bd.y = bd.y * 4.0;
     bd.x = bd.x + (n.x - 0.5) * 0.6;
 
-    t = t + n.z * TAU;
-    let slide = SawTooth(t);
+    // Heavier rain falls faster. The hash scatters each cell's drop around
+    // that mean, so the field doesn't slide as one uniform sheet. `n.z` is a
+    // full-cycle phase offset, so the scattered rates stay evenly mixed.
+    let phase = n.z;
+    let speed = rain_fall(settings.rain_pad.x) * (0.6 + 0.8 * n.y);
+    let rate = DROP_SLIDE_RATE * speed;
+    let slide = SawTooth(t, rate, phase);
 
-    // The trail: beads left behind, sliding at a different rate to the drop.
+    // The trail: beads left behind, sliding at the drop's own rate.
     let ts = 1.5;
     let trailPos = vec2<f32>(
         bd.x * ts,
-        (fract(bd.y * ts * 2.0 - t * 2.0) - 0.5) * 0.5,
+        (fract(bd.y * ts * 2.0 - t * 2.0 * speed + phase) - 0.5) * 0.5,
     );
 
     // Slide the drop, then add its shape: the square term buckles the bottom
     // outward by its own speed, giving the classic teardrop silhouette.
     bd.y = bd.y + slide * 2.0;
     var dropShape = bd.x * bd.x;
-    dropShape = dropShape * DeltaSawTooth(t);
+    dropShape = dropShape * -rate;
     bd.y = bd.y + dropShape;
 
     let d = length(bd);
@@ -236,81 +202,27 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
 
     let t = settings.phase;
     let m = 0.0;
+    let fall = rain_fall(settings.rain_pad.x);
     // Dynamic pressure stretches each drop into a wake. A fixed screen length,
     // so the per-layer uv scale below is compensated in the shear passed down.
     let shear = 0.10 * settings.flow;
-    // How far the whole field streams per unit of `t`, in screen-heights. The
-    // rest value is the original windshield drift; the flow term is the
-    // slipstream. `PHASE_FLOW` in `lens.rs` already quickens `t` with q, so the
-    // two together make the film race at fighter speed instead of crawling.
-    let scroll = 0.05 + 0.8 * settings.flow;
+    // How far the whole field streams per unit of `t`, in screen-heights. At
+    // rest gravity draws the film down at the rain's own rate; the flow term is
+    // the slipstream, which pushes it up the glass. `PHASE_FLOW` in `lens.rs`
+    // already quickens `t` with q, so the two together make the film race at
+    // fighter speed instead of crawling.
+    let scroll = REST_SCROLL * fall + FLOW_SCROLL * settings.flow;
 
-    // Seed space. The chase views and menu treat the droplets as a lens
-    // effect: screen-space pattern coordinates. The cockpit treats them as
-    // water on the canopy: the screen ray is turned into the airframe frame
-    // through the pilot's head look and indexed by direction, so the drops stay
-    // put on the glass (and slide across the view) as the head turns.
-    var dropUv = vec2<f32>(0.0, 0.0);
-    var canopy_fade = 1.0;
-    if settings.canopy > 0.5 {
-        // Camera-space ray for this pixel. The cockpit camera is pinned to a
-        // 45° vertical FOV (`camera_feel` in `view.rs`), so tan(fov/2) is a
-        // constant here.
-        let tan_half = 0.41421356;
-        let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
-        let d_cam = normalize(vec3<f32>(
-            ndc.x * aspect * tan_half,
-            ndc.y * tan_half,
-            -1.0,
-        ));
-        // Airframe direction = R_y(yaw) * R_x(pitch) * camera direction.
-        let cp = cos(settings.look_pitch);
-        let sp = sin(settings.look_pitch);
-        let p = vec3<f32>(
-            d_cam.x,
-            d_cam.y * cp - d_cam.z * sp,
-            d_cam.y * sp + d_cam.z * cp,
-        );
-        let cy = cos(settings.look_yaw);
-        let sy = sin(settings.look_yaw);
-        let d = vec3<f32>(p.x * cy + p.z * sy, p.y, -p.x * sy + p.z * cy);
-
-        // Azimuth/ elevation around the canopy, in the same scale as the
-        // screen pattern so the drop sizes carry over.
-        let az = atan2(d.x, -d.z);
-        let el = asin(clamp(d.y, -1.0, 1.0));
-        dropUv = vec2<f32>(az, -el) * 1.45;
-
-        if settings.glass > 0.5 {
-            // Real window shapes, measured from the cockpit models: water
-            // only where the view ray passes through glass. The margin is a
-            // sine of the angle to the nearest window edge, so the fade is a
-            // narrow band around it (about half a degree).
-            var margin = -1.0;
-            for (var k = 0u; k < GLASS_SLOTS; k = k + 1u) {
-                if settings.glass_counts[k / 4u][k % 4u] >= 3.0 {
-                    margin = max(margin, glass_margin(vec2<f32>(az, el), k));
-                }
-            }
-            canopy_fade = S(-0.012, 0.010, margin);
-        } else {
-            // The F-22 has no measured windows: fade the film out toward the
-            // bottom of the view instead, keeping the panel dry.
-            canopy_fade = S(0.78, 0.55, in.uv.y);
-        }
-    } else {
-        // Centred and aspect-corrected screen space.
-        var uv = in.uv - vec2<f32>(0.5, 0.5);
-        uv.x = uv.x * aspect;
-
-        // The droplet pattern drifts and turns slowly, so it never sits static.
-        let ang = -((sin(t * 0.1) * 0.5 + 0.5) * 0.5);
-        let a = ang * ang;
-        let ca = cos(a);
-        let sa = sin(a);
-        dropUv = vec2<f32>(uv.x * ca + uv.y * sa, -uv.x * sa + uv.y * ca);
-        dropUv.x = dropUv.x + (-sin(t * 0.1)) * 0.5;
-    }
+    // Centred and aspect-corrected screen space. The droplet pattern drifts
+    // and turns slowly, so it never sits static.
+    var uv = in.uv - vec2<f32>(0.5, 0.5);
+    uv.x = uv.x * aspect;
+    let ang = -((sin(t * 0.1) * 0.5 + 0.5) * 0.5);
+    let a = ang * ang;
+    let ca = cos(a);
+    let sa = sin(a);
+    var dropUv = vec2<f32>(uv.x * ca + uv.y * sa, -uv.x * sa + uv.y * ca);
+    dropUv.x = dropUv.x + (-sin(t * 0.1)) * 0.5;
 
     // More water → more layers come up, from a thin mist to a downpour.
     // Condensation (low `rain_share`) only ever reaches the fine layers: it is
@@ -338,11 +250,6 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let nrm = d0.nrm * (d0.mask * l0)
         + d1.nrm * (d1.mask * l1)
         + d2.nrm * (d2.mask * l2);
-
-    // Keep the cockpit's instrument panel dry: fade the whole effect out
-    // toward the bottom of the view (1 in the chase views).
-    offs = offs * canopy_fade;
-    lens = lens * canopy_fade;
 
     // Refract: displace the screen sample by the drop offset. `offs` is in
     // aspect-corrected pattern space, so undo the x stretch before sampling.

@@ -1,21 +1,20 @@
-//! Persisted user settings: the global weather level and per-aircraft key
-//! overrides.
+//! Persisted user settings: weather/wind/time, per-aircraft assists and the
+//! AH-64D's arcade choice.
 //!
 //! Storage sits behind [`ConfigStore`] so the native build can write a file
 //! while a future browser (wasm) build supplies a `localStorage` sink; the rest
 //! of the app only ever talks to the trait. The format is hand-rolled text (no
 //! serde dependency), which keeps that wasm story simple.
 //!
-//! Only the keys a pilot has actually changed are stored, so a later change to
-//! a default in [`crate::aircraft_profile`] still reaches everyone who left that
-//! key alone.
+//! Key bindings are fixed in [`crate::aircraft_profile`], so the file never
+//! stores controls; sections left behind by older builds are ignored.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use bevy::prelude::*;
 
-use crate::aircraft_profile::{self, Action, ToggleAction};
+use crate::aircraft_profile;
 use crate::weather::Weather;
 
 /// The sink the config text comes from and goes to. Native uses [`FileStore`];
@@ -23,39 +22,6 @@ use crate::weather::Weather;
 pub trait ConfigStore: Send + Sync + 'static {
     fn load(&self) -> Option<String>;
     fn save(&self, text: &str);
-}
-
-/// One pilot's key overrides for a single aircraft. Empty entries mean "use the
-/// profile default".
-#[derive(Clone, Default, Debug, PartialEq)]
-pub struct Keymap {
-    axes: HashMap<Action, (KeyCode, Option<KeyCode>)>,
-    toggles: HashMap<ToggleAction, KeyCode>,
-}
-
-impl Keymap {
-    /// The overridden `(pos, neg)` pair for an axis, or `None` to use the
-    /// profile default.
-    pub fn axis(&self, action: Action) -> Option<(KeyCode, Option<KeyCode>)> {
-        self.axes.get(&action).copied()
-    }
-
-    pub fn set_axis(&mut self, action: Action, pos: KeyCode, neg: Option<KeyCode>) {
-        self.axes.insert(action, (pos, neg));
-    }
-
-    /// The overridden key for a toggle, or `None` to use the profile default.
-    pub fn toggle(&self, action: ToggleAction) -> Option<KeyCode> {
-        self.toggles.get(&action).copied()
-    }
-
-    pub fn set_toggle(&mut self, action: ToggleAction, key: KeyCode) {
-        self.toggles.insert(action, key);
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.axes.is_empty() && self.toggles.is_empty()
-    }
 }
 
 /// Keyboard assists for one aircraft. Both default to off; the C172 exposes
@@ -76,7 +42,6 @@ pub struct GameConfig {
     pub wind_level: usize,
     /// Index into [`crate::weather::TIME_LABELS`].
     pub time_level: usize,
-    keymaps: HashMap<String, Keymap>,
     assists: HashMap<String, AssistConfig>,
     /// Aircraft set to fly in arcade mode, by canonical id. An id is present iff
     /// arcade is on, so the realistic default is simply absence.
@@ -84,32 +49,20 @@ pub struct GameConfig {
 }
 
 impl GameConfig {
-    /// The keymap for an aircraft id (canonicalized), defaulting to "no
-    /// overrides".
-    pub fn keymap(&self, id: &str) -> Keymap {
-        self.keymaps
-            .get(aircraft_profile::normalized(id))
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// Mutable access to an aircraft's keymap, creating it if absent.
-    pub fn keymap_mut(&mut self, id: &str) -> &mut Keymap {
-        let id = aircraft_profile::normalized(id).to_owned();
-        self.keymaps.entry(id).or_default()
-    }
-
     /// Whether an aircraft flies arcade. Realistic (the default) unless the
-    /// pilot has switched it on.
+    /// pilot has switched it on. Aircraft without a switch (the F-22, whose
+    /// arcade path is mission-only) can never be arcade through this setting.
     pub fn arcade(&self, id: &str) -> bool {
-        self.arcade.contains(aircraft_profile::normalized(id))
+        let id = aircraft_profile::normalized(id);
+        aircraft_profile::profile(id).arcade_selectable && self.arcade.contains(id)
     }
 
     /// Turn an aircraft's arcade mode on or off, dropping the entry when off so
-    /// the default (realistic) is just absence.
+    /// the default (realistic) is just absence. A stale entry for an aircraft
+    /// that no longer offers the switch is ignored and dropped on the next save.
     pub fn set_arcade(&mut self, id: &str, on: bool) {
         let id = aircraft_profile::normalized(id).to_owned();
-        if on {
+        if on && aircraft_profile::profile(&id).arcade_selectable {
             self.arcade.insert(id);
         } else {
             self.arcade.remove(&id);
@@ -176,16 +129,15 @@ fn apply_weather(config: Res<GameConfig>, mut weather: ResMut<Weather>) {
 //
 //   weather = 2
 //
-//   [c172p]
-//   elevator = KeyS KeyW
-//   gear = KeyU
-//
 //   [arcade]
-//   f22 = 1
+//   ah1s = 1
 //
-// Action and toggle ids live in the same `[aircraft]` section because the two
-// id namespaces are disjoint. The one reserved section name is `arcade`, whose
-// keys are aircraft ids rather than controls.
+//   [c172p.assist]
+//   bank-hold = 1
+//
+// The reserved section names are `arcade` (aircraft ids) and `<id>.assist`
+// (the C172's keyboard assists). Any other section is a leftover keymap from
+// an older build and is ignored.
 
 /// The section header whose keys are aircraft ids, not control ids.
 const ARCADE_SECTION: &str = "arcade";
@@ -200,34 +152,6 @@ fn serialize(config: &GameConfig) -> String {
     let mut out = format!("weather = {}\n", config.weather_level);
     out.push_str(&format!("wind = {}\n", config.wind_level));
     out.push_str(&format!("time = {}\n", config.time_level));
-
-    let mut ids: Vec<&String> = config.keymaps.keys().collect();
-    ids.sort();
-    for id in ids {
-        let km = &config.keymaps[id];
-        if km.is_empty() {
-            continue;
-        }
-        out.push_str(&format!("\n[{id}]\n"));
-
-        // Sort so the file is stable (HashMap order is not).
-        let mut axes: Vec<(Action, (KeyCode, Option<KeyCode>))> =
-            km.axes.iter().map(|(a, v)| (*a, *v)).collect();
-        axes.sort_by_key(|(a, _)| a.id());
-        for (action, (pos, neg)) in axes {
-            match neg {
-                Some(neg) => out.push_str(&format!("{} = {pos:?} {neg:?}\n", action.id())),
-                None => out.push_str(&format!("{} = {pos:?}\n", action.id())),
-            }
-        }
-
-        let mut toggles: Vec<(ToggleAction, KeyCode)> =
-            km.toggles.iter().map(|(a, k)| (*a, *k)).collect();
-        toggles.sort_by_key(|(a, _)| a.id());
-        for (action, key) in toggles {
-            out.push_str(&format!("{} = {key:?}\n", action.id()));
-        }
-    }
 
     if !config.arcade.is_empty() {
         out.push_str(&format!("\n[{ARCADE_SECTION}]\n"));
@@ -307,19 +231,9 @@ fn parse(text: &str) -> GameConfig {
                     _ => {}
                 }
             }
-            Some(id) => {
-                let mut toks = value.split_whitespace();
-                let Some(k0) = toks.next().and_then(aircraft_profile::key_from_name) else {
-                    continue;
-                };
-                let neg = toks.next().and_then(aircraft_profile::key_from_name);
-                let km = config.keymap_mut(id);
-                if let Some(action) = Action::from_id(key) {
-                    km.set_axis(action, k0, neg);
-                } else if let Some(action) = ToggleAction::from_id(key) {
-                    km.set_toggle(action, k0);
-                }
-            }
+            // Any other section is a keymap from an older build; bindings are
+            // fixed now, so ignore it (the next save drops it).
+            Some(_) => {}
         }
     }
     config
@@ -379,24 +293,17 @@ impl ConfigStore for FileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aircraft_profile::{Action, ToggleAction};
 
     #[test]
     fn round_trips_through_the_text_format() {
         let mut config = GameConfig {
             weather_level: 2,
+            wind_level: 1,
+            time_level: 2,
             ..default()
         };
-        {
-            let km = config.keymap_mut("c172p");
-            km.set_axis(Action::Elevator, KeyCode::ArrowUp, Some(KeyCode::ArrowDown));
-            km.set_axis(Action::BrakeLeft, KeyCode::Space, None);
-            km.set_toggle(ToggleAction::Gear, KeyCode::KeyG);
-        }
-        {
-            let km = config.keymap_mut("f22");
-            km.set_toggle(ToggleAction::Tvc, KeyCode::KeyJ);
-        }
+        config.set_bank_hold("c172p", true);
+        config.set_arcade("ah1s", true);
 
         let text = serialize(&config);
         assert_eq!(parse(&text), config);
@@ -408,26 +315,40 @@ mod tests {
     #[test]
     fn arcade_mode_round_trips_per_aircraft() {
         let mut config = GameConfig::default();
-        config.set_arcade("f22", true);
+        config.set_arcade("ah1s", true);
         // Realistic is the default, so it is simply not stored.
         assert!(!config.arcade("c172p"));
-        assert!(config.arcade("f22"));
+        assert!(config.arcade("ah1s"));
 
         let text = serialize(&config);
         assert_eq!(parse(&text), config);
         assert_eq!(serialize(&parse(&text)), text);
-        assert!(parse(&text).arcade("f22"));
+        assert!(parse(&text).arcade("ah1s"));
 
         // Toggling off drops the entry, so the file has no stale section.
-        config.set_arcade("f22", false);
-        assert!(!config.arcade("f22"));
+        config.set_arcade("ah1s", false);
+        assert!(!config.arcade("ah1s"));
         assert!(!serialize(&config).contains("[arcade]"));
     }
 
     #[test]
+    fn the_f22_cannot_be_saved_into_arcade_mode() {
+        // Its arcade path is mission-only, so the setting is refused and a
+        // stale entry migrates away on the next save.
+        let mut config = GameConfig::default();
+        config.set_arcade("f22", true);
+        assert!(!config.arcade("f22"));
+        assert!(!serialize(&config).contains("f22"));
+
+        let stale = parse("[arcade]\nf22 = 1\n");
+        assert!(!stale.arcade("f22"));
+        assert!(!serialize(&stale).contains("f22"));
+    }
+
+    #[test]
     fn arcade_section_normalizes_the_aircraft_id() {
-        let cfg = parse("[arcade]\nb737 = 1\n");
-        assert!(cfg.arcade("737") && cfg.arcade("b737"));
+        let cfg = parse("[arcade]\nah64d = 1\n");
+        assert!(cfg.arcade("ah1s") && cfg.arcade("ah-64d"));
     }
 
     #[test]
@@ -470,32 +391,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_keys_and_junk_lines_are_ignored() {
-        let cfg = parse("weather = 1\n\n[737]\nnot-a-control = KeyA\nelevator = Nope KeyW\n");
+    fn legacy_keymap_sections_are_ignored() {
+        // Bindings are fixed now; an old `[aircraft]` key section must not
+        // leak into the parsed settings, and the next save drops it.
+        let cfg = parse("weather = 1\n\n[737]\ngear = KeyU\nelevator = KeyS KeyW\n");
         assert_eq!(cfg.weather_level, 1);
-        // The bogus axis line is dropped (unknown key name), so nothing stored
-        // beyond the section itself.
-        assert!(cfg.keymap("737").axis(Action::Elevator).is_none());
-    }
-
-    #[test]
-    fn missing_neg_key_parses_as_a_single_slot() {
-        let cfg = parse("[737]\ngear = KeyU\n");
-        assert_eq!(
-            cfg.keymap("737").toggle(ToggleAction::Gear),
-            Some(KeyCode::KeyU)
-        );
-    }
-
-    #[test]
-    fn keymap_lookup_normalizes_the_id() {
-        let mut config = GameConfig::default();
-        config
-            .keymap_mut("b737")
-            .set_toggle(ToggleAction::Gear, KeyCode::KeyU);
-        assert_eq!(
-            config.keymap("737").toggle(ToggleAction::Gear),
-            Some(KeyCode::KeyU)
-        );
+        assert!(!serialize(&cfg).contains("[737]"));
     }
 }

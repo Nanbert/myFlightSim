@@ -78,8 +78,8 @@ pub enum MapId {
 
 pub const MAPS: [MapId; 2] = [MapId::Archipelago, MapId::Alpine];
 
-/// Menu labels, in `MAPS` order. The menu sub-row renders these strings, so
-/// they are the stable interface between the two modules.
+/// Menu labels, in `MAPS` order. The F-22's MISSIONS page renders these
+/// strings, so they are the stable interface between the two modules.
 pub const MAP_LABELS: [&str; MAPS.len()] = ["ARCHIPELAGO", "ALPINE"];
 
 impl MapId {

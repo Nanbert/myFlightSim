@@ -17,7 +17,7 @@ use bevy::prelude::*;
 use crate::aircraft_profile::{self, Action, Axis, ToggleAction, ToggleSpec};
 use crate::app_state::AppState;
 use crate::autopilot::{Autopilot, Mcp};
-use crate::config::{GameConfig, Keymap};
+use crate::config::GameConfig;
 
 /// How fast the arcade throttle spools up while its key is held, in normalized
 /// units per second. Faster than the realistic lever (0.6/s) so a tap of the
@@ -261,9 +261,8 @@ pub struct Bindings {
 }
 
 impl Bindings {
-    /// Build the runtime control set for `id` from its profile, applying the
-    /// pilot's saved key overrides (empty `keymap` = pure defaults).
-    pub fn for_aircraft(id: &str, keymap: &Keymap) -> Self {
+    /// Build the runtime control set for `id` from its profile's fixed bindings.
+    pub fn for_aircraft(id: &str) -> Self {
         let p = aircraft_profile::profile(id);
         let feel = if aircraft_profile::normalized(id) == "c172p" {
             Feel::C172
@@ -274,7 +273,7 @@ impl Bindings {
             .bindings
             .iter()
             .map(|s| {
-                let (pos, neg) = keymap.axis(s.action).unwrap_or((s.pos, s.neg));
+                let (pos, neg) = (s.pos, s.neg);
                 // The C172's keyboard feel also slows the axes down a little:
                 // the old 3/s was tuned for twitchy jets and helicopters.
                 let rate = if feel.fine_enabled {
@@ -313,7 +312,7 @@ impl Bindings {
             .iter()
             .map(|t| ToggleSpec {
                 action: t.action,
-                key: keymap.toggle(t.action).unwrap_or(t.key),
+                key: t.key,
             })
             .collect();
         Bindings {
@@ -323,10 +322,11 @@ impl Bindings {
         }
     }
 
-    /// Give the throttle the arcade boost feel for aircraft whose profile offers
-    /// arcade mode (the F-22): a tap spools it to full and it *stays* there, so
-    /// the burner doesn't need a key held down. The spool just runs faster than
-    /// the realistic lever. A no-op on every other aircraft.
+    /// Give the throttle the arcade boost feel for aircraft with an arcade
+    /// dynamics path (the F-22 in missions, the AH-64D when selected): a tap
+    /// spools it to full and it *stays* there, so the burner doesn't need a key
+    /// held down. The spool just runs faster than the realistic lever. A no-op
+    /// on every other aircraft.
     pub fn enable_arcade(&mut self, id: &str) {
         if !aircraft_profile::profile(id).has_arcade {
             return;
@@ -346,9 +346,8 @@ impl Plugin for InputPlugin {
         // `Sim` is inserted by `SimPlugin`, which is registered first, so the
         // startup aircraft is already known here.
         let name = app.world().resource::<crate::sim::Sim>().name.clone();
-        let keymap = app.world().resource::<GameConfig>().keymap(&name);
         let arcade = app.world().resource::<GameConfig>().arcade(&name);
-        let mut bindings = Bindings::for_aircraft(&name, &keymap);
+        let mut bindings = Bindings::for_aircraft(&name);
         if arcade {
             bindings.enable_arcade(&name);
         }
@@ -386,9 +385,9 @@ fn read_input(
     // toward cruise, where the burner dies. Space tops it up on demand. On the
     // ground it stays a plain lever, so the jet still taxis and lands. Roll is
     // ignored — a pure roll doesn't swing the flight path.
-    // Missions force arcade dynamics, whether or not the player saved the
-    // F-22's per-aircraft switch.
-    let arcade = config.arcade(&sim.name) || map.0.is_some();
+    // Missions force arcade dynamics. `config.arcade` only reports aircraft
+    // that still offer the switch; the F-22's arcade path is mission-only.
+    let arcade = map.0.is_some() || config.arcade(&sim.name);
     if arcade && sim.model.get("gear/wow") < 0.5 {
         let q = sim.model.get("velocities/q-rad_sec");
         let r = sim.model.get("velocities/r-rad_sec");
@@ -472,6 +471,14 @@ fn read_input(
             // C172 cold start: the master switch. Spark alone never fires an
             // engine — the starter crank (hold I) does the rest of the job.
             ToggleAction::Master => toggle_prop(&mut sim, "propulsion/ignition-enable"),
+            // Arcade combat keys are edge/held inputs consumed by `combat.rs`
+            // itself (it reads the same bindings, so rebinding still works).
+            ToggleAction::CycleTarget
+            | ToggleAction::CycleWeapon
+            | ToggleAction::RadarRange
+            | ToggleAction::FireMissile
+            | ToggleAction::FireGun
+            | ToggleAction::Flares => {}
         }
     }
 
@@ -544,7 +551,6 @@ fn ramp(value: &mut f64, target: f64, step: f64) {
 mod tests {
     use super::{adopt_trim, arcade_throttle, manoeuvre_intensity, ramp, Binding, Bindings, Feel};
     use crate::aircraft_profile::{Action, Axis};
-    use crate::config::Keymap;
     use bevy::prelude::{ButtonInput, KeyCode};
 
     fn cyclic() -> Binding {
@@ -580,7 +586,7 @@ mod tests {
         // `trim_heli` seats a zero-airspeed hover there.
         sim.reset_air(2000.0, 0.0);
 
-        let mut bindings = Bindings::for_aircraft("ah1s", &Keymap::default());
+        let mut bindings = Bindings::for_aircraft("ah1s");
         sim.trim_now();
         adopt_trim(&mut bindings, &sim);
 
@@ -616,7 +622,7 @@ mod tests {
         let vc_before = sim.model.get("velocities/vc-kts");
         assert!(vc_before > 5.0, "should be moving: {vc_before} kt");
 
-        let mut bindings = Bindings::for_aircraft("ah1s", &Keymap::default());
+        let mut bindings = Bindings::for_aircraft("ah1s");
         sim.trim_now(); // what the RotorTrim toggle does
         adopt_trim(&mut bindings, &sim);
         let vc_after = sim.model.get("velocities/vc-kts");
@@ -649,7 +655,7 @@ mod tests {
         std::env::set_var("FDM_BACKEND", "rust");
         let mut sim = crate::sim::Sim::new("ah1s");
         sim.reset_air(2000.0, 0.0);
-        let mut bindings = Bindings::for_aircraft("ah1s", &Keymap::default());
+        let mut bindings = Bindings::for_aircraft("ah1s");
         sim.trim_now();
         adopt_trim(&mut bindings, &sim);
 
@@ -737,7 +743,7 @@ mod tests {
     #[test]
     fn arcade_throttle_latches_at_full_and_stays() {
         use bevy::prelude::ButtonInput;
-        let mut bindings = Bindings::for_aircraft("f22", &Keymap::default());
+        let mut bindings = Bindings::for_aircraft("f22");
         bindings.enable_arcade("f22");
         let throttle = bindings
             .list
@@ -807,7 +813,7 @@ mod tests {
 
     #[test]
     fn arcade_throttle_is_left_alone_on_aircraft_without_it() {
-        let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+        let mut bindings = Bindings::for_aircraft("c172p");
         bindings.enable_arcade("c172p");
         let throttle = bindings
             .list
@@ -830,7 +836,7 @@ mod tests {
     #[test]
     fn c172_tap_is_a_small_fixed_step_at_any_frame_rate() {
         for fps in [30.0, 60.0, 144.0] {
-            let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+            let mut bindings = Bindings::for_aircraft("c172p");
             let feel = bindings.feel;
             let mut keys = ButtonInput::<KeyCode>::default();
 
@@ -851,7 +857,7 @@ mod tests {
 
     #[test]
     fn c172_release_lingers_before_springing_back() {
-        let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+        let mut bindings = Bindings::for_aircraft("c172p");
         let feel = bindings.feel;
         let mut keys = ButtonInput::<KeyCode>::default();
         let dt = 1.0 / 60.0;
@@ -886,7 +892,7 @@ mod tests {
 
     #[test]
     fn c172_fine_mode_scales_the_tap_step() {
-        let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+        let mut bindings = Bindings::for_aircraft("c172p");
         let feel = bindings.feel;
         let mut keys = ButtonInput::<KeyCode>::default();
 
@@ -905,7 +911,7 @@ mod tests {
 
     #[test]
     fn c172_holding_a_key_ramps_to_full() {
-        let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+        let mut bindings = Bindings::for_aircraft("c172p");
         let feel = bindings.feel;
         let mut keys = ButtonInput::<KeyCode>::default();
         let dt = 1.0 / 60.0;
@@ -923,7 +929,7 @@ mod tests {
 
     #[test]
     fn c172_brake_tap_still_bites_immediately() {
-        let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+        let mut bindings = Bindings::for_aircraft("c172p");
         let feel = bindings.feel;
         let mut keys = ButtonInput::<KeyCode>::default();
 
@@ -947,7 +953,7 @@ mod tests {
 
     #[test]
     fn c172_flap_keys_step_between_detents() {
-        let mut bindings = Bindings::for_aircraft("c172p", &Keymap::default());
+        let mut bindings = Bindings::for_aircraft("c172p");
         let feel = bindings.feel;
         let mut keys = ButtonInput::<KeyCode>::default();
         let flap_value = |b: &Bindings| axis_value(b, Action::Flap);

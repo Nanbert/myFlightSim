@@ -54,46 +54,6 @@ impl Action {
             Action::Starter => "starter",
         }
     }
-
-    /// Stable id for the config file and the rebind UI.
-    pub fn id(self) -> &'static str {
-        match self {
-            Action::Elevator => "elevator",
-            Action::Aileron => "aileron",
-            Action::Rudder => "rudder",
-            Action::Throttle => "throttle",
-            Action::Collective => "collective",
-            Action::PitchTrim => "pitch-trim",
-            Action::Flap => "flap",
-            Action::BrakeLeft => "brake-left",
-            Action::BrakeRight => "brake-right",
-            Action::Starter => "starter",
-        }
-    }
-
-    pub fn from_id(s: &str) -> Option<Action> {
-        Some(match s {
-            "elevator" => Action::Elevator,
-            "aileron" => Action::Aileron,
-            "rudder" => Action::Rudder,
-            "throttle" => Action::Throttle,
-            "collective" => Action::Collective,
-            "pitch-trim" => Action::PitchTrim,
-            "flap" => Action::Flap,
-            "brake-left" => Action::BrakeLeft,
-            "brake-right" => Action::BrakeRight,
-            "starter" => Action::Starter,
-            _ => return None,
-        })
-    }
-
-    /// Whether the control has a second (negative-direction) key slot.
-    pub fn is_paired(self) -> bool {
-        !matches!(
-            self,
-            Action::BrakeLeft | Action::BrakeRight | Action::Starter
-        )
-    }
 }
 
 /// A press-type (edge) control: a key that fires an action once when tapped.
@@ -140,6 +100,18 @@ pub enum ToggleAction {
     /// Defaults on at night; the key overrides for day ops or a night run
     /// with the lights off.
     Lights,
+    /// Combat: cycle/lock the bandit in the HUD cone (arcade F-22).
+    CycleTarget,
+    /// Combat: switch between the IR and BVR missile.
+    CycleWeapon,
+    /// Combat: cycle the TSD range (10 / 20 / 40 km).
+    RadarRange,
+    /// Combat: launch the selected missile at the locked bandit.
+    FireMissile,
+    /// Combat: fire the gun while held.
+    FireGun,
+    /// Combat: release flares (visual only until bandits shoot back).
+    Flares,
 }
 
 impl ToggleAction {
@@ -163,55 +135,13 @@ impl ToggleAction {
             ToggleAction::Approach => "APP",
             ToggleAction::Master => "master",
             ToggleAction::Lights => "lights",
+            ToggleAction::CycleTarget => "lock target",
+            ToggleAction::CycleWeapon => "weapon",
+            ToggleAction::RadarRange => "radar range",
+            ToggleAction::FireMissile => "fire missile",
+            ToggleAction::FireGun => "gun",
+            ToggleAction::Flares => "flares",
         }
-    }
-
-    /// Stable id for the config file and the rebind UI.
-    pub fn id(self) -> &'static str {
-        match self {
-            ToggleAction::Autopilot => "autopilot",
-            ToggleAction::Tvc => "tvc",
-            ToggleAction::Gear => "gear",
-            ToggleAction::Trim => "trim",
-            ToggleAction::RotorTrim => "rotor-trim",
-            ToggleAction::HeliHover => "heli-hover",
-            ToggleAction::HeliBalance => "heli-balance",
-            ToggleAction::HdgSel => "hdg-sel",
-            ToggleAction::AltHold => "alt-hold",
-            ToggleAction::VsMode => "vs",
-            ToggleAction::LvlChg => "lvl-chg",
-            ToggleAction::AutoThrottle => "autothrottle",
-            ToggleAction::SpeedMach => "speed-mach",
-            ToggleAction::SpeedBrake => "speedbrake",
-            ToggleAction::Reverse => "reverse",
-            ToggleAction::Approach => "approach",
-            ToggleAction::Master => "master",
-            ToggleAction::Lights => "lights",
-        }
-    }
-
-    pub fn from_id(s: &str) -> Option<ToggleAction> {
-        Some(match s {
-            "autopilot" => ToggleAction::Autopilot,
-            "tvc" => ToggleAction::Tvc,
-            "gear" => ToggleAction::Gear,
-            "trim" => ToggleAction::Trim,
-            "rotor-trim" => ToggleAction::RotorTrim,
-            "heli-hover" => ToggleAction::HeliHover,
-            "heli-balance" => ToggleAction::HeliBalance,
-            "hdg-sel" => ToggleAction::HdgSel,
-            "alt-hold" => ToggleAction::AltHold,
-            "vs" => ToggleAction::VsMode,
-            "lvl-chg" => ToggleAction::LvlChg,
-            "autothrottle" => ToggleAction::AutoThrottle,
-            "speed-mach" => ToggleAction::SpeedMach,
-            "speedbrake" => ToggleAction::SpeedBrake,
-            "reverse" => ToggleAction::Reverse,
-            "approach" => ToggleAction::Approach,
-            "master" => ToggleAction::Master,
-            "lights" => ToggleAction::Lights,
-            _ => return None,
-        })
     }
 }
 
@@ -245,9 +175,12 @@ pub struct ToggleSpec {
 /// An aircraft's complete control set.
 pub struct Profile {
     pub has_autopilot: bool,
-    /// Whether the aircraft offers the Realistic/Arcade flight-model switch on
-    /// its settings page. The F-22 and the AH-64D carry arcade dynamics paths.
+    /// Whether the aircraft has an arcade dynamics path at all. The F-22 uses
+    /// it for missions and the AH-64D for its simplified rotor flight.
     pub has_arcade: bool,
+    /// Whether the pilot can switch arcade mode on from the settings page. The
+    /// F-22's arcade path is mission-only, so it has no switch.
+    pub arcade_selectable: bool,
     pub bindings: Vec<BindingSpec>,
     pub toggles: Vec<ToggleSpec>,
 }
@@ -428,6 +361,8 @@ pub fn profile(id: &str) -> Profile {
         "f22" => Profile {
             has_autopilot: false,
             has_arcade: true,
+            // Arcade is mission-only: FREE FLY always uses the realistic model.
+            arcade_selectable: false,
             // The arcade boost lives on the space bar.
             bindings: core_bindings(KeyCode::Space),
             toggles: {
@@ -440,6 +375,32 @@ pub fn profile(id: &str) -> Profile {
                     action: ToggleAction::Tvc,
                     key: KeyCode::KeyJ,
                 });
+                // Arcade combat. Tab walks the targets in the HUD cone, Enter
+                // launches the locked IR missile, G holds the gun, L pops flares.
+                t.push(ToggleSpec {
+                    action: ToggleAction::CycleTarget,
+                    key: KeyCode::Tab,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::CycleWeapon,
+                    key: KeyCode::KeyK,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::RadarRange,
+                    key: KeyCode::KeyR,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::FireMissile,
+                    key: KeyCode::Enter,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::FireGun,
+                    key: KeyCode::KeyG,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::Flares,
+                    key: KeyCode::KeyL,
+                });
                 t
             },
         },
@@ -448,6 +409,7 @@ pub fn profile(id: &str) -> Profile {
             // AH-64D: realistic rotor physics or the simplified helicopter
             // arcade rules (auto hover + auto balance) selected in Settings.
             has_arcade: true,
+            arcade_selectable: true,
             // A helicopter: collective instead of throttle, no flaps, no wheels.
             bindings: vec![elevator(), aileron(), rudder(), collective(), pitch_trim()],
             toggles: vec![
@@ -472,6 +434,7 @@ pub fn profile(id: &str) -> Profile {
         "737" => Profile {
             has_autopilot: true,
             has_arcade: false,
+            arcade_selectable: false,
             bindings: core_bindings(KeyCode::ShiftLeft),
             toggles: {
                 let mut t = core_toggles();
@@ -532,6 +495,7 @@ pub fn profile(id: &str) -> Profile {
         _ => Profile {
             has_autopilot: false,
             has_arcade: false,
+            arcade_selectable: false,
             bindings: {
                 let mut b = core_bindings(KeyCode::ShiftLeft);
                 // The flap lever is a real four-detent lever: UP / 10° / 20° /
@@ -583,86 +547,6 @@ pub fn key_name(k: KeyCode) -> String {
     }
 }
 
-/// Whether a key can survive a round-trip through [`key_from_name`]. The rebind
-/// UI rejects anything else, so a captured key never silently reverts to its
-/// default on reload.
-pub fn is_bindable(k: KeyCode) -> bool {
-    key_from_name(&format!("{k:?}")) == Some(k)
-}
-
-/// Parse a key from the *serialized* form, which is the raw `KeyCode` debug
-/// name (`"KeyS"`, `"ShiftLeft"`, `"ArrowUp"`). Bevy's `KeyCode` has no
-/// `FromStr`, and the game only ever binds the keys listed here, so a small
-/// explicit table beats dragging in serde (which is also a wasm-hostile dep
-/// story). Returns `None` for anything unknown, letting callers fall back to
-/// the profile default.
-pub fn key_from_name(s: &str) -> Option<KeyCode> {
-    Some(match s {
-        "KeyA" => KeyCode::KeyA,
-        "KeyB" => KeyCode::KeyB,
-        "KeyC" => KeyCode::KeyC,
-        "KeyD" => KeyCode::KeyD,
-        "KeyE" => KeyCode::KeyE,
-        "KeyF" => KeyCode::KeyF,
-        "KeyG" => KeyCode::KeyG,
-        "KeyH" => KeyCode::KeyH,
-        "KeyI" => KeyCode::KeyI,
-        "KeyJ" => KeyCode::KeyJ,
-        "KeyK" => KeyCode::KeyK,
-        "KeyL" => KeyCode::KeyL,
-        "KeyM" => KeyCode::KeyM,
-        "KeyN" => KeyCode::KeyN,
-        "KeyO" => KeyCode::KeyO,
-        "KeyP" => KeyCode::KeyP,
-        "KeyQ" => KeyCode::KeyQ,
-        "KeyR" => KeyCode::KeyR,
-        "KeyS" => KeyCode::KeyS,
-        "KeyT" => KeyCode::KeyT,
-        "KeyU" => KeyCode::KeyU,
-        "KeyV" => KeyCode::KeyV,
-        "KeyW" => KeyCode::KeyW,
-        "KeyX" => KeyCode::KeyX,
-        "KeyY" => KeyCode::KeyY,
-        "KeyZ" => KeyCode::KeyZ,
-        "Digit0" => KeyCode::Digit0,
-        "Digit1" => KeyCode::Digit1,
-        "Digit2" => KeyCode::Digit2,
-        "Digit3" => KeyCode::Digit3,
-        "Digit4" => KeyCode::Digit4,
-        "Digit5" => KeyCode::Digit5,
-        "Digit6" => KeyCode::Digit6,
-        "Digit7" => KeyCode::Digit7,
-        "Digit8" => KeyCode::Digit8,
-        "Digit9" => KeyCode::Digit9,
-        "ShiftLeft" => KeyCode::ShiftLeft,
-        "ShiftRight" => KeyCode::ShiftRight,
-        "ControlLeft" => KeyCode::ControlLeft,
-        "ControlRight" => KeyCode::ControlRight,
-        "AltLeft" => KeyCode::AltLeft,
-        "AltRight" => KeyCode::AltRight,
-        "Space" => KeyCode::Space,
-        "Tab" => KeyCode::Tab,
-        "Enter" => KeyCode::Enter,
-        "Escape" => KeyCode::Escape,
-        "Backspace" => KeyCode::Backspace,
-        "ArrowUp" => KeyCode::ArrowUp,
-        "ArrowDown" => KeyCode::ArrowDown,
-        "ArrowLeft" => KeyCode::ArrowLeft,
-        "ArrowRight" => KeyCode::ArrowRight,
-        "Comma" => KeyCode::Comma,
-        "Period" => KeyCode::Period,
-        "Slash" => KeyCode::Slash,
-        "Semicolon" => KeyCode::Semicolon,
-        "Quote" => KeyCode::Quote,
-        "BracketLeft" => KeyCode::BracketLeft,
-        "BracketRight" => KeyCode::BracketRight,
-        "Backslash" => KeyCode::Backslash,
-        "Minus" => KeyCode::Minus,
-        "Equal" => KeyCode::Equal,
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -705,11 +589,17 @@ mod tests {
     }
 
     #[test]
-    fn the_f22_and_apache_offer_arcade_mode() {
+    fn only_the_apache_offers_an_arcade_switch() {
+        // Both carry an arcade dynamics path, but the F-22's is mission-only:
+        // its settings page has no flight-model row.
         assert!(profile("f22").has_arcade);
+        assert!(!profile("f22").arcade_selectable);
         assert!(profile("ah1s").has_arcade);
+        assert!(profile("ah1s").arcade_selectable);
         assert!(!profile("c172p").has_arcade);
+        assert!(!profile("c172p").arcade_selectable);
         assert!(!profile("737").has_arcade);
+        assert!(!profile("737").arcade_selectable);
     }
 
     #[test]
@@ -772,63 +662,5 @@ mod tests {
         assert_eq!(key_name(KeyCode::ShiftLeft), "Shift");
         assert_eq!(key_name(KeyCode::ControlLeft), "Ctrl");
         assert_eq!(key_name(KeyCode::Space), "Space");
-    }
-
-    #[test]
-    fn key_serialize_round_trips() {
-        // Every key the profiles use must survive name -> parse -> name.
-        for k in [
-            KeyCode::KeyS,
-            KeyCode::KeyW,
-            KeyCode::ShiftLeft,
-            KeyCode::ControlLeft,
-            KeyCode::Space,
-            KeyCode::KeyG,
-            KeyCode::ArrowUp,
-            KeyCode::Digit3,
-        ] {
-            let name = format!("{k:?}");
-            assert_eq!(key_from_name(&name), Some(k), "failed on {name}");
-        }
-        assert_eq!(key_from_name("NotAKey"), None);
-    }
-
-    #[test]
-    fn action_ids_round_trip() {
-        for a in [
-            Action::Elevator,
-            Action::Aileron,
-            Action::Rudder,
-            Action::Throttle,
-            Action::Collective,
-            Action::PitchTrim,
-            Action::Flap,
-            Action::BrakeLeft,
-            Action::BrakeRight,
-        ] {
-            assert_eq!(Action::from_id(a.id()), Some(a));
-        }
-    }
-
-    #[test]
-    fn toggle_ids_round_trip() {
-        for a in [
-            ToggleAction::Autopilot,
-            ToggleAction::Tvc,
-            ToggleAction::Gear,
-            ToggleAction::Trim,
-            ToggleAction::RotorTrim,
-            ToggleAction::HdgSel,
-            ToggleAction::AltHold,
-            ToggleAction::VsMode,
-            ToggleAction::LvlChg,
-            ToggleAction::AutoThrottle,
-            ToggleAction::SpeedMach,
-            ToggleAction::SpeedBrake,
-            ToggleAction::Reverse,
-            ToggleAction::Approach,
-        ] {
-            assert_eq!(ToggleAction::from_id(a.id()), Some(a));
-        }
     }
 }

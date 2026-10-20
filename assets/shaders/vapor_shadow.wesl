@@ -37,9 +37,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let cu = 0.42 - 0.24 * root_bias;
     let cv = 0.20;
     let d = length(vec2<f32>((uv.x - cu) * 1.1, (uv.y - cv) * 0.8));
-    let patch = 1.0 - smoothstep(0.12, 0.38, d / cov);
+    let root_cover = 1.0 - smoothstep(0.12, 0.38, d / cov);
     let n = noise2(uv * 6.0 + vec2<f32>(params.anim.y * 0.15, 0.0));
-    let a = params.anim.x * patch * (0.55 + 0.45 * n);
+    let a = params.anim.x * root_cover * (0.55 + 0.45 * n);
     if (a < 0.003) {
         discard;
     }

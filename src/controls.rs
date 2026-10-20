@@ -640,8 +640,7 @@ mod tests {
             elevator_trim: 0.25,
             ..default()
         });
-        let mut bindings =
-            crate::input::Bindings::for_aircraft("c172p", &crate::config::Keymap::default());
+        let mut bindings = crate::input::Bindings::for_aircraft("c172p");
         if let Some(b) = bindings
             .list
             .iter_mut()
