@@ -1,12 +1,12 @@
 mod aerodrome;
 mod aircraft_profile;
-mod approach;
 mod app_state;
+mod approach;
 mod assist;
 mod autopilot;
+mod checklist;
 mod cloud_camera;
 mod cockpit;
-mod checklist;
 mod config;
 mod controls;
 mod fx;
@@ -21,11 +21,12 @@ mod lights;
 mod map;
 mod mcp_ui;
 mod menu;
+mod mission;
 mod pfd;
 mod sim;
 mod sky;
-mod taxi;
 mod takeoff;
+mod taxi;
 mod tutorial;
 mod vapor;
 mod view;
@@ -92,6 +93,7 @@ fn main() {
         .add_plugins(hop::HopPlugin)
         .add_plugins(checklist::ChecklistPlugin)
         .add_plugins(taxi::TaxiPlugin)
+        .add_plugins(mission::MissionPlugin)
         .add_plugins(lights::LightsPlugin)
         .init_resource::<ShotTimer>()
         .add_systems(Update, auto_shot)

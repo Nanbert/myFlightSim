@@ -455,18 +455,6 @@ fn read_input(
                 ap.disengage();
                 adopt_trim(&mut bindings, &sim);
             }
-            ToggleAction::Cruise => {
-                // In a mission "cruise" means respawn airborne over the map;
-                // the default cruise point is inside the terrain.
-                if let Some(map) = map.0 {
-                    sim.model.set("fcs/arcade-enable", 1.0);
-                    sim.reset_air(map.spawn_alt_ft(), map.spawn_kts());
-                } else {
-                    sim.reset_cruise();
-                }
-                ap.disengage();
-                adopt_trim(&mut bindings, &sim);
-            }
             ToggleAction::RotorTrim => {
                 sim.trim_now();
                 adopt_trim(&mut bindings, &sim);
@@ -487,46 +475,8 @@ fn read_input(
         }
     }
 
-    // Global (not per-aircraft): R restarts airborne over a mission map, or
-    // parks on the runway otherwise.
-    if keys.just_pressed(KeyCode::KeyR) {
-        if let Some(map) = map.0 {
-            sim.model.set("fcs/arcade-enable", 1.0);
-            sim.reset_air(map.spawn_alt_ft(), map.spawn_kts());
-        } else {
-            sim.reset_ground();
-        }
-        let mut rebuilt = Bindings::for_aircraft(&sim.name, &config.keymap(&sim.name));
-        if arcade {
-            rebuilt.enable_arcade(&sim.name);
-        }
-        *bindings = rebuilt;
-        ap.reset();
-        mcp.reset();
-        // Parked means clean-config and engines smiling forward: stow the
-        // boards and disarm whatever reverse the previous roll left behind.
-        sim.model.set("fcs/speedbrake-cmd-norm", 0.0);
-        sim.model.set("fcs/reverse-cmd-norm", 0.0);
-    }
-
-    // Global: P respawns on the apron stand (home field only) — taxi school.
-    if keys.just_pressed(KeyCode::KeyP) {
-        if map.0.is_some() {
-            // Out on a mission map there is no stand; park where we are.
-            sim.reset_ground();
-        } else {
-            sim.reset_stand();
-            let mut rebuilt = Bindings::for_aircraft(&sim.name, &config.keymap(&sim.name));
-            if arcade {
-                rebuilt.enable_arcade(&sim.name);
-            }
-            *bindings = rebuilt;
-            ap.reset();
-            mcp.reset();
-            sim.model.set("fcs/speedbrake-cmd-norm", 0.0);
-            sim.model.set("fcs/reverse-cmd-norm", 0.0);
-        }
-    }
+    // Spawns live in the menu (lesson rows / map missions); there are no
+    // fly-time relocate keys.
 }
 
 /// Flip a 0/1 property (`1 - current`), used by the gear and TVC toggles.

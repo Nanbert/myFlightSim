@@ -18,6 +18,7 @@ use crate::autopilot::{Autopilot, Mcp};
 use crate::config::{self, ConfigSink, GameConfig, Keymap};
 use crate::input::Bindings;
 use crate::map::{self, MapId, PendingMission};
+use crate::mission::{Lesson, PendingLesson};
 use crate::sim::{RenderPose, Sim};
 use crate::tutorial;
 use crate::view::spawn_model_child;
@@ -113,12 +114,23 @@ enum Page {
     Tutorial,
     Info,
     Settings,
+    /// The start-state page the aircraft's PLAY row opens: free flight plus
+    /// the graded lesson missions.
+    Play,
     /// The global, aircraft-independent settings page (weather, ...).
     Global,
 }
 
-/// Rows on the global settings page. Weather, wind and the engine start mode.
-const SETTINGS_ROWS: usize = 4;
+/// Cursor within the PLAY start-state page.
+#[derive(Resource, Default)]
+struct PlayState {
+    row: usize,
+}
+
+/// Rows on the global settings page: weather, wind and time of day. The engine
+/// start state used to be here too; it now belongs to the lesson (M1/M4 start
+/// cold, everything else runs), so the row is gone.
+const SETTINGS_ROWS: usize = 3;
 
 /// Cursor within the global settings page.
 #[derive(Resource, Default)]
@@ -278,7 +290,9 @@ fn top_labels() -> [&'static str; TOP_COUNT] {
 }
 
 /// The sub-row for a top entry. The global SETTINGS/ABOUT entries have none —
-/// SETTINGS opens its own page (Enter), ABOUT opens straight away.
+/// SETTINGS opens its own page (Enter), ABOUT opens straight away. PLAY opens
+/// the start-state page (its lessons are the C172's graded missions); the
+/// other aircraft fly free only.
 fn sub_items(top: usize) -> &'static [&'static str] {
     match top {
         MISSIONS_TOP => &map::MAP_LABELS,
@@ -303,6 +317,7 @@ impl Plugin for MenuPlugin {
             .init_resource::<SettingsState>()
             .init_resource::<EditorState>()
             .init_resource::<TutorialState>()
+            .init_resource::<PlayState>()
             .add_systems(Startup, auto_start_mission)
             .add_systems(
                 OnEnter(AppState::Menu),
@@ -506,10 +521,12 @@ fn color_dim() -> Color {
 /// Repaint the labels and the panel from the current selection. Cheap, and the
 /// only reason one pooled row can serve both the aircraft (`PLAY/INFO/SETTINGS`)
 /// and SETTINGS (`COMING SOON`) sub-rows.
+#[allow(clippy::too_many_arguments)]
 fn update_menu_ui(
     sel: Res<MenuSelection>,
     weather: Res<Weather>,
     settings: Res<SettingsState>,
+    play: Res<PlayState>,
     config: Res<GameConfig>,
     editor: Res<EditorState>,
     tutorial_state: Res<TutorialState>,
@@ -566,7 +583,8 @@ fn update_menu_ui(
     }
     if let Ok(mut text) = ptext.single_mut() {
         text.0 = match sel.page {
-            Some(Page::Global) => global_settings_text(&weather, &settings, &config),
+            Some(Page::Global) => global_settings_text(&weather, &settings),
+            Some(Page::Play) => play_text(sel.aircraft_id(), &play),
             Some(Page::Settings) => editor_text(sel.aircraft_id(), &config, &editor),
             Some(Page::Tutorial) => tutorial::render(
                 sel.aircraft_id(),
@@ -646,11 +664,7 @@ fn aircraft_label(id: &str) -> &'static str {
 
 /// The global settings page: one row per setting, the selected one marked and
 /// its value in `< >` brackets.
-fn global_settings_text(
-    weather: &Weather,
-    settings: &SettingsState,
-    config: &GameConfig,
-) -> String {
+fn global_settings_text(weather: &Weather, settings: &SettingsState) -> String {
     let mut out = String::from("GLOBAL SETTINGS\n\n");
     for i in 0..SETTINGS_ROWS {
         let cursor = if i == settings.row { ">" } else { " " };
@@ -663,11 +677,7 @@ fn global_settings_text(
                 "{cursor} WIND 300DEG    < {} >\n",
                 weather.wind_label()
             )),
-            2 => {
-                let mode = if config.engine_cold { "COLD" } else { "AUTO" };
-                out.push_str(&format!("{cursor} ENGINE         < {mode} >\n"));
-            }
-            3 => out.push_str(&format!(
+            2 => out.push_str(&format!(
                 "{cursor} TIME OF DAY    < {} >\n",
                 weather.time_label()
             )),
@@ -675,6 +685,28 @@ fn global_settings_text(
         }
     }
     out.push_str("\n\n[Up/Down] select   [Left/Right] change\n[Enter] or [Esc] to close");
+    out
+}
+
+/// The PLAY page: the start-state list. Free flight for every aircraft; the
+/// graded lesson missions are the C172's, so other aircraft see only the free
+/// row (and a note).
+fn play_text(id: &str, play: &PlayState) -> String {
+    let cessna = aircraft_profile::normalized(id) == "c172p";
+    let rows: &[crate::mission::PlayRow] = if cessna {
+        &crate::mission::PLAY_MENU
+    } else {
+        &crate::mission::PLAY_MENU[..1]
+    };
+    let mut out = format!("{} - SELECT START\n\n", aircraft_label(id));
+    for (i, row) in rows.iter().enumerate() {
+        let cursor = if i == play.row { ">" } else { " " };
+        out.push_str(&format!("{cursor} {}\n     {}\n", row.label, row.hint));
+    }
+    if !cessna {
+        out.push_str("\nThe graded lessons fly the Cessna 172 only.\n");
+    }
+    out.push_str("\n[Up/Down] select   [Enter] fly   [Esc] close");
     out
 }
 
@@ -692,10 +724,9 @@ fn page_text(page: Page, sel: &MenuSelection) -> String {
         // The built-in font is ASCII-only, so no em dashes here (they render as
         // missing-glyph boxes).
         Page::Info => format!("{label} - INFO\n\nAircraft info coming soon.{close}"),
-        // Rendered by `tutorial::render`, `editor_text` and
-        // `global_settings_text`, which need live state; `page_text` never sees
-        // these.
-        Page::Tutorial | Page::Settings | Page::Global => String::new(),
+        // Rendered by `tutorial::render`, `editor_text`, `global_settings_text`
+        // and `play_text`, which need live state; `page_text` never sees these.
+        Page::Tutorial | Page::Settings | Page::Global | Page::Play => String::new(),
     }
 }
 
@@ -708,10 +739,11 @@ fn menu_input(
     mut settings: ResMut<SettingsState>,
     mut editor: ResMut<EditorState>,
     mut tutorial_state: ResMut<TutorialState>,
+    mut play: ResMut<PlayState>,
     mut config: ResMut<GameConfig>,
     mut pending: ResMut<PendingMission>,
+    mut lesson_pending: ResMut<PendingLesson>,
     sink: Res<ConfigSink>,
-    mut sim: ResMut<crate::sim::Sim>,
 ) {
     let enter = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
     let esc = keys.just_pressed(KeyCode::Escape);
@@ -721,9 +753,37 @@ fn menu_input(
     // read-only. Enter/Escape dismiss the read-only pages.
     if let Some(page) = sel.page {
         match page {
-            // The wrap arithmetic is a no-op while GLOBAL has its single row,
-            // but it stays general so adding a row is a one-line change.
-            #[allow(clippy::modulo_one)]
+            // The start-state page: free flight or a graded lesson. Lessons
+            // are C172-only, so other aircraft see just the free row.
+            Page::Play => {
+                let cessna = aircraft_profile::normalized(sel.aircraft_id()) == "c172p";
+                let n = if cessna {
+                    crate::mission::PLAY_MENU.len()
+                } else {
+                    1
+                };
+                play.row = play.row.min(n - 1);
+                if keys.just_pressed(KeyCode::ArrowUp) {
+                    play.row = (play.row + n - 1) % n;
+                }
+                if keys.just_pressed(KeyCode::ArrowDown) {
+                    play.row = (play.row + 1) % n;
+                }
+                if enter {
+                    let lesson = if cessna {
+                        crate::mission::PLAY_MENU[play.row].lesson
+                    } else {
+                        None
+                    };
+                    lesson_pending.0 = lesson;
+                    next.set(AppState::Flying);
+                    sel.page = None;
+                }
+                if esc {
+                    sel.page = None;
+                }
+            }
+            // GLOBAL is a settings list (Up/Down select, Left/Right change);
             Page::Global => {
                 if keys.just_pressed(KeyCode::ArrowUp) {
                     settings.row = (settings.row + SETTINGS_ROWS - 1) % SETTINGS_ROWS;
@@ -747,14 +807,6 @@ fn menu_input(
                             config::save(&config, &sink);
                         }
                         2 => {
-                            // ENGINE AUTO <-> COLD. Takes hold immediately on
-                            // the current flight (COLD = shut it down now and
-                            // run the checklist); persists for later spawns.
-                            config.engine_cold = !config.engine_cold;
-                            sim.set_engine_cold(config.engine_cold);
-                            config::save(&config, &sink);
-                        }
-                        3 => {
                             let level = weather.time_level as isize + dir;
                             config.time_level = weather.set_time_level(level);
                             config::save(&config, &sink);
@@ -919,7 +971,12 @@ fn menu_input(
                 }
             }
             Focus::Sub => match sub_items(sel.top).get(sel.sub).copied() {
-                Some("PLAY") => next.set(AppState::Flying),
+                Some("PLAY") => {
+                    // PLAY opens the start-state page: free flight plus the
+                    // C172's graded lesson missions.
+                    play.row = 0;
+                    sel.page = Some(Page::Play);
+                }
                 Some("TUTORIAL") => {
                     tutorial_state.scroll = 0;
                     sel.page = Some(Page::Tutorial);
@@ -931,6 +988,7 @@ fn menu_input(
                     editor.capturing = false;
                     editor.msg.clear();
                 }
+                // Map missions fly the arcade jet airborne.
                 Some(label) => {
                     if let Some(map) = MapId::from_label(label) {
                         pending.0 = Some(map);
@@ -1005,31 +1063,46 @@ fn bind_key(
     config::save(config, sink);
 }
 
-/// Fly the selected aircraft: rebuild the FDM only if the aircraft changed, then
-/// start parked on the runway with neutral controls.
+/// Fly the selected aircraft: rebuild the FDM only if the aircraft changed,
+/// then seat the spawn — a plain PLAY parks on the runway, a lesson mission
+/// moves to its own state (stand / threshold / final), each with the engine
+/// plan the lesson prescribes.
 fn start_flight(
     mut sim: ResMut<Sim>,
     mut ap: ResMut<Autopilot>,
     mut mcp: ResMut<Mcp>,
     mut bindings: ResMut<Bindings>,
     mut rp: ResMut<RenderPose>,
+    mut active: ResMut<crate::mission::ActiveLesson>,
     sel: Res<MenuSelection>,
     config: Res<GameConfig>,
     pending: Res<PendingMission>,
+    mut lesson_pending: ResMut<PendingLesson>,
 ) {
     let mission = pending.0;
-    // Missions fly the arcade F-22, airborne; every other entry uses the
-    // selected aircraft and starts parked. Missions always rebuild on the
-    // Rust engine, where arcade dynamics exist.
+    // Lesson missions are a C172 feature; a map mission wins regardless, and
+    // the pending lesson is consumed either way so it never leaks. The env
+    // hook `LESSON=taxi|takeoff|landing|final` (dev/screenshot harness) routes
+    // the same way.
+    let lesson = lesson_pending
+        .0
+        .take()
+        .or_else(|| dev_lesson())
+        .filter(|_| mission.is_none());
+    *active = crate::mission::ActiveLesson(lesson);
+    // Map missions fly the arcade F-22, airborne; every other entry uses the
+    // selected aircraft. Missions always rebuild on the Rust engine, where
+    // arcade dynamics exist.
     let id = mission.map_or_else(|| sel.aircraft_id(), |_| "f22");
     if mission.is_some() {
         *sim = Sim::new_arcade(id);
     } else if sim.name != id {
         *sim = Sim::new(id);
     }
-    // A fresh FDM knows nothing of the persisted ENGINE switch — the cold-start
-    // selection rides into every (re)spawn here. Reset paths honour it too.
-    sim.set_engine_cold(config.engine_cold);
+    // The cold-start plan is the mission's, not a global setting: M1/M4 start
+    // cold and dark, everything else runs. A fresh FDM starts with the flag
+    // unset, so only the cold lessons need this.
+    sim.set_engine_cold(active.0.map_or(false, |l| l.cold_start()));
     // Arcade is the mission's baseline, and the per-aircraft setting the
     // player saved decides for every other flight. The F-22 and the AH-64D
     // read the property; every other model ignores it.
@@ -1040,11 +1113,13 @@ fn start_flight(
         // Seat the IC with arcade dynamics already on, so the trim solver
         // seats the arcade jet rather than the realistic one.
         sim.reset_air(map.spawn_alt_ft(), map.spawn_kts());
-    } else if std::env::var("RAMP").is_ok_and(|v| v == "1") {
-        // Dev hook alongside AIRBORNE: the taxi-lesson spawn (`P`).
-        sim.reset_stand();
     } else {
-        sim.reset_ground();
+        match active.0 {
+            Some(Lesson::Taxi | Lesson::FullFlight) => sim.reset_stand(),
+            Some(Lesson::Takeoff) => sim.reset_ground(),
+            Some(Lesson::Landing) => sim.reset_final_c172(),
+            None => sim.reset_ground(),
+        }
     }
     // Development hooks for screenshots: start airborne and optionally engage
     // the AH-64D auto-hover, without having to drive the menu/keys.
@@ -1063,12 +1138,38 @@ fn start_flight(
     if arcade {
         controls.enable_arcade(id);
     }
+    // The landing lesson flies flaps 20: the app writes its bindings every
+    // step, so the flap lever starts at the approach detent and holds it
+    // against the FDM's trim (which zeroes the flap position on solve).
+    if matches!(active.0, Some(Lesson::Landing)) {
+        if let Some(b) = controls
+            .list
+            .iter_mut()
+            .find(|b| b.action == crate::aircraft_profile::Action::Flap)
+        {
+            b.value = 0.67;
+        }
+    }
     *bindings = controls;
     // Every flight starts under manual control with the MCP at its defaults;
     // the 737's autopilot can be engaged once airborne.
     ap.reset();
     mcp.reset();
     rp.init = false;
+}
+
+/// Development hook: `LESSON=taxi|takeoff|landing|final` parses to the matching
+/// lesson, so screenshots can boot straight into a spawn without the menu.
+fn dev_lesson() -> Option<Lesson> {
+    let key = std::env::var("LESSON").ok()?;
+    let key = key.to_ascii_uppercase();
+    match key.as_str() {
+        "TAXI" | "M1" => Some(Lesson::Taxi),
+        "TAKEOFF" | "M2" => Some(Lesson::Takeoff),
+        "LANDING" | "M3" => Some(Lesson::Landing),
+        "FINAL" | "FULL" | "M4" => Some(Lesson::FullFlight),
+        _ => None,
+    }
 }
 
 /// Escape while flying returns to the menu (the flight is discarded).
@@ -1148,14 +1249,42 @@ mod tests {
     }
 
     #[test]
+    fn the_play_page_lists_lessons_for_the_cessna_only() {
+        // Every aircraft's PLAY opens the SELECT START page; the graded lesson
+        // rows resolve only for the Cessna.
+        let mine = crate::mission::PLAY_MENU[3]
+            .lesson
+            .expect("M3 LANDING is a lesson");
+        assert_eq!(mine.label(), "M3 LANDING");
+        assert!(!mine.cold_start());
+        // And the free row starts nothing graded.
+        assert_eq!(crate::mission::PLAY_MENU[0].lesson, None);
+    }
+
+    #[test]
+    fn the_play_page_text_marks_the_cursor_and_hides_lessons_off_cessna() {
+        let out = play_text("c172p", &PlayState { row: 2 });
+        assert!(out.contains("SELECT START"), "{out}");
+        assert!(out.contains("M1 TAXI"), "{out}");
+        assert!(out.contains("M4 FINAL"), "{out}");
+        assert!(out.contains("> M2 TAKEOFF"), "cursor on row 2: {out}");
+        // Other aircraft see just free flight and a note.
+        let f22 = play_text("f22", &PlayState::default());
+        assert!(f22.contains("FREE FLIGHT"), "{f22}");
+        assert!(!f22.contains("M1 TAXI"), "{f22}");
+        assert!(f22.contains("Cessna 172 only"), "{f22}");
+    }
+
+    #[test]
     fn editor_lists_a_row_per_key_slot() {
         // c172p: 6 paired axes (12) + 2 brakes + 1 starter axis + 3 toggles.
-        assert_eq!(editor_slots("c172p", &Keymap::default()).len(), 19);
-        // ah1s: 5 paired axes (10) + 4 toggles (rotor-trim, trim, hover, balance).
+        assert_eq!(editor_slots("c172p", &Keymap::default()).len(), 18);
+        // ah1s: 5 paired axes (10) + 4 toggles (rotor-trim, trim, hover,
+        // balance).
         assert_eq!(editor_slots("ah1s", &Keymap::default()).len(), 14);
         // 737: c172p's slots + autopilot, gear, the six MCP toggles, the
         // speedbrake handle, the reverse thrust and APP.
-        assert_eq!(editor_slots("737", &Keymap::default()).len(), 27);
+        assert_eq!(editor_slots("737", &Keymap::default()).len(), 26);
     }
 
     #[test]

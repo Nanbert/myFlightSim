@@ -25,7 +25,9 @@ pub struct StartFlight;
 pub const DT: f64 = 1.0 / 120.0;
 
 /// Default cruise point for the airborne trimmed start.
+#[cfg(test)]
 const CRUISE_ALT_FT: f64 = 3000.0;
+#[cfg(test)]
 const CRUISE_VC_KT: f64 = 110.0;
 
 const FT_TO_M: f64 = 0.3048;
@@ -60,7 +62,7 @@ pub struct Sim {
     /// Smoothed rate of change of KCAS (kt/s), for the HUD's accel/decel caret.
     speed_trend: f64,
     last_cas_kts: f64,
-    /// ENGINE = COLD start mode (c172p only): resets hand the pilot a shut-down
+    /// Cold-and-dark state (c172p only): resets hand the pilot a shut-down
     /// aircraft — no spark, prop stopped — and the start flow is on them.
     pub engine_cold: bool,
 }
@@ -117,9 +119,10 @@ impl Sim {
     }
 
     /// Parked on the apron stand, at rest, nose west along the lead-in line.
-    /// The `P` ramp spawn: taxi school starts here, with the yellow paint (and
-    /// at night the blue edge lights) leading out to the runway. Engine state
-    /// follows the ENGINE setting, like every other ground spawn.
+    /// The M1 TAXI (and M4 FINAL) ramp spawn: taxi school starts here, with
+    /// the yellow paint (and at night the blue edge lights) leading out to the
+    /// runway. Engine state follows the lesson: cold for the taxi drill, warm
+    /// for any other spawn.
     ///
     /// Like `reset_final` this keeps the aerodrome's own anchor (app origin 0)
     /// — the stand coordinates are scenery-frame positions, and re-anchoring
@@ -209,7 +212,9 @@ impl Sim {
         self.last_cas_kts = self.model.get("velocities/vc-kts");
     }
 
-    /// Airborne trimmed start at the default cruise point.
+    /// Airborne trimmed start at the lesson/flight-test altitude, kept for
+    /// the reset tests as an airborne setup helper.
+    #[cfg(test)]
     pub fn reset_cruise(&mut self) {
         self.reset_air(CRUISE_ALT_FT, CRUISE_VC_KT);
     }
@@ -253,9 +258,37 @@ impl Sim {
         self.origin_lon = 0.0;
     }
 
-    /// Spawn the engine per the ENGINE setting: running (the tutorial flow's
-    /// 60 %-throttle hands-on start) or cold and dark when ENGINE = COLD —
-    /// spark off, prop stopped, and the start flow is the pilot's.
+    /// The C172 landing lesson's seat: on a 3° final for runway 36, 2 NM out
+    /// (~3.7 km) at 640 ft and 70 kt, flaps 20 — the numbers the landing
+    /// briefing asks for (65-70 kt on final). Anchored to the aerodrome like
+    /// `reset_final`, and well inside the ILS gate for the CDI needle.
+    pub fn reset_final_c172(&mut self) {
+        // 3704 m south of the origin: z_world = 140 (threshold) + 3704 (2 NM).
+        const GATE_M: f64 = 3704.0;
+        const ALT_FT: f64 = 640.0;
+        const VC_KTS: f64 = 70.0;
+        let dlat = -(GATE_M / 0.3048) / fdm::FT_PER_DEG_LAT;
+        self.model.set("ic/lat-gc-deg", dlat);
+        self.model.set("ic/long-gc-deg", 0.0);
+        self.model.set("ic/vc-kts", VC_KTS);
+        self.model.set("ic/h-sl-ft", ALT_FT);
+        self.model.set("ic/psi-true-deg", 0.0);
+        // Approach config first, so apply_ic seats the flap position and the
+        // trim solver sees the flapped airframe.
+        self.model.set("fcs/flap-cmd-norm", 0.67);
+        self.model.set("gear/gear-cmd-norm", 1.0);
+        self.model.apply_ic();
+        self.model.set("gear/gear-pos-norm", 1.0);
+        self.light_engine();
+        self.model.trim(VC_KTS, ALT_FT);
+        self.reset_hud_memory();
+        self.origin_lat = 0.0;
+        self.origin_lon = 0.0;
+    }
+
+    /// Spawn the engine per the flight's engine plan: running (the tutorial
+    /// flow's 60 %-throttle hands-on start) or cold and dark for the cold
+    /// lessons — spark off, prop stopped, and the start flow is the pilot's.
     pub fn light_engine(&mut self) {
         if self.engine_cold {
             self.model.set("propulsion/ignition-enable", 0.0);
@@ -264,10 +297,11 @@ impl Sim {
         }
     }
 
-    /// Flip the ENGINE = COLD setting for this flight. Only the piston C172
-    /// carries the cold-start flow; other aircraft ignore the switch entirely.
+    /// Set the cold-and-dark state of this flight. Only the piston C172
+    /// carries the cold-start flow; other aircraft ignore the switch. The
+    /// plan comes from the lesson (M1/M4 start cold), not a persisted setting.
     /// Turning COLD on while the engine is already running shuts it down now —
-    /// the toggle is an instruction to start flying from the checklist.
+    /// the switch is an instruction to start flying from the checklist.
     pub fn set_engine_cold(&mut self, cold: bool) {
         let piston = crate::aircraft_profile::normalized(&self.name) == "c172p"
             && self.model.get("propulsion/engine[0]/has-fuel") > 0.5;
@@ -455,15 +489,8 @@ impl Plugin for SimPlugin {
                     .chain()
                     .run_if(in_state(AppState::Flying)),
             )
-            .add_systems(Update, publish_state.run_if(in_state(AppState::Flying)))
-            .add_systems(Startup, apply_engine_cold_start);
+            .add_systems(Update, publish_state.run_if(in_state(AppState::Flying)));
     }
-}
-
-/// Startup: hand the boot aircraft the persisted ENGINE setting (other spawns
-/// re-read it through the menu path). Fluent after the Sim exists.
-pub fn apply_engine_cold_start(mut sim: ResMut<Sim>, config: Res<crate::config::GameConfig>) {
-    sim.set_engine_cold(config.engine_cold);
 }
 
 fn advance_fdm(
@@ -713,6 +740,37 @@ mod tests {
         // And the runway reset is *behind* both antennas, not on scale.
         sim.reset_ground();
         assert!(!crate::ils::compute(&sim).available);
+    }
+
+    #[test]
+    fn reset_final_c172_seats_inside_the_ils_gate() {
+        std::env::set_var("FDM_BACKEND", "rust");
+        let mut sim = Sim::new("c172p");
+        sim.reset_final_c172();
+        let ils = crate::ils::compute(&sim);
+        assert!(ils.available, "should be inside the approach gate {ils:?}");
+        assert!(ils.loc_dev_deg.abs() < 1.0, "{:?}", ils.loc_dev_deg);
+        // 640 ft against a beam 2 NM out (~640 ft): riding the beam.
+        assert!(ils.gs_dev_deg.abs() < 0.3, "{:?}", ils.gs_dev_deg);
+        assert!(
+            ils.dist_m > 3500.0 && ils.dist_m < 3900.0,
+            "{:?}",
+            ils.dist_m
+        );
+        // The lesson's approach speed, seated by the trim solver. (Flaps: the
+        // rust FDM's trim zeroes the flap position on solve, so the lesson's
+        // flaps-20 ride in the flap *binding*, which the app writes every
+        // step — see `menu::start_flight`.)
+        assert!(
+            (sim.model.get("velocities/vc-kts") - 70.0).abs() < 6.0,
+            "final speed {}",
+            sim.model.get("velocities/vc-kts")
+        );
+        // And a cold lesson at the stand keeps the world anchored: the runway
+        // is scenery, so the origin must not re-seat.
+        sim.reset_stand();
+        assert_eq!(sim.origin_lat, 0.0);
+        assert_eq!(sim.origin_lon, 0.0);
     }
 
     #[test]

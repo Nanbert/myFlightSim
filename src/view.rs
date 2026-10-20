@@ -1533,8 +1533,7 @@ fn control_hints(
     if c172 {
         entries.push("Space fine".to_string());
     }
-    entries.push("R reset".to_string());
-    entries.push("P ramp".to_string());
+    // Spawns live in the menu (lesson rows / map missions); no fly-time keys.
     entries.push("C view".to_string());
     if f22_hud {
         entries.push("O hud".to_string());
@@ -1567,6 +1566,7 @@ fn update_hud(
     bindings: Res<Bindings>,
     ap: Res<Autopilot>,
     map: Res<crate::map::ActiveMap>,
+    lesson: Res<crate::mission::ActiveLesson>,
     taxi: Res<crate::taxi::Taximeter>,
     mut q: Query<&mut Text, With<Hud>>,
 ) {
@@ -1605,10 +1605,14 @@ fn update_hud(
         ""
     };
 
-    // Mission name, or the home field for the default C172 scene.
+    // Mission name, or the home field for the default C172 scene. A lesson
+    // mission appends its tag so the player knows which spawn they re-flew.
     let place = match map.0 {
         Some(m) => format!("   [{}]", m.label()),
-        None if aircraft_profile::normalized(&sim.name) == "c172p" => "   [MYFS RWY 36]".to_owned(),
+        None if aircraft_profile::normalized(&sim.name) == "c172p" => match lesson.0 {
+            Some(lesson) => format!("   [MYFS RWY 36 | {}]", lesson.label()),
+            None => "   [MYFS RWY 36]".to_owned(),
+        },
         None => String::new(),
     };
 

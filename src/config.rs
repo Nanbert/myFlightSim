@@ -76,9 +76,6 @@ pub struct GameConfig {
     pub wind_level: usize,
     /// Index into [`crate::weather::TIME_LABELS`].
     pub time_level: usize,
-    /// ENGINE = COLD: spawn the C172 shut down and let the pilot run the start
-    /// flow (master M, crank I). Ignored by every other aircraft.
-    pub engine_cold: bool,
     keymaps: HashMap<String, Keymap>,
     assists: HashMap<String, AssistConfig>,
     /// Aircraft set to fly in arcade mode, by canonical id. An id is present iff
@@ -203,9 +200,6 @@ fn serialize(config: &GameConfig) -> String {
     let mut out = format!("weather = {}\n", config.weather_level);
     out.push_str(&format!("wind = {}\n", config.wind_level));
     out.push_str(&format!("time = {}\n", config.time_level));
-    if config.engine_cold {
-        out.push_str("engine_cold = 1\n");
-    }
 
     let mut ids: Vec<&String> = config.keymaps.keys().collect();
     ids.sort();
@@ -295,9 +289,8 @@ fn parse(text: &str) -> GameConfig {
                         config.time_level = n.min(crate::weather::TIME_LABELS.len() - 1);
                     }
                 }
-                if key == "engine_cold" {
-                    config.engine_cold = truthy(value);
-                }
+                // A leftover `engine_cold = 1` line from an older file is
+                // silently ignored: the start plan belongs to the lesson now.
             }
             Some(ARCADE_SECTION) => {
                 // `key` is an aircraft id here, not a control. Only a truthy

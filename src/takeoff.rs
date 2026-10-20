@@ -1,4 +1,4 @@
-//! Takeoff scoring for the 737 leaving the MYFS runway.
+//! Takeoff scoring for the 737 and the C172 leaving the MYFS runway.
 //!
 //! The mirror of `landing.rs`: the module watches the weight-on-wheels
 //! `true -> false` transition while the aircraft is already rolling (over
@@ -6,14 +6,17 @@
 //! frame, then watches the following seconds for the gear to come up. It
 //! grades:
 //!
-//! - **speed** of liftoff against the PFD's VR line (`pfd::vr_for_flaps`),
-//!   i.e. rotate on the bug and this is full marks;
+//! - **speed** of liftoff against the VR target — the 737 rotates on the
+//!   PFD's VR line (`pfd::vr_for_flaps`), the C172 on its book's 55-60 kt
+//!   (57 kt centre), i.e. rotate on the numbers and this is full marks;
 //! - **pitch** at the liftoff frame — between 5 and 15 degrees, like the
-//!   book's rotation attitude; over-rotating past 17 degrees also buys a
-//!   tailstrike-class flat penalty;
+//!   book's rotation attitude; over-rotating also buys a tailstrike-class
+//!   flat penalty (the jet past 17 degrees, the Cessna past 15);
 //! - **bank** at the liftoff frame, which should be nearly nothing;
-//! - **gear time** from wheels-off to gear-indicator-up, with 5 s the
-//!   book's "positive rate, gear up" and 15 s of no gear worth zero.
+//! - **gear time** (737 only) from wheels-off to gear-indicator-up, with
+//!   5 s the book's "positive rate, gear up" and 15 s of no gear worth
+//!   zero. The Cessna's gear is fixed, so the row shows FIXED and the
+//!   weight rebalances onto speed and pitch.
 //!
 //! The card shows for twelve seconds, same as the landing report, and keeps
 //! a best score for the session (persistence arrives with the hop ledger).
@@ -43,6 +46,9 @@ const REPORT_SECS: f32 = 12.0;
 /// One liftoff's numbers, plus when it happened.
 #[derive(Clone, Copy)]
 struct Liftoff {
+    /// Which aircraft class this liftoff belongs to: the grading profile
+    /// (speed target, weights, gear row) comes from it.
+    kind: Kind,
     /// Calibrated airspeed at the wheels-off frame, kt.
     cas: f64,
     /// Flap-handle position (0..1) at the liftoff frame, to pull the VR line.
@@ -59,6 +65,24 @@ struct Liftoff {
     /// When it happened, for future replay bookkeeping.
     #[allow(dead_code)]
     at: f32,
+}
+
+/// The takeoff report's aircraft classes. The jet rotates on the PFD's VR
+/// bug and gets a gear-timer row; the Cessna rotates on the book numbers
+/// with the gear bolted down.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Jet737,
+    C172,
+}
+
+/// The VR target a liftoff is graded against, by aircraft class.
+fn vr_of(kind: Kind, flap_norm: f64) -> f64 {
+    match kind {
+        Kind::Jet737 => crate::pfd::vr_for_flaps(flap_norm),
+        // The C172's book rotation: 55-60 kt, graded on the 57 kt centre.
+        Kind::C172 => 57.0,
+    }
 }
 
 #[derive(Resource, Default)]
@@ -137,10 +161,20 @@ fn update_takeoff(
     let Ok((mut text, mut node)) = report.single_mut() else {
         return;
     };
-    if aircraft_profile::normalized(&sim.name) != "737" || map.0.is_some() {
+    // The early exits keep the card hidden: no report on a mission map, none
+    // for aircraft this module doesn't grade.
+    if map.0.is_some() {
         node.display = Display::None;
         return;
     }
+    let kind = match aircraft_profile::normalized(&sim.name) {
+        "737" => Kind::Jet737,
+        "c172p" => Kind::C172,
+        _ => {
+            node.display = Display::None;
+            return;
+        }
+    };
 
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
@@ -154,6 +188,7 @@ fn update_takeoff(
             "18"
         };
         state.lift = Some(Liftoff {
+            kind,
             cas: aircraft.cas_kts,
             flap_norm: (aircraft.flap_deg / 40.0).clamp(0.0, 1.0),
             pitch: aircraft.pitch_deg,
@@ -184,11 +219,21 @@ fn update_takeoff(
                 state.best = Some(score);
             }
             state.last = Some(score);
-            let vr = crate::pfd::vr_for_flaps(lift.flap_norm);
-            let gear = lift
-                .gear_up_s
-                .map_or("STILL DOWN".to_owned(), |s| format!("{s:.1} s"));
-            let pitch_note = if lift.pitch > 17.0 { "  TAILSTRIKE" } else { "" };
+            let vr = vr_of(lift.kind, lift.flap_norm);
+            // The jet clocks its gear-up; the Cessna's gear never moves.
+            let gear = match lift.kind {
+                Kind::Jet737 => lift
+                    .gear_up_s
+                    .map_or("STILL DOWN".to_owned(), |s| format!("{s:.1} s")),
+                Kind::C172 => "FIXED".to_owned(),
+            };
+            let pitch_note = match lift.kind {
+                // Over-rotation risks the tail (jet) or an inadvertent stall
+                // off the roll (Cessna): a flat hit on top of the pitch grade.
+                Kind::Jet737 if lift.pitch > 17.0 => "  TAILSTRIKE",
+                Kind::C172 if lift.pitch > 15.0 => "  NOSE HIGH",
+                _ => "",
+            };
             text.0 = format!(
                 "TAKEOFF  MYFS RWY {}\n\
                  LIFT    {:>5.0} kt  VR {:>3.0}\n\
@@ -228,27 +273,48 @@ fn update_takeoff(
     }
 }
 
-/// Grade a liftoff. Speed against the VR line is worth the most, then the
-/// gear timing, then pitch and bank.
+/// Grade a liftoff. Speed against the VR target is worth the most, then pitch
+/// and bank. The 737 also carries a gear timing term; the C172's fixed gear
+/// hands that weight back to speed and pitch.
 fn score(lift: Liftoff) -> (u32, &'static str) {
     if !lift.on_runway {
         return (0, "OFF-FIELD");
     }
-    let vr = crate::pfd::vr_for_flaps(lift.flap_norm);
-    let speed = (1.0 - (lift.cas - vr).abs() / 25.0).clamp(0.0, 1.0);
-    // The book's rotation attitude: 5-15 degrees, dead centre 10.
-    let pitch = (1.0 - (lift.pitch - 10.0).abs().max(0.0) / 12.0).clamp(0.0, 1.0);
+    let vr = vr_of(lift.kind, lift.flap_norm);
+    // The Cessna's band is tighter: its 57 kt target sits on a shallow
+    // gradient, so a 15 kt-off liftoff reads nearly as bad as the jet's.
+    let speed_tol = match lift.kind {
+        Kind::Jet737 => 25.0,
+        Kind::C172 => 15.0,
+    };
+    let speed = (1.0 - (lift.cas - vr).abs() / speed_tol).clamp(0.0, 1.0);
+    // The book's rotation attitude: 5-15 degrees, dead centre 10 (jet) or 8
+    // (Cessna, which hauls itself off a touch flatter).
+    let pitch_centre = match lift.kind {
+        Kind::Jet737 => 10.0,
+        Kind::C172 => 8.0,
+    };
+    let pitch = (1.0 - (lift.pitch - pitch_centre).abs().max(0.0) / 12.0).clamp(0.0, 1.0);
     let bank = (1.0 - lift.bank / 10.0).clamp(0.0, 1.0);
+    let (w_speed, w_gear, w_pitch, w_bank) = match lift.kind {
+        // Jet: the gear clock is the second term (see the module header).
+        Kind::Jet737 => (0.35, 0.25, 0.25, 0.15),
+        // Cessna: fixed gear, so speed and pitch split the missing weight.
+        Kind::C172 => (0.45, 0.0, 0.40, 0.15),
+    };
     let gear = match lift.gear_up_s {
         Some(s) => (1.0 - ((s as f64) - 5.0).max(0.0) / 10.0).clamp(0.0, 1.0),
         None => 0.0,
     };
-    let raw = 100.0 * (0.35 * speed + 0.25 * gear + 0.25 * pitch + 0.15 * bank);
+    let raw = 100.0 * (w_speed * speed + w_gear * gear + w_pitch * pitch + w_bank * bank);
     let mut score = raw.round().clamp(0.0, 100.0) as u32;
-    // Over-rotation past 17 degrees at the liftoff frame risks the tail: a
-    // flat strike on top of the pitch grade.
-    if lift.pitch > 17.0 {
-        score = score.saturating_sub(15);
+    // Over-rotation at the liftoff frame risks the tail (jet past 17 degrees)
+    // or a drooping wing off the roll (Cessna past 15): a flat hit on top of
+    // the pitch grade.
+    match lift.kind {
+        Kind::Jet737 if lift.pitch > 17.0 => score = score.saturating_sub(15),
+        Kind::C172 if lift.pitch > 15.0 => score = score.saturating_sub(10),
+        _ => {}
     }
     let grade = if score >= 90 {
         "TEXTBOOK"
@@ -264,10 +330,11 @@ fn score(lift: Liftoff) -> (u32, &'static str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{score, Liftoff};
+    use super::{score, Kind, Liftoff};
 
-    fn liftoff(cas: f64, pitch: f64) -> Liftoff {
+    fn liftoff(kind: Kind, cas: f64, pitch: f64) -> Liftoff {
         Liftoff {
+            kind,
             cas,
             flap_norm: 0.125,
             pitch,
@@ -279,24 +346,54 @@ mod tests {
         }
     }
 
+    fn jet(cas: f64, pitch: f64) -> Liftoff {
+        liftoff(Kind::Jet737, cas, pitch)
+    }
+
+    fn c172(cas: f64, pitch: f64) -> Liftoff {
+        Liftoff {
+            gear_up_s: None, // the Cessna's gear never moves: the row is FIXED
+            ..liftoff(Kind::C172, cas, pitch)
+        }
+    }
+
     #[test]
     fn a_book_rotation_scores_textbook() {
         // Flaps 0.125 puts the VR line at 178.75; rotating on the bug at the
         // book attitude with the gear up in 3 s is full marks.
-        let (score, grade) = score(liftoff(179.0, 10.0));
+        let (score, grade) = score(jet(179.0, 10.0));
         assert_eq!(score, 100);
         assert_eq!(grade, "TEXTBOOK");
+    }
+
+    #[test]
+    fn a_c172_book_rotation_scores_textbook_without_any_gear_clock() {
+        // 57 kt at the book attitude: the fixed gear neither helps nor hurts.
+        let (marks, grade) = score(c172(57.0, 8.0));
+        assert_eq!(marks, 100);
+        assert_eq!(grade, "TEXTBOOK");
+        // 15 kt fast is already the whole band for the Cessna (nearly zero
+        // speed marks), while the jet's band still forgives it.
+        let (slow_pig, _) = score(c172(72.0, 8.0));
+        let (jet_same, _) = score(jet(179.0 + 15.0, 10.0));
+        assert!(slow_pig < 60);
+        assert!(jet_same > slow_pig);
+        // And the nose-high flat penalty bites past 15 degrees of rotation,
+        // even at the perfect speed.
+        let (rotten, grade_low) = score(c172(57.0, 16.0));
+        assert!(rotten < 100);
+        assert_eq!(grade_low, "HEAVY");
     }
 
     #[test]
     fn dragging_off_the_runway_early_costs_speed_and_tailstrike() {
         // Rotate 15 kt slow and haul it off at 19 degrees: speed loss plus
         // the tailstrike flat penalty, and the grade shows it.
-        let (early, grade) = score(liftoff(163.0, 19.0));
+        let (early, grade) = score(jet(163.0, 19.0));
         assert!(early < 75);
         assert_eq!(grade, "SLOPPY");
         // Without the over-rotation the same speed band is merely middling.
-        let (level, _) = score(liftoff(163.0, 10.0));
+        let (level, _) = score(jet(163.0, 10.0));
         assert!(level > early);
     }
 
@@ -304,13 +401,13 @@ mod tests {
     fn a_late_or_missing_gear_timer_sinks_the_card() {
         let (slow, _) = score(Liftoff {
             gear_up_s: Some(9.0),
-            ..liftoff(179.0, 10.0)
+            ..jet(179.0, 10.0)
         });
         let (stuck, _) = score(Liftoff {
             gear_up_s: None,
-            ..liftoff(179.0, 10.0)
+            ..jet(179.0, 10.0)
         });
-        let (prompt, _) = score(liftoff(179.0, 10.0));
+        let (prompt, _) = score(jet(179.0, 10.0));
         assert!(stuck < slow && slow < prompt);
     }
 
@@ -318,10 +415,10 @@ mod tests {
     fn sideways_liftoffs_and_off_field_leave_early() {
         let (banked, _) = score(Liftoff {
             bank: 9.0,
-            ..liftoff(179.0, 10.0)
+            ..jet(179.0, 10.0)
         });
         assert!(banked < 100);
-        let mut off = liftoff(179.0, 10.0);
+        let mut off = jet(179.0, 10.0);
         off.on_runway = false;
         assert_eq!(score(off), (0, "OFF-FIELD"));
     }

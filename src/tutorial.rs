@@ -120,11 +120,12 @@ fn fixed_wing_rows(p: &mut Page, b: &Bindings) {
     p.row("Brakes", axis(b, Action::BrakeLeft, "", ""));
 }
 
-/// The rows every aircraft has after its type-specific controls.
+/// The rows every aircraft has after its type-specific controls. Spawns live
+/// in the menu now (lesson rows under the aircraft, map missions on the top
+/// row) — the fly-time relocate keys R/P/Y are gone.
 fn common_tail_rows(p: &mut Page, b: &Bindings) {
     p.row("Re-trim", toggle(b, ToggleAction::Trim));
-    p.row("Cruise reset", toggle(b, ToggleAction::Cruise));
-    p.row("Reset runway", "R  (fixed key)");
+    p.row("Spawn states", "MENU (fixed)");
     p.row("View / HUD", "C / H  (fixed keys)");
     p.row("Back to menu", "Esc  (fixed key)");
 }
@@ -165,9 +166,22 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  A cyan BANK or COORD label appears on the matching disc when");
     p.line("  the assist is working. Real C172 has neither; these are aids.");
 
+    p.heading("LESSONS (GAME, MENU > PLAY)");
+    p.line("  PLAY no longer jumps straight into the cockpit. It opens the");
+    p.line("  SELECT START page - free flight on top, then the graded");
+    p.line("  lessons: M1 TAXI starts cold on the apron stand (start, taxi");
+    p.line("  out, hold short; the meter grades the stop), M2 TAKEOFF starts");
+    p.line("  warm on the runway (the takeoff card grades rotation speed,");
+    p.line("  pitch and bank), M3 LANDING sits you on a 2 NM final with");
+    p.line("  flaps 20 (the landing card does the rest), and M4 FINAL starts");
+    p.line("  cold at the stand for one complete flight - the start");
+    p.line("  checklist, the taxi grade, the takeoff card and the landing");
+    p.line("  card each get their say. The HUD line shows your lesson.");
+
     p.heading("HOME FIELD (GAME)");
-    p.line("  MYFS has runway 36/18, 1200 m. R puts you on the runway,");
-    p.line("  heading 360, about 140 m past the 36 threshold.");
+    p.line("  MYFS has runway 36/18, 1200 m. The menu's lesson row under");
+    p.line("  the Cessna chooses the spawn: M2 TAKEOFF puts you on the");
+    p.line("  runway, heading 360, about 140 m past the 36 threshold.");
     p.line("  PAPI is left of the runway: 2 red / 2 white on a 3-degree");
     p.line("  path, all white high, all red low. The windsock is on the");
     p.line("  right. Taxiway, apron, hangar and tower are east of the runway.");
@@ -182,10 +196,9 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  The status block always shows the wind: x.kt levels blow at");
     p.line("  300 deg, so runway 36 takes 0.87 x kt from the left.");
 
-    p.heading("TAXI (GAME, PRESS P)");
-    p.line("  P spawns you on the apron stand, nose west on the yellow");
-    p.line("  lead-in line - warm and running, or cold and dark with");
-    p.line("  ENGINE = COLD, which is the full taxi drill from the ramp.");
+    p.heading("TAXI (GAME, MENU > PLAY > M1 TAXI)");
+    p.line("  M1 TAXI spawns you on the apron stand, nose west on the yellow");
+    p.line("  lead-in line, cold and dark - the full taxi drill from the ramp.");
     p.line("  Follow the line west, join the taxiway, hold short of 36 at");
     p.line("  the yellow bars, then line up. At night the blue edge lights");
     p.line("  tell the same story the paint does. Rolling near the line,");
@@ -193,10 +206,10 @@ fn c172(keymap: &Keymap) -> Vec<String> {
     p.line("  within a metre and the meter grades the stop GOOD. The pump");
     p.line("  lane branches off the lead-in line to the refueller.");
 
-    p.heading("COLD START (GAME, SETTINGS ENGINE = COLD)");
-    p.line("  ENGINE AUTO (the default) spawns running at 60% power, as the");
-    p.line("  tutorial flow below assumes. ENGINE = COLD hands you a truly");
-    p.line("  shut-down Cessna and the start flow becomes real:");
+    p.heading("COLD START (GAME, MENU > PLAY > M1 / M4)");
+    p.line("  M1 TAXI and M4 FINAL hand you a truly shut-down Cessna and");
+    p.line("  the start flow becomes real (PLAY and the other lessons spawn");
+    p.line("  warm and running instead):");
     p.line("  1. M turns the master on. The COLD START CHECKLIST panel in");
     p.line("     the bottom-left corner ticks the steps off as you do them.");
     p.line("  2. Hold I: the starter cranks the prop. Two seconds in, the");
@@ -376,8 +389,7 @@ fn ah64(keymap: &Keymap) -> Vec<String> {
     p.row("Re-trim", toggle(&b, ToggleAction::Trim));
     p.row("Hover / VTOL", toggle(&b, ToggleAction::HeliHover));
     p.row("Auto balance", toggle(&b, ToggleAction::HeliBalance));
-    p.row("Cruise reset", toggle(&b, ToggleAction::Cruise));
-    p.row("Reset runway", "R  (fixed key)");
+    p.row("Spawn states", "MENU (fixed)");
     p.row("View / HUD", "C / H  (fixed keys)");
     p.row("Back to menu", "Esc  (fixed key)");
 

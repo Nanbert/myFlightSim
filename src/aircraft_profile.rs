@@ -107,8 +107,6 @@ pub enum ToggleAction {
     Gear,
     /// Re-trim for the current condition, keeping airspeed and position.
     Trim,
-    /// Restart airborne, trimmed for cruise.
-    Cruise,
     /// A rotorcraft's hands-free level-flight trim.
     RotorTrim,
     /// Arcade helicopter: vertical take-off / hover / land state machine.
@@ -151,7 +149,6 @@ impl ToggleAction {
             ToggleAction::Tvc => "TVC",
             ToggleAction::Gear => "gear",
             ToggleAction::Trim => "retrim",
-            ToggleAction::Cruise => "cruise",
             ToggleAction::RotorTrim => "trim",
             ToggleAction::HeliHover => "hover / VTOL",
             ToggleAction::HeliBalance => "auto balance",
@@ -176,7 +173,6 @@ impl ToggleAction {
             ToggleAction::Tvc => "tvc",
             ToggleAction::Gear => "gear",
             ToggleAction::Trim => "trim",
-            ToggleAction::Cruise => "cruise",
             ToggleAction::RotorTrim => "rotor-trim",
             ToggleAction::HeliHover => "heli-hover",
             ToggleAction::HeliBalance => "heli-balance",
@@ -200,7 +196,6 @@ impl ToggleAction {
             "tvc" => ToggleAction::Tvc,
             "gear" => ToggleAction::Gear,
             "trim" => ToggleAction::Trim,
-            "cruise" => ToggleAction::Cruise,
             "rotor-trim" => ToggleAction::RotorTrim,
             "heli-hover" => ToggleAction::HeliHover,
             "heli-balance" => ToggleAction::HeliBalance,
@@ -407,16 +402,10 @@ fn core_bindings(throttle_pos: KeyCode) -> Vec<BindingSpec> {
 }
 
 fn core_toggles() -> Vec<ToggleSpec> {
-    vec![
-        ToggleSpec {
-            action: ToggleAction::Trim,
-            key: KeyCode::KeyT,
-        },
-        ToggleSpec {
-            action: ToggleAction::Cruise,
-            key: KeyCode::KeyY,
-        },
-    ]
+    vec![ToggleSpec {
+        action: ToggleAction::Trim,
+        key: KeyCode::KeyT,
+    }]
 }
 
 // --- per-aircraft profiles ---------------------------------------------------
@@ -828,7 +817,6 @@ mod tests {
             ToggleAction::Tvc,
             ToggleAction::Gear,
             ToggleAction::Trim,
-            ToggleAction::Cruise,
             ToggleAction::RotorTrim,
             ToggleAction::HdgSel,
             ToggleAction::AltHold,
