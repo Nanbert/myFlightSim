@@ -17,6 +17,7 @@ mod airspeed;
 mod altimeter;
 mod attitude;
 mod cdi;
+pub(crate) mod focus;
 mod fuel;
 mod heading;
 mod tach;
@@ -69,7 +70,7 @@ pub(crate) struct Instrument {
 /// The painted dials on the full C172 model's instrument panel, one per live
 /// instrument. `Airspeed`…`Attitude` name our widgets; the dials they cover are
 /// the ones the model paints at those spots.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum PanelKey {
     Airspeed,
     Vsi,
@@ -151,6 +152,48 @@ impl PanelKey {
             v: v.into(),
         }
     }
+
+    /// The instrument a lowercase id selects: the same names `examples/
+    /// panel_view_shot` uses. `None` for anything else.
+    #[allow(dead_code)] // Only the screenshot examples name a dial.
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Some(match name.trim().to_ascii_lowercase().as_str() {
+            "airspeed" => PanelKey::Airspeed,
+            "vsi" => PanelKey::Vsi,
+            "altimeter" => PanelKey::Altimeter,
+            "tach" => PanelKey::Tach,
+            "heading" => PanelKey::Heading,
+            "turn" => PanelKey::Turn,
+            "attitude" => PanelKey::Attitude,
+            "fuel" => PanelKey::Fuel,
+            "cdi" => PanelKey::Cdi,
+            _ => return None,
+        })
+    }
+}
+
+/// A dial's placement on screen for the current camera: the centre in logical
+/// px, plus the screen vectors spanning one dial radius right and up.
+pub(crate) struct ProjectedDial {
+    pub(crate) centre: Vec2,
+    pub(crate) right: Vec2,
+    pub(crate) up: Vec2,
+}
+
+/// Project `dial` through `camera` (positioned by `cam_gt`) into screen space.
+/// `None` when any of the three points is behind the lens. Shared by the live
+/// instrument seating and the focus-ring overlay so the two stay in lockstep.
+pub(crate) fn project_dial(
+    camera: &Camera,
+    cam_gt: &GlobalTransform,
+    root_tf: &Transform,
+    dial: &PanelDial,
+) -> Option<ProjectedDial> {
+    let project = |p: Vec3| camera.world_to_viewport(cam_gt, p).ok();
+    let centre = project(root_tf.transform_point(dial.anchor))?;
+    let right = project(root_tf.transform_point(dial.anchor + dial.u))? - centre;
+    let up = project(root_tf.transform_point(dial.anchor + dial.v))? - centre;
+    Some(ProjectedDial { centre, right, up })
 }
 
 pub struct GaugePlugin;
@@ -158,6 +201,7 @@ pub struct GaugePlugin;
 impl Plugin for GaugePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(UiMaterialPlugin::<attitude::AttitudeMaterial>::default())
+            .add_plugins(focus::FocusPlugin)
             .add_systems(
                 Startup,
                 (
@@ -268,11 +312,7 @@ fn seat_panel(
         };
 
         let d = inst.key.dial();
-        let project = |p: Vec3| camera.world_to_viewport(&cam_gt, p).ok();
-        let Some((pa, pu, pv)) = project(root_tf.transform_point(d.anchor))
-            .zip(project(root_tf.transform_point(d.anchor + d.u)))
-            .and_then(|(a, u)| project(root_tf.transform_point(d.anchor + d.v)).map(|v| (a, u, v)))
-        else {
+        let Some(p) = project_dial(camera, &cam_gt, &root_tf, &d) else {
             // Off-screen (e.g. looking away): hide rather than smear it.
             inst.seated = true;
             node.display = Display::None;
@@ -281,8 +321,7 @@ fn seat_panel(
 
         // The dial's screen-space right and up vectors also give the size (a
         // nearer or resized panel changes them) and the on-screen roll.
-        let right = pu - pa;
-        let up = pv - pa;
+        let (right, up) = (p.right, p.up);
         node.position_type = PositionType::Absolute;
         node.left = Val::Px(0.0);
         node.right = Val::Auto;
@@ -293,7 +332,7 @@ fn seat_panel(
         node.height = Val::Px(NODE);
         node.display = Display::Flex;
         // The dial sits at the node's centre, so park that centre on the anchor.
-        tf.translation = Val2::px(pa.x - half, pa.y - half);
+        tf.translation = Val2::px(p.centre.x - half, p.centre.y - half);
         tf.scale = Vec2::new(right.length() / DIAL_PX, up.length() / DIAL_PX);
         tf.rotation = Rot2::radians(right.y.atan2(right.x));
         inst.seated = true;

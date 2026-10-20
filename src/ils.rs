@@ -148,16 +148,30 @@ mod tests {
         let ils = beam(60.0, 147.0, 3000.0, 0.052408, 0.0).unwrap();
         assert!(ils.available);
         // 60 m / 3000 m ≈ 1.15° Right.
-        assert!(ils.loc_dev_deg > 1.0 && ils.loc_dev_deg < 1.3, "{:?}", ils.loc_dev_deg);
+        assert!(
+            ils.loc_dev_deg > 1.0 && ils.loc_dev_deg < 1.3,
+            "{:?}",
+            ils.loc_dev_deg
+        );
         // 10 m in 3000 m ≈ 0.19° low (negative).
-        assert!(ils.gs_dev_deg < -0.15 && ils.gs_dev_deg > -0.25, "{:?}", ils.gs_dev_deg);
+        assert!(
+            ils.gs_dev_deg < -0.15 && ils.gs_dev_deg > -0.25,
+            "{:?}",
+            ils.gs_dev_deg
+        );
         assert_eq!(ils.dist_m, 3000.0);
     }
 
     #[test]
     fn behind_the_antenna_and_beyond_the_gate_are_invalid() {
-        assert!(beam(0.0, 100.0, 100.0, 0.052408, 0.0).is_none(), "too close");
-        assert!(beam(0.0, 100.0, 10_000.0, 0.052408, 0.0).is_none(), "too far");
+        assert!(
+            beam(0.0, 100.0, 100.0, 0.052408, 0.0).is_none(),
+            "too close"
+        );
+        assert!(
+            beam(0.0, 100.0, 10_000.0, 0.052408, 0.0).is_none(),
+            "too far"
+        );
         assert!(beam(0.0, 100.0, -500.0, 0.052408, 0.0).is_none(), "behind");
     }
 }

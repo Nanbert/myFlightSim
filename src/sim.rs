@@ -269,9 +269,8 @@ impl Sim {
     /// Turning COLD on while the engine is already running shuts it down now —
     /// the toggle is an instruction to start flying from the checklist.
     pub fn set_engine_cold(&mut self, cold: bool) {
-        let piston =
-            crate::aircraft_profile::normalized(&self.name) == "c172p"
-                && self.model.get("propulsion/engine[0]/has-fuel") > 0.5;
+        let piston = crate::aircraft_profile::normalized(&self.name) == "c172p"
+            && self.model.get("propulsion/engine[0]/has-fuel") > 0.5;
         self.engine_cold = cold && piston;
         if self.engine_cold {
             self.model.set("propulsion/engine[0]/set-stopped", 1.0);
@@ -699,7 +698,10 @@ mod tests {
         sim.reset_final();
         let (pos, _, _) = sim.pose();
         let ils = crate::ils::compute(&sim);
-        assert!(ils.available, "should be inside the approach gate {ils:?} pos={pos:?}");
+        assert!(
+            ils.available,
+            "should be inside the approach gate {ils:?} pos={pos:?}"
+        );
         assert!(ils.loc_dev_deg.abs() < 1.0, "{:?}", ils.loc_dev_deg);
         // 1300 ft against a beam 5 km out (~850 ft): spawned above the beam.
         assert!(ils.gs_dev_deg > 0.6, "{:?}", ils.gs_dev_deg);

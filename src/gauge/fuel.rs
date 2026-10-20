@@ -53,7 +53,11 @@ fn build_tables() -> Tables {
     };
     // A tick every 25 lb, heavier every 50.
     for lb in [0.0, 25.0, 50.0, 75.0, 100.0, 125.0, 150.0, 175.0, 185.0] {
-        let (class, half_w) = if lb % 50.0 == 0.0 { (2u8, 0.55) } else { (1u8, 0.35) };
+        let (class, half_w) = if lb % 50.0 == 0.0 {
+            (2u8, 0.55)
+        } else {
+            (1u8, 0.35)
+        };
         let center = lb_to_cw(lb);
         let mut d = -half_w;
         while d <= half_w {
@@ -157,24 +161,24 @@ pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 
         // Wing-tank captions above the hub: which needle reads which tank.
         let dim = Color::srgb(0.85, 0.85, 0.85);
-        spawn_label(p, "L", c - DIAL_PX * 0.26, c - DIAL_PX * 0.02, 12.0, Color::WHITE);
-        spawn_label(p, "R", c + DIAL_PX * 0.26, c - DIAL_PX * 0.02, 12.0, Color::WHITE);
         spawn_label(
             p,
-            "FUEL",
-            c,
-            c + 0.22 * DIAL_PX,
+            "L",
+            c - DIAL_PX * 0.26,
+            c - DIAL_PX * 0.02,
             12.0,
-            dim,
+            Color::WHITE,
         );
         spawn_label(
             p,
-            "LB x100",
-            c,
-            c + 0.32 * DIAL_PX,
-            10.0,
-            dim,
+            "R",
+            c + DIAL_PX * 0.26,
+            c - DIAL_PX * 0.02,
+            12.0,
+            Color::WHITE,
         );
+        spawn_label(p, "FUEL", c, c + 0.22 * DIAL_PX, 12.0, dim);
+        spawn_label(p, "LB x100", c, c + 0.32 * DIAL_PX, 10.0, dim);
 
         spawn_image(p, needle_l, FuelNeedle::L);
         spawn_image(p, needle_r, FuelNeedle::R);

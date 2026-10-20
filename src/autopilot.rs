@@ -532,8 +532,9 @@ pub fn advance(
         // Fly the beam: the desired course is the captured one, biased by the
         // localizer error (+dev = right of course → bias left).
         LatMode::Loc => {
-            let steer = ap.loc_course_deg - (LOC_COURSE_GAIN * ils.loc_dev_deg)
-                .clamp(-LOC_COURSE_MAX_DEG, LOC_COURSE_MAX_DEG);
+            let steer = ap.loc_course_deg
+                - (LOC_COURSE_GAIN * ils.loc_dev_deg)
+                    .clamp(-LOC_COURSE_MAX_DEG, LOC_COURSE_MAX_DEG);
             heading_aileron(steer, &s)
         }
         LatMode::Off => (0.0, 0.0),
@@ -576,8 +577,8 @@ pub fn advance(
                 // feet above the beam, so a high chirp steepens smoothly.
                 let slope_fpm = -s.ias_kts * KT_TO_FPM * SLOPE_TAN;
                 let above_ft = ils.gs_dev_deg.to_radians() * ils.dist_m * FT_PER_M;
-                let vs_cmd = (slope_fpm - GS_HEIGHT_TO_VS * above_ft)
-                    .clamp(GS_VS_MIN_FPM, GS_VS_MAX_FPM);
+                let vs_cmd =
+                    (slope_fpm - GS_HEIGHT_TO_VS * above_ft).clamp(GS_VS_MIN_FPM, GS_VS_MAX_FPM);
                 vs_pitch(vs_cmd, &s, &mut ap.vs_int, dt)
             }
         }

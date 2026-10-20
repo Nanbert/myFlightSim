@@ -17,7 +17,7 @@
 use bevy::prelude::*;
 
 use super::*;
-use crate::ils::{GS_DOT_DEG, LOC_DOT_DEG, Ils};
+use crate::ils::{Ils, GS_DOT_DEG, LOC_DOT_DEG};
 
 /// Needle swing per dot of localizer deviation; two dots (half scale) is 45°,
 /// which puts the needle tips on the outer dots with the `len` below.
@@ -134,7 +134,14 @@ fn at(r: f32, cw_deg: f32) -> (f32, f32) {
 
 /// A centred text label carrying a [`CdiFlag`] marker, so the update can
 /// toggle its `Node::display`.
-fn spawn_flag(p: &mut ChildSpawnerCommands, text: &str, x: f32, y: f32, color: Color, flag: CdiFlag) {
+fn spawn_flag(
+    p: &mut ChildSpawnerCommands,
+    text: &str,
+    x: f32,
+    y: f32,
+    color: Color,
+    flag: CdiFlag,
+) {
     let box_px = 48.0 * FS;
     p.spawn((
         Text::new(text),
@@ -260,7 +267,8 @@ pub(super) fn update(
             (ils.loc_dev_deg / LOC_DOT_DEG).clamp(-DOTS, DOTS) as f32
         } else {
             0.0
-        };        t.rotation = Rot2::degrees(-(dots * LOC_DEG_PER_DOT));
+        };
+        t.rotation = Rot2::degrees(-(dots * LOC_DEG_PER_DOT));
     }
     if let Ok(mut t) = gs.single_mut() {
         // Fly toward the pointer: below the beam it slides up the column. The

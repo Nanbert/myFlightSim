@@ -77,11 +77,8 @@ impl Taximeter {
         let gs = gs_kts as f32;
         self.peak_gs = self.peak_gs.max(gs);
         let dz = z - crate::aerodrome::STAND_Z;
-        let in_corridor = on_ground
-            && gs < TAXI_MAX_GS
-            && x > X_MIN
-            && x < X_MAX
-            && dz.abs() < CORRIDOR_Z;
+        let in_corridor =
+            on_ground && gs < TAXI_MAX_GS && x > X_MIN && x < X_MAX && dz.abs() < CORRIDOR_Z;
         self.offset = in_corridor.then_some(dz);
 
         if gs > MOVE_MIN_GS {

@@ -519,6 +519,12 @@ pub(crate) struct Ui {
     /// the mouse released for direct clicks. Free-look and the crosshair are
     /// suspended while this is set.
     pub(crate) mcp_focus: bool,
+    /// Cockpit only, C172: the head-look is held still while an instrument is
+    /// zoomed in, so the close-up stays exactly on the dial.
+    pub(crate) freeze_look: bool,
+    /// Cockpit only: vertical FOV override while the instrument close-up is
+    /// eased in. `None` uses the rest lens.
+    pub(crate) zoom_fov: Option<f32>,
 }
 
 /// Live overrides for dialling in the cockpit view, driven by
@@ -706,10 +712,21 @@ pub(crate) fn spawn_flight_aircraft(
     // A fresh flight opens with the cockpit head-look at its rest pose, and no
     // MCP focus left over from a previous cockpit visit.
     (ui.look_yaw, ui.look_pitch) = rest_look(&sim.name);
+    // Development override for screenshot passes: COCKPIT_LOOK=yaw,pitch
+    // (degrees), the same fields the mouse drives.
+    if let Ok(v) = std::env::var("COCKPIT_LOOK") {
+        let p: Vec<f32> = v.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+        if p.len() == 2 {
+            (ui.look_yaw, ui.look_pitch) = (p[0].to_radians(), p[1].to_radians());
+        }
+    }
     ui.cockpit = std::env::var("COCKPIT").is_ok_and(|v| v == "1");
     ui.look_settle = if ui.cockpit { 1.0 } else { 0.0 };
     ui.look_ignore = ui.cockpit;
     ui.mcp_focus = false;
+    // No instrument close-up carries across flights.
+    ui.freeze_look = false;
+    ui.zoom_fov = None;
     // Development overrides for dialling the eye/FOV from a screenshot shell:
     // COCKPIT_EYE=x,y,z (model frame, metres) and COCKPIT_FOV=degrees.
     tune.eye = std::env::var("COCKPIT_EYE").ok().and_then(|v| {
@@ -1130,7 +1147,7 @@ fn apply_look_delta(ui: &mut Ui, delta: Vec2) {
 /// airframe. Position is untouched (that stays on `follow_camera`'s eye), so
 /// this only changes where you're looking. Inert unless in the cockpit view.
 fn cockpit_look(time: Res<Time>, motion: Res<AccumulatedMouseMotion>, mut ui: ResMut<Ui>) {
-    if !ui.cockpit || ui.mcp_focus {
+    if !ui.cockpit || ui.mcp_focus || ui.freeze_look {
         return;
     }
     // Development screenshot hook: hold the rest gaze while the desktop mouse
@@ -1359,9 +1376,12 @@ fn camera_feel(
     };
     if ui.cockpit {
         // Leave the lens at its rest setting; `reset_camera_feel` does the same
-        // on exiting a flight. The calibration demo can override the rest FOV.
+        // on exiting a flight. The calibration demo can override the rest FOV,
+        // and the C172's instrument close-up eases it narrower on top.
         if let Projection::Perspective(p) = &mut *projection {
-            p.fov = tune.fov.unwrap_or(std::f32::consts::FRAC_PI_4);
+            p.fov = ui
+                .zoom_fov
+                .unwrap_or_else(|| tune.fov.unwrap_or(std::f32::consts::FRAC_PI_4));
         }
         if let Some(mut blur) = blur {
             blur.shutter_angle = 0.0;
@@ -1407,6 +1427,8 @@ fn toggle_ui(keys: Res<ButtonInput<KeyCode>>, sim: Res<Sim>, mut ui: ResMut<Ui>)
     }
     if keys.just_pressed(KeyCode::KeyC) {
         ui.mcp_focus = false;
+        ui.freeze_look = false;
+        ui.zoom_fov = None;
         ui.cockpit = !ui.cockpit;
         // Every entry into the cockpit starts looking at its rest pose. Give
         // the cursor grab a moment to settle before accepting mouse motion.
@@ -1626,7 +1648,8 @@ fn update_hud(
 
     // Engine/fuel status, only for airframes with the fuel model (Rust C172):
     // the cold-start flow's feedback line — master, engine state and tanks.
-    if state.fuel_capacity_lb > 0.0 {        let master = if state.master_on {
+    if state.fuel_capacity_lb > 0.0 {
+        let master = if state.master_on {
             "MASTER  ON "
         } else {
             "MASTER -OFF"
