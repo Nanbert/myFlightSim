@@ -158,6 +158,11 @@ pub struct Fdm {
     engine_power_hp: f64,
     // True when any gear is in contact with the ground on the last step.
     wow: bool,
+    // The previous step's wow / TVC-master / arcade-switch state, for the FBW
+    // integrator reset at regime boundaries (see `poll_fbw_transitions`).
+    fbw_prev_wow: bool,
+    fbw_prev_tvc: bool,
+    fbw_prev_arcade: bool,
     // Pilot master switch for thrust vectoring (`fcs/tvc-enable`). On by
     // default; only the F-22's FBW uses it.
     tvc_enable: bool,
@@ -287,6 +292,9 @@ impl Fdm {
             engine_rpm: 0.0,
             engine_power_hp: 0.0,
             wow: false,
+            fbw_prev_wow: false,
+            fbw_prev_tvc: true,
+            fbw_prev_arcade: false,
             tvc_enable: true,
             arcade: false,
             heli_hover_cmd: false,
@@ -530,8 +538,32 @@ impl Fdm {
         (vz, lift)
     }
 
+    /// Wipe the fly-by-wire integrators when the FDM crosses a regime boundary:
+    /// TVC toggled, weight transitions on/off the wheels, or the arcade switch
+    /// flipped. The integrators are one-frame controller state, not physical
+    /// state — a value wound up under the old regime (e.g. the pitch integral
+    /// that was holding the jet level on the takeoff roll) would fire the
+    /// surfaces the instant the new regime starts, so each regime starts from
+    /// scratch. Non-FBW aircraft keep zeros; the poll is a no-op for them.
+    fn poll_fbw_transitions(&mut self) {
+        if matches!(self.ac.control, ControlSystem::Fbw(_))
+            && (self.wow != self.fbw_prev_wow
+                || self.tvc_enable != self.fbw_prev_tvc
+                || self.arcade != self.fbw_prev_arcade)
+        {
+            self.fbw = Fbw::default();
+        }
+        self.fbw_prev_wow = self.wow;
+        self.fbw_prev_tvc = self.tvc_enable;
+        self.fbw_prev_arcade = self.arcade;
+    }
+
     /// Advance the whole model one fixed timestep.
     fn advance(&mut self, dt: f64) {
+        // Detect any FBW regime boundary this step first, so the loop below
+        // runs on a clean control-law state and the boundary itself is recorded
+        // before anything else reads it.
+        self.poll_fbw_transitions();
         // Gear travels toward the commanded position first, so this step's LEF
         // schedule, aero drag and ground reaction all see the same position.
         self.step_gear(dt);

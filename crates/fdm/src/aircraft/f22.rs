@@ -816,6 +816,9 @@ static F22_FBW: FbwSpec = FbwSpec {
     pitch_down_lim: 0.5236,
     pitch_up_lim: 0.8727,
     alpha_limit_rad: 0.48,
+    // The nose-up pitch-rate command fades out over the last 5° below the
+    // limiter instead of stepping off at it.
+    alpha_soft_band_rad: 0.0873,
     alpha_limit_tvc_rad: 0.7,
     tvc_gain: 0.6,
     tvc_lim_rad: 0.349,
@@ -825,6 +828,10 @@ static F22_FBW: FbwSpec = FbwSpec {
     yaw_ki: 1.0,
     yaw_int_limit: 0.44,
     rudder_lim_rad: 0.5236,
+
+    // Normalized thrust reads 1.0 at the F119's military thrust, matching the
+    // CmDtv table's `fcs/thrust-norm` factor.
+    thrust_ref_lbs: F119.milthrust,
 
     lef_alpha_gain: 1.38,
     lef_dyn_gain: -9.05,

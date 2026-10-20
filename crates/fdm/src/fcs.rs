@@ -296,8 +296,14 @@ pub struct FbwSpec {
     /// Nose-down / nose-up rate-command clips (rad/s).
     pub pitch_down_lim: f64,
     pub pitch_up_lim: f64,
-    /// Angle of attack above which alpha protection engages (rad).
+    /// Angle of attack at which alpha protection is fully engaged (rad).
     pub alpha_limit_rad: f64,
+    /// Soft-onset width (rad) of the alpha limiter: the nose-up fade starts
+    /// `band` below the limit and completes at the limit, replacing a hard
+    /// zeroing of the pitch-rate command. Real fly-by-wire protections ramp in —
+    /// a step change in the command law makes the jet pitch-break at the
+    /// boundary.
+    pub alpha_soft_band_rad: f64,
     /// Higher alpha limit used while thrust vectoring is active: the nozzles
     /// supply the pitch authority the stabilator loses at high alpha, so the
     /// usable envelope opens up.
@@ -315,6 +321,12 @@ pub struct FbwSpec {
     pub yaw_ki: f64,
     pub yaw_int_limit: f64,
     pub rudder_lim_rad: f64,
+
+    /// Thrust (lb, per engine) the normalized thrust reads 1.0 at — the jet's
+    /// military thrust, which is also what the CmDtv thrust-vectoring table was
+    /// published against. Keeping this here (rather than a magic number in the
+    /// resolve) pins the aero normalization to the engine's published figure.
+    pub thrust_ref_lbs: f64,
 
     // --- leading-edge flaps ---
     /// `deg = alpha_deg*gain + (qbar/P)*dyn_gain + offset`, clipped to [0, lim].
@@ -386,8 +398,19 @@ impl Fbw {
         };
         let elev_in = (i.elevator_cmd + i.pitch_trim_cmd).clamp(-1.0, 0.6);
         let mut q_cmd = (-s.pitch_rate_max * elev_in).clamp(-s.pitch_down_lim, s.pitch_up_lim);
-        if i.alpha > alpha_lim && q_cmd > 0.0 {
-            q_cmd = 0.0; // alpha limiter: stop commanding more nose-up
+        if q_cmd > 0.0 {
+            // Soft alpha limiter: the nose-up rate command fades in over a band
+            // below the limit, from full authority at `alpha_lim - band` to
+            // nothing at the limit itself (smoothstep on the in-band fraction).
+            // The enforcement point is unchanged — the old law zeroed the
+            // command at the limit — only the discontinuity at that point is
+            // gone, so the protection bites without the pitch break.
+            let band = s.alpha_soft_band_rad.max(1e-6);
+            let over = ((i.alpha - (alpha_lim - band)) / band).clamp(0.0, 1.0);
+            let fade = over * over * (3.0 - 2.0 * over);
+            if fade > 0.0 {
+                q_cmd *= 1.0 - fade;
+            }
         }
         let e_q = q_cmd - i.q;
         self.pitch_int = (self.pitch_int + e_q * dt).clamp(-s.pitch_int_limit, s.pitch_int_limit);
@@ -420,7 +443,8 @@ impl Fbw {
             i.mach,
         );
 
-        let thrust_norm = (i.thrust_lbs / i.engine_count.max(1) as f64 / 26550.0).clamp(0.0, 1.5);
+        let thrust_norm =
+            (i.thrust_lbs / i.engine_count.max(1) as f64 / s.thrust_ref_lbs).clamp(0.0, 1.5);
 
         Surfaces {
             elevator_rad,
@@ -442,6 +466,7 @@ impl Fbw {
 /// Everything the control system reads to resolve a step: the pilot commands,
 /// the sensed body rates, and the flight condition (for the FBW's alpha limiter
 /// and leading-edge-flap schedule).
+#[derive(Clone, Copy, Default)]
 pub struct FcsInputs {
     pub p: f64,
     pub q: f64,
@@ -487,6 +512,125 @@ mod tests {
     use super::yaw_damper_term;
 
     const SCHED: Option<(f64, f64)> = Some((0.10, 0.11));
+
+    /// A minimal pitch-channel spec big enough to keep the surface outputs
+    /// unsaturated: rate limit ±0.5, P-only, generous surface limits.
+    fn spec() -> super::FbwSpec {
+        super::FbwSpec {
+            roll_rate_max: 0.0,
+            roll_kp: 0.0,
+            roll_ki: 0.0,
+            roll_int_limit: 0.0,
+            aileron_lim_rad: 1.0,
+            pitch_rate_max: 0.5,
+            pitch_kp: 1.0,
+            pitch_ki: 0.0,
+            pitch_int_limit: 0.0,
+            elevator_lim_rad: 10.0,
+            pitch_down_lim: 0.5,
+            pitch_up_lim: 0.5,
+            alpha_limit_rad: 0.48,
+            alpha_soft_band_rad: 0.0873,
+            alpha_limit_tvc_rad: 0.7,
+            tvc_gain: 0.0,
+            tvc_lim_rad: 0.349,
+            yaw_rate_max: 0.0,
+            yaw_kp: 0.0,
+            yaw_ki: 0.0,
+            yaw_int_limit: 0.0,
+            rudder_lim_rad: 1.0,
+            thrust_ref_lbs: 26_950.0,
+            lef_alpha_gain: 0.0,
+            lef_dyn_gain: 0.0,
+            lef_offset: 0.0,
+            lef_lim_rad: 0.0,
+        }
+    }
+
+    /// Full-stick nose-up inputs at `alpha`, zero rates, level flight.
+    fn inputs(alpha: f64, tvc: bool) -> super::FcsInputs {
+        super::FcsInputs {
+            elevator_cmd: -1.0, // negative stick = nose-up
+            alpha,
+            tvc_enable: tvc,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn alpha_limiter_fades_smoothly_below_the_limit() {
+        let s = spec();
+        let mut fbw = super::Fbw::default();
+        // Below the fade band the limiter is silent: full authority.
+        let below = fbw.resolve(&s, &inputs(0.30, false), 0.01);
+        assert!((below.elevator_rad + 0.5).abs() < 1e-9);
+
+        // Halfway up the band the command is partially faded, not stepped.
+        let mid = fbw.resolve(&s, &inputs(0.48 - 0.0873 / 2.0, false), 0.01);
+        assert!(mid.elevator_rad < 0.0, "still commanding nose-up");
+        assert!(mid.elevator_rad > -0.5, "authority already faded somewhat");
+        assert!((mid.elevator_rad + 0.5).abs() > 1e-3, "not yet fully faded");
+
+        // At the limit the nose-up command is fully blocked — the same
+        // enforcement point the hard limiter had.
+        let at = fbw.resolve(&s, &inputs(0.48, false), 0.01);
+        assert!(at.elevator_rad.abs() < 1e-9);
+    }
+
+    #[test]
+    fn alpha_limiter_leaves_nose_down_alone() {
+        let s = spec();
+        let mut fbw = super::Fbw::default();
+        let dn = super::FcsInputs {
+            elevator_cmd: 1.0, // positive stick = nose-down
+            alpha: 1.2,        // way past any limit
+            ..Default::default()
+        };
+        // Note the resolve clamps the stick input to [-1, 0.6]: full nose-down
+        // still only commands 0.6 of the rate, so expect 0.5 · 0.6.
+        let surf = fbw.resolve(&s, &dn, 0.01);
+        assert!((surf.elevator_rad - 0.5 * 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn tvc_widens_the_alpha_envelope() {
+        let s = spec();
+        let mut fbw = super::Fbw::default();
+        // α between the two limits: unconditionally blocked without TVC,
+        // untouched while the nozzles back up the tail.
+        let off = fbw.resolve(&s, &inputs(0.55, false), 0.01);
+        assert!(off.elevator_rad.abs() < 1e-9);
+        fbw.pitch_int = 0.0;
+        let on = fbw.resolve(&s, &inputs(0.55, true), 0.01);
+        assert!((on.elevator_rad + 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn thrust_norm_reads_the_spec_reference() {
+        let s = spec();
+        let mut fbw = super::Fbw::default();
+        // One engine at its military thrust reads 1.0.
+        let mil = super::FcsInputs {
+            thrust_lbs: 26_950.0,
+            engine_count: 1,
+            ..Default::default()
+        };
+        assert!((fbw.resolve(&s, &mil, 0.01).thrust_norm - 1.0).abs() < 1e-12);
+        // Two engines producing twice the reference also read 1.0.
+        let twin = super::FcsInputs {
+            thrust_lbs: 53_900.0,
+            engine_count: 2,
+            ..Default::default()
+        };
+        assert!((fbw.resolve(&s, &twin, 0.01).thrust_norm - 1.0).abs() < 1e-12);
+        // High thrust clamps where it always did.
+        let hot = super::FcsInputs {
+            thrust_lbs: 200_000.0,
+            engine_count: 1,
+            ..Default::default()
+        };
+        assert!((fbw.resolve(&s, &hot, 0.01).thrust_norm - 1.5).abs() < 1e-12);
+    }
 
     #[test]
     fn yaw_damper_is_silent_slow_and_full_fast() {
