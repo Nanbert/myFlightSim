@@ -5,7 +5,7 @@
 //! on `tools/ah64_cockpit.py`: regenerate the GLB in another terminal, then
 //! press F5 here to force a reload.
 //!
-//! Run: `cargo run --example ah64_cockpit_view`
+//! Run: `cargo run --features shots --example ah64_cockpit_view`
 //!
 //! Controls:
 //!   RMB drag .... look

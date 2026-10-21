@@ -183,34 +183,49 @@ pub fn render_page_lines(
     let note_amber = ui_theme::amber().with_alpha(0.80);
     for (row_e, row, mut node, mut bg, mut border) in &mut rows {
         let Some(line) = lines.0.get(row.0) else {
-            node.display = Display::None;
+            if node.display != Display::None {
+                node.display = Display::None;
+            }
             continue;
         };
-        node.display = Display::Flex;
+        if node.display != Display::Flex {
+            node.display = Display::Flex;
+        }
         let content = !line.left.is_empty() || !line.right.is_empty();
-        if !content {
+        if !content && node.min_height != Val::Px(24.0) {
             node.min_height = Val::Px(24.0);
         }
         // A cursor row = translucent bar + a lit left rail; everything else
-        // stays a floating line of text.
+        // stays a floating line of text. Every write here is guarded:
+        // unconditional `Mut` writes mark the node changed and force a layout
+        // pass for the whole card on every menu frame.
         let lit = content && line.kind == LineKind::Option && line.active;
-        *bg = match lit {
-            true => BackgroundColor(ui_theme::accent_soft()),
-            false => BackgroundColor(Color::NONE),
+        let want_bg = if lit {
+            ui_theme::accent_soft()
+        } else {
+            Color::NONE
         };
-        *border = BorderColor {
-            top: Color::NONE,
-            right: Color::NONE,
-            bottom: Color::NONE,
-            left: if lit { ui_theme::accent() } else { Color::NONE },
-        };
+        if bg.0 != want_bg {
+            bg.0 = want_bg;
+        }
+        let want_rail = if lit { ui_theme::accent() } else { Color::NONE };
+        if border.left != want_rail {
+            *border = BorderColor {
+                top: Color::NONE,
+                right: Color::NONE,
+                bottom: Color::NONE,
+                left: want_rail,
+            };
+        }
         let Ok(children) = kids.get(row_e) else {
             continue;
         };
         for (slot, child) in children.iter().take(2).enumerate() {
             let text = if slot == 0 { &line.left } else { &line.right };
             if let Ok(mut t) = texts.get_mut(child) {
-                t.0 = text.clone();
+                if t.0 != *text {
+                    t.0.clone_from(text);
+                }
             }
             let (color, size) = match (slot, line.kind, content) {
                 (0, LineKind::Heading, _) => (ui_theme::accent(), 26.0),
@@ -222,10 +237,15 @@ pub fn render_page_lines(
                 _ => (Color::NONE, 20.0), // spacer line: no glyphs to show
             };
             if let Ok(mut c) = colors.get_mut(child) {
-                c.0 = color;
+                if c.0 != color {
+                    c.0 = color;
+                }
             }
             if let Ok(mut f) = fonts.get_mut(child) {
-                f.font_size = FontSize::Px(size);
+                let want = FontSize::Px(size);
+                if f.font_size != want {
+                    f.font_size = want;
+                }
             }
         }
     }

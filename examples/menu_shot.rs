@@ -2,7 +2,7 @@
 //! `wtype`/`ydotool`), screenshotting each screen: default, ABOUT, INFO,
 //! SETTINGS, and PLAY → flight.
 //!
-//! Run: `cargo run --example menu_shot`
+//! Run: `cargo run --features shots --example menu_shot`
 
 use bevy::input::keyboard::{Key, KeyboardInput, NativeKey};
 use bevy::input::ButtonState;

@@ -582,7 +582,7 @@ mod tests {
             })
             .sum();
         assert_eq!(data.len(), expected);
-        assert_eq!(image.texture_descriptor.mip_level_count, levels as u32);
+        assert_eq!(image.texture_descriptor.mip_level_count, levels);
         assert_eq!(image.texture_descriptor.size.width, NOISE_SIZE);
         assert_eq!(image.texture_descriptor.size.height, NOISE_SIZE);
         assert_eq!(

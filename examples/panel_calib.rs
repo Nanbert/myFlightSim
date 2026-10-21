@@ -14,15 +14,13 @@
 //!      markers are dropped at the anchors so `/tmp/panel_calib_marked.png`
 //!      shows whether they landed on the painted dials.
 //!
-//! Run: `cargo run --example panel_calib`
+//! Run: `cargo run --features shots --example panel_calib`
+
+mod common;
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
-use bevy::winit::WinitSettings;
-use my_flight_sim::{app_state, autopilot, config, input, sim, view, weather};
-
-#[derive(Resource, Default)]
-struct Frame(u32);
+use my_flight_sim::view;
 
 /// Fallback dial list (fractions of the image + radius fractions), used until
 /// `/tmp/dials.txt` is written. Name matches the gauge `setup` module. These are
@@ -45,33 +43,9 @@ const PANEL_POINT: Vec3 = Vec3::new(0.0, 0.05, -0.675);
 const PANEL_NORMAL: Vec3 = Vec3::new(0.0, 0.08, 0.997);
 
 fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "panel_calib".into(),
-                // Same window config as `sim_view_shot`, so the measured
-                // fractions and the rays agree.
-                resolution: (1200, 800).into(),
-                ..default()
-            }),
-            ..default()
-        }))
-        .insert_resource(WinitSettings::continuous())
-        .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
-        .add_plugins((
-            sim::SimPlugin,
-            autopilot::AutopilotPlugin,
-            config::ConfigPlugin,
-            input::InputPlugin,
-            view::ViewPlugin,
-            weather::WeatherPlugin,
-        ))
-        .insert_state(app_state::AppState::Flying)
-        .add_systems(
-            OnEnter(app_state::AppState::Flying),
-            (view::spawn_flight_aircraft, view::reset_control_rig).chain(),
-        )
-        .init_resource::<Frame>()
+    // Same window config as `sim_view_shot`, so the measured fractions and the
+    // rays agree.
+    common::app("panel_calib", Some((1200, 800)))
         .add_systems(Startup, force_cockpit)
         .add_systems(Update, force_cockpit)
         .add_systems(Update, shots)
@@ -125,7 +99,7 @@ fn hit_plane(ray: Ray3d, point: Vec3, normal: Vec3) -> Option<Vec3> {
 
 fn shots(
     mut commands: Commands,
-    mut f: ResMut<Frame>,
+    mut f: ResMut<common::Frame>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut exit: MessageWriter<AppExit>,

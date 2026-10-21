@@ -14,6 +14,7 @@ use bevy::text::FontSize;
 use crate::aircraft_profile;
 use crate::app_state::{unpaused, AppState};
 use crate::sim::Sim;
+use crate::ui_theme::centered;
 use crate::view::{self, CockpitTune, Ui};
 
 /// The modelled MCP board in cockpit-model coordinates: the 737 model is
@@ -136,23 +137,6 @@ fn spawn_overlay(mut commands: Commands, sim: Res<Sim>) {
         GlobalZIndex(15),
         DespawnOnExit(AppState::Flying),
     ));
-}
-
-/// A fixed-size box centred on the screen, optionally offset in px.
-fn centered(w: f32, h: f32, dx: f32, dy: f32) -> Node {
-    Node {
-        position_type: PositionType::Absolute,
-        left: Val::Percent(50.0),
-        top: Val::Percent(50.0),
-        width: Val::Px(w),
-        height: Val::Px(h),
-        margin: UiRect {
-            left: Val::Px(-w * 0.5 + dx),
-            top: Val::Px(-h * 0.5 + dy),
-            ..default()
-        },
-        ..default()
-    }
 }
 
 /// Test the crosshair against the modelled board and project its outline.

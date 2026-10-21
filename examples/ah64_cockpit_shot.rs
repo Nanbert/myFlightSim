@@ -5,7 +5,7 @@
 //! depend on the desktop's window shape), pins the camera at the eye, looks
 //! down the nose, and writes the frame to disk.
 //!
-//! Run: `cargo run --example ah64_cockpit_shot`
+//! Run: `cargo run --features shots --example ah64_cockpit_shot`
 //! Open `/tmp/opencode/ah64_cockpit_bevy.png`.
 
 use bevy::asset::RenderAssetUsages;

@@ -1,7 +1,8 @@
 //! Renders the sky plugin alone from four useful altitudes/directions, so the
 //! cloud look can be compared against the previous screenshots in `.tmp/`.
 //!
-//! Run: `cargo run --example cloud_shot` (set `RAIN=1` for the storm deck).
+//! Run: `cargo run --features shots --example cloud_shot` (set `RAIN=1` for the
+//! storm deck).
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;

@@ -58,13 +58,12 @@ fn card_sample(x: f32, y: f32) -> [u8; 4] {
 /// The fixed parts: the bezel ring, the index at the top, and the little
 /// aircraft symbol in the centre.
 fn frame_sample(x: f32, y: f32) -> [u8; 4] {
-    let u = (x * x + y * y).sqrt() / DIAL_R;
-    if let Some(c) = bezel_grade(u, 0.88) {
+    let (u, ang, _, bezel) = dial_sample(x, y, 0.88);
+    if let Some(c) = bezel {
         return c;
     }
 
     // Index: a triangle pointing down at the top of the dial.
-    let ang = y.atan2(x).to_degrees();
     let cw = (ang - 270.0).rem_euclid(360.0);
     let cw_signed = if cw > 180.0 { cw - 360.0 } else { cw };
     if (0.80..0.875).contains(&u) {

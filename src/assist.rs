@@ -40,7 +40,11 @@ impl Plugin for AssistPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AssistState>()
             .add_systems(OnEnter(AppState::Flying), reset_assists)
-            .add_systems(Update, update_assists.run_if(unpaused));
+            // Fixed step, ahead of the FDM tick that consumes the assist
+            // term: the P-D loops assume a constant dt, and a render-rate loop
+            // makes the damping term change with frame rate (the bank-hold /
+            // turn-coord oscillation in BUG-001).
+            .add_systems(FixedPreUpdate, update_assists.run_if(unpaused));
     }
 }
 
@@ -60,14 +64,14 @@ fn coord_command(slip: f64) -> f64 {
 }
 
 fn update_assists(
-    time: Res<Time>,
+    time: Res<Time<Fixed>>,
     sim: Res<Sim>,
     config: Res<GameConfig>,
     keys: Res<ButtonInput<KeyCode>>,
     mut bindings: ResMut<Bindings>,
     mut state: ResMut<AssistState>,
 ) {
-    let dt = time.delta_secs_f64().clamp(0.0, 0.1);
+    let dt = time.delta_secs_f64();
     let c172 = aircraft_profile::normalized(&sim.name) == "c172p";
     let cfg = config.assists(&sim.name);
 

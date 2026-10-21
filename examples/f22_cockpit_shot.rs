@@ -6,7 +6,7 @@
 //! Controls: right-drag = look, W/A/S/D = move, E/Q = up/down,
 //! Shift = faster, Ctrl = slower, P = screenshot, Esc = quit.
 //!
-//! Run: `cargo run --example f22_cockpit_shot`
+//! Run: `cargo run --features shots --example f22_cockpit_shot`
 
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;

@@ -1,7 +1,7 @@
 //! Screenshots the F-22's condensation vapor: the wingtip trails in a hard pull
 //! and the transonic cone near Mach 1, for eyeballing placement and tuning.
 //!
-//! Run: `FDM_BACKEND=rust AIRCRAFT=f22 cargo run --example vapor_shot`
+//! Run: `FDM_BACKEND=rust AIRCRAFT=f22 cargo run --features shots --example vapor_shot`
 //!
 //! `SCENE=pull` (default) hauls into a hard pull so the wingtips, leading edge
 //! and forebody all feed; `SCENE=roll` rolls while pulling, so the leading edge
@@ -16,13 +16,9 @@ use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 use bevy::render::view::{DebandDither, Msaa};
 use bevy::window::PresentMode;
-use bevy::winit::WinitSettings;
-use my_flight_sim::{
-    app_state, autopilot, cloud_camera, config, fx, input, map, sim, sky, vapor, view, weather,
-};
+use my_flight_sim::{cloud_camera, fx, input, map, sim, sky, vapor, weather};
 
-#[derive(Resource, Default)]
-struct Frame(u32);
+mod common;
 
 /// `CAM=game` leaves the camera to the game's own chase rig (`follow_camera` +
 /// `camera_feel`) instead of the fixed test framing, so the buffet, bank
@@ -65,57 +61,34 @@ fn main() {
         _ => Scene::Pull,
     };
     let game_cam = std::env::var("CAM").is_ok_and(|v| v == "game");
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "vapor_shot".into(),
-                resolution: (1200, 800).into(),
-                present_mode: if std::env::var("SOFTWARE").is_ok() {
-                    PresentMode::Immediate
-                } else {
-                    PresentMode::AutoVsync
-                },
-                ..default()
-            }),
-            ..default()
-        }))
-        // Keep stepping while unfocused, so the frame-counted shots fire.
-        .insert_resource(WinitSettings::continuous())
-        .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
-        .add_plugins((
-            sim::SimPlugin,
-            autopilot::AutopilotPlugin,
-            config::ConfigPlugin,
-            input::InputPlugin,
-            view::ViewPlugin,
-            vapor::VaporPlugin,
-            fx::FxPlugin,
-            weather::WeatherPlugin,
-            map::MapPlugin,
-        ))
-        .insert_state(app_state::AppState::Flying)
-        .add_systems(
-            OnEnter(app_state::AppState::Flying),
-            (view::spawn_flight_aircraft, view::reset_control_rig).chain(),
-        )
-        .init_resource::<Frame>()
-        .insert_resource(scene)
-        .insert_resource(GameCam(game_cam))
-        .insert_resource(MachHold { throttle: 0.75 })
-        .insert_resource(sky::CloudField {
-            noise: Handle::default(),
-            base: 1_500.0,
-            top: 6_500.0,
-            wind: 6.0,
-        })
-        .add_systems(Startup, launch)
-        .add_systems(Update, software_camera)
-        .add_systems(Update, clear_weather)
-        .add_systems(Update, report)
-        .add_systems(Last, drive)
-        .add_systems(Last, shot)
-        .add_systems(PostUpdate, chase_cam)
-        .run();
+    common::app_with(Window {
+        title: "vapor_shot".into(),
+        resolution: (1200, 800).into(),
+        present_mode: if std::env::var("SOFTWARE").is_ok() {
+            PresentMode::Immediate
+        } else {
+            PresentMode::AutoVsync
+        },
+        ..default()
+    })
+    .add_plugins((vapor::VaporPlugin, fx::FxPlugin, map::MapPlugin))
+    .insert_resource(scene)
+    .insert_resource(GameCam(game_cam))
+    .insert_resource(MachHold { throttle: 0.75 })
+    .insert_resource(sky::CloudField {
+        noise: Handle::default(),
+        base: 1_500.0,
+        top: 6_500.0,
+        wind: 6.0,
+    })
+    .add_systems(Startup, launch)
+    .add_systems(Update, software_camera)
+    .add_systems(Update, clear_weather)
+    .add_systems(Update, report)
+    .add_systems(Last, drive)
+    .add_systems(Last, shot)
+    .add_systems(PostUpdate, chase_cam)
+    .run();
 }
 
 /// Software-GL fallback: without a real GPU, bloom/MSAA's float targets fail in
@@ -162,8 +135,8 @@ fn clear_weather(mut weather: ResMut<weather::Weather>) {
 }
 
 /// Log the signals that drive the effects, so runs are self-describing.
-fn report(state: Res<sim::AircraftState>, f: Res<Frame>) {
-    if f.0 % 40 == 0 {
+fn report(state: Res<sim::AircraftState>, f: Res<common::Frame>) {
+    if f.0.is_multiple_of(40) {
         info!(
             "frame {} alpha {:.1} deg  mach {:.2}  ias {:.0} kt  alt {:.0} ft  \
              roll {:.0} deg  p {:.0} deg/s  r {:.0} deg/s",
@@ -244,7 +217,7 @@ fn shot(
     mut commands: Commands,
     scene: Res<Scene>,
     game_cam: Res<GameCam>,
-    mut f: ResMut<Frame>,
+    mut f: ResMut<common::Frame>,
     mut exit: MessageWriter<AppExit>,
 ) {
     f.0 += 1;

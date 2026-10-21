@@ -187,6 +187,24 @@ macro_rules! opaque_material {
 }
 pub(crate) use opaque_material;
 
+/// A fixed-size box centred on the screen, optionally offset in px. Used by
+/// the cockpit crosshair and its tick marks.
+pub fn centered(w: f32, h: f32, dx: f32, dy: f32) -> Node {
+    Node {
+        position_type: PositionType::Absolute,
+        left: Val::Percent(50.0),
+        top: Val::Percent(50.0),
+        width: Val::Px(w),
+        height: Val::Px(h),
+        margin: UiRect {
+            left: Val::Px(-w * 0.5 + dx),
+            top: Val::Px(-h * 0.5 + dy),
+            ..default()
+        },
+        ..default()
+    }
+}
+
 /// Set every listed node's `display` to `want`, writing only on change (the
 /// read-then-write keeps Bevy change detection from replaying the render sync
 /// each frame). All the "hide this overlay unless state X" systems converge

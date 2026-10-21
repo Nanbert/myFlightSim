@@ -2,7 +2,7 @@
 //! choosing the wave/light tuning by eye.
 //!
 //! Four tunings × four altitudes -> `/tmp/sea_<variant>_<alt>m.png`.
-//! Run: `cargo run --example water_shot`
+//! Run: `cargo run --features shots --example water_shot`
 //!
 //! `MOTION=1` instead renders 60-frame clips at 10 m and the 500 m mission
 //! minimum for judging the wave animation -> `/tmp/sea_motion/<alt>m_<frame>.png`.

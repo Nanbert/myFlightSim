@@ -24,6 +24,9 @@ pub struct StartFlight;
 /// FDM step. Matches the rate JSBSim was validated against.
 pub const DT: f64 = 1.0 / 120.0;
 
+/// One knot in feet per second.
+pub const FPS_TO_KT: f64 = 0.592_483_801;
+
 /// Default cruise point for the airborne trimmed start.
 #[cfg(test)]
 const CRUISE_ALT_FT: f64 = 3000.0;
@@ -238,24 +241,7 @@ impl Sim {
     /// runway along with the aircraft.
     pub fn reset_final(&mut self) {
         // 5140 m south of the origin: z_world = 140 (threshold) + 5000.
-        const GATE_M: f64 = 5140.0;
-        let dlat = -(GATE_M / 0.3048) / fdm::FT_PER_DEG_LAT;
-        self.model.set("ic/lat-gc-deg", dlat);
-        self.model.set("ic/long-gc-deg", 0.0);
-        self.model.set("ic/vc-kts", 155.0);
-        self.model.set("ic/h-sl-ft", 1300.0);
-        self.model.set("ic/psi-true-deg", 0.0);
-        // Approach config first, so apply_ic seats the flap position and the
-        // trim solver sees the gear/flap jet, not a clean airframe.
-        self.model.set("fcs/flap-cmd-norm", 0.33);
-        self.model.set("gear/gear-cmd-norm", 1.0);
-        self.model.apply_ic();
-        self.model.set("gear/gear-pos-norm", 1.0);
-        self.light_engine();
-        self.model.trim(155.0, 1300.0);
-        self.reset_hud_memory();
-        self.origin_lat = 0.0;
-        self.origin_lon = 0.0;
+        self.reset_final_at(5140.0, 1300.0, 155.0, 0.33);
     }
 
     /// The C172 landing lesson's seat: on a 3° final for runway 36, 2 NM out
@@ -264,23 +250,27 @@ impl Sim {
     /// `reset_final`, and well inside the ILS gate for the CDI needle.
     pub fn reset_final_c172(&mut self) {
         // 3704 m south of the origin: z_world = 140 (threshold) + 3704 (2 NM).
-        const GATE_M: f64 = 3704.0;
-        const ALT_FT: f64 = 640.0;
-        const VC_KTS: f64 = 70.0;
-        let dlat = -(GATE_M / 0.3048) / fdm::FT_PER_DEG_LAT;
+        self.reset_final_at(3704.0, 640.0, 70.0, 0.67);
+    }
+
+    /// Seat the aircraft on final at `gate_m` south of the threshold, `alt_ft`
+    /// / `vc_kts`, with flaps `flap` and gear down. Keeps the world origin
+    /// anchored at the aerodrome (the scenery is static), like `reset_final`.
+    fn reset_final_at(&mut self, gate_m: f64, alt_ft: f64, vc_kts: f64, flap: f64) {
+        let dlat = -(gate_m / 0.3048) / fdm::FT_PER_DEG_LAT;
         self.model.set("ic/lat-gc-deg", dlat);
         self.model.set("ic/long-gc-deg", 0.0);
-        self.model.set("ic/vc-kts", VC_KTS);
-        self.model.set("ic/h-sl-ft", ALT_FT);
+        self.model.set("ic/vc-kts", vc_kts);
+        self.model.set("ic/h-sl-ft", alt_ft);
         self.model.set("ic/psi-true-deg", 0.0);
         // Approach config first, so apply_ic seats the flap position and the
-        // trim solver sees the flapped airframe.
-        self.model.set("fcs/flap-cmd-norm", 0.67);
+        // trim solver sees the gear/flap jet, not a clean airframe.
+        self.model.set("fcs/flap-cmd-norm", flap);
         self.model.set("gear/gear-cmd-norm", 1.0);
         self.model.apply_ic();
         self.model.set("gear/gear-pos-norm", 1.0);
         self.light_engine();
-        self.model.trim(VC_KTS, ALT_FT);
+        self.model.trim(vc_kts, alt_ft);
         self.reset_hud_memory();
         self.origin_lat = 0.0;
         self.origin_lon = 0.0;
@@ -655,7 +645,7 @@ fn publish_state(mut sim: ResMut<Sim>, time: Res<Time>, mut state: ResMut<Aircra
         heli_hover_state: m.get("fcs/heli-hover-state"),
         heli_balance: m.get("fcs/heli-balance-enable") > 0.5,
         tas_kts: m.get("velocities/vtrue-kts"),
-        gs_kts: gs_fps * 0.592_483_801,
+        gs_kts: gs_fps * FPS_TO_KT,
         track_deg,
         flight_path_deg,
         g_norm,

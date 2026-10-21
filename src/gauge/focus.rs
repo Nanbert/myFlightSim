@@ -15,6 +15,7 @@ use bevy::text::FontSize;
 use super::{project_dial, PanelKey, DIAL_PX};
 use crate::app_state::{unpaused, AppState};
 use crate::sim::Sim;
+use crate::ui_theme::centered;
 use crate::view::{AircraftRoot, CockpitTune, Ui};
 
 /// Rest cockpit lens, matching `view::camera_feel`'s default.
@@ -189,23 +190,6 @@ fn spawn_overlay(
                 ));
             });
         });
-}
-
-/// A fixed-size box centred on the screen, optionally offset in px.
-fn centered(w: f32, h: f32, dx: f32, dy: f32) -> Node {
-    Node {
-        position_type: PositionType::Absolute,
-        left: Val::Percent(50.0),
-        top: Val::Percent(50.0),
-        width: Val::Px(w),
-        height: Val::Px(h),
-        margin: UiRect {
-            left: Val::Px(-w * 0.5 + dx),
-            top: Val::Px(-h * 0.5 + dy),
-            ..default()
-        },
-        ..default()
-    }
 }
 
 /// Pick the dial under the camera's forward ray, in the airframe body frame.

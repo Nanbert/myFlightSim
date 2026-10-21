@@ -549,7 +549,11 @@ pub struct CockpitTune {
 /// rotation for the rigged models, a rotate-about-a-line for the baked ones).
 #[derive(Resource, Default)]
 pub struct ControlRig {
-    rest: HashMap<Entity, Transform>,
+    /// Control nodes in their bind pose, with their names so the per-frame
+    /// driver can dispatch on the surface without scanning every named entity.
+    rest: HashMap<Entity, (Name, Transform)>,
+    /// F-22 landing-gear nodes, each with its index into [`F22_GEAR`].
+    gear: Vec<(Entity, usize)>,
     /// Accumulated visual prop rotation (radians), integrated from rpm so the
     /// spin rate tracks the *instantaneous* rpm.
     prop_phase: f32,
@@ -941,7 +945,10 @@ fn capture_rig(names: Query<(Entity, &Name, &Transform)>, mut rig: ResMut<Contro
     }
     for (e, n, t) in &names {
         if is_control_bone(n.as_str()) {
-            rig.rest.insert(e, *t);
+            rig.rest.insert(e, (n.clone(), *t));
+        }
+        if let Some(i) = F22_GEAR.iter().position(|p| p.name == n.as_str()) {
+            rig.gear.push((e, i));
         }
     }
 }
@@ -961,7 +968,7 @@ fn is_control_bone(name: &str) -> bool {
 /// The rigged F-22 glTF ships a few props that aren't the aircraft: a 1.8 m
 /// ground-grid quad (`Object_113`) and a boarding ladder (`Object_89`) parked
 /// off the left side. Hide them so they don't fly with the jet. Idempotent.
-fn hide_scene_junk(mut q: Query<(&Name, &mut Visibility)>) {
+fn hide_scene_junk(mut q: Query<(&Name, &mut Visibility), Added<Name>>) {
     const JUNK: [&str; 2] = ["Object_113", "Object_89"];
     for (name, mut vis) in &mut q {
         if JUNK.contains(&name.as_str()) && *vis != Visibility::Hidden {
@@ -977,7 +984,7 @@ fn drive_surfaces(
     time: Res<Time>,
     state: Res<AircraftState>,
     mut rig: ResMut<ControlRig>,
-    mut q: Query<(&Name, Entity, &mut Transform)>,
+    mut q: Query<&mut Transform>,
 ) {
     if rig.rest.is_empty() {
         return;
@@ -1004,14 +1011,15 @@ fn drive_surfaces(
     // drops the left one, matching the flaperons.
     let stab_l = (state.elevator as f32 + STAB_ROLL_SHARE * state.aileron as f32).clamp(-1.0, 1.0);
     let stab_r = (state.elevator as f32 - STAB_ROLL_SHARE * state.aileron as f32).clamp(-1.0, 1.0);
-    for (name, e, mut tf) in &mut q {
-        let Some(base) = rig.rest.get(&e) else {
+    for (e, (name, base)) in &rig.rest {
+        let Ok(mut tf) = q.get_mut(*e) else {
             continue;
         };
+        let name = name.as_str();
 
         // Baked (unrigged) models: hinge about a measured line, not the node's
         // origin, so the translation moves too.
-        if let Some(s) = C172_SURFACES.iter().find(|s| s.node == name.as_str()) {
+        if let Some(s) = C172_SURFACES.iter().find(|s| s.node == name) {
             let angle = match s.src {
                 // The C172's elevator reads the actual surface angle, so a
                 // pitch trim that leaves the yoke centred still shows on the
@@ -1033,7 +1041,7 @@ fn drive_surfaces(
         // Rigged models: each bone's origin is its hinge, so a plain rotation on
         // top of the bind pose is enough. The F-22's per-surface signs live in
         // the axis consts (see `F22_*`).
-        let (axis, angle) = match name.as_str() {
+        let (axis, angle) = match name {
             // F-22 model-A pivots. Stabilators take pitch plus a share of roll
             // (the real jet's differential tail); the four flaperons take the
             // rest of the aileron command (per-side sign already in the const,
@@ -1074,16 +1082,21 @@ fn drive_surfaces(
 /// Fold the landing gear between the model's authored down and up poses by the
 /// live gear position. The FDM rate-limits the travel over ~5 s, so the blend
 /// reads as a smooth cycle without any easing here.
-fn drive_gear(state: Res<AircraftState>, mut q: Query<(&Name, &mut Transform)>) {
+fn drive_gear(
+    state: Res<AircraftState>,
+    rig: Res<ControlRig>,
+    mut q: Query<&mut Transform>,
+) {
     if !state.gear_available {
         return;
     }
     // 0 at gear-down, 1 at gear-up.
     let t = (1.0 - state.gear_pos as f32).clamp(0.0, 1.0);
-    for (name, mut tf) in &mut q {
-        let Some(p) = F22_GEAR.iter().find(|p| p.name == name.as_str()) else {
+    for &(e, i) in &rig.gear {
+        let Ok(mut tf) = q.get_mut(e) else {
             continue;
         };
+        let p = &F22_GEAR[i];
         tf.rotation = Quat::from_array(p.down_rot).slerp(Quat::from_array(p.up_rot), t);
         tf.translation = Vec3::from_array(p.down_trans).lerp(Vec3::from_array(p.up_trans), t);
     }
@@ -1573,6 +1586,7 @@ fn update_hud(
     map: Res<crate::map::ActiveMap>,
     lesson: Res<crate::mission::ActiveLesson>,
     taxi: Res<crate::taxi::Taximeter>,
+    mut hints: Local<(String, (bool, bool, bool, bool))>,
     mut q: Query<&mut Text, With<Hud>>,
 ) {
     let Ok(mut text) = q.single_mut() else {
@@ -1713,16 +1727,26 @@ fn update_hud(
         }
     }
 
-    out.push_str("\n\n");
-    out.push_str(&control_hints(
-        &bindings,
+    // `control_hints` walks every binding and formats a string per row, but the
+    // result only changes with the keymap or the view flags — not with the
+    // binding *values* the input layer rewrites each frame. Cache on those
+    // flags (the keymap is fixed for the duration of a flight).
+    let flags = (
         ui.cockpit,
         sim.name == "f22",
         state.autopilot_available,
         aircraft_profile::normalized(&sim.name) == "c172p",
-    ));
+    );
+    if hints.0.is_empty() || hints.1 != flags {
+        hints.0 = control_hints(&bindings, flags.0, flags.1, flags.2, flags.3);
+        hints.1 = flags;
+    }
+    out.push_str("\n\n");
+    out.push_str(&hints.0);
 
-    text.0 = out;
+    if text.0 != out {
+        text.0 = out;
+    }
 }
 
 fn draw_grid(

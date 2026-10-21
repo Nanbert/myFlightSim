@@ -35,8 +35,8 @@ fn main() {
     fdm.set_property("propulsion/set-running", -1.0);
 
     println!(
-        "{:>6}  {:>8}  {:>7}  {:>8}  {:>6}  {:>5}  {:>5}  {:>5}  {:>3}  {}",
-        "t[s]", "ALT[ft]", "IAS[kt]", "VS[fpm]", "PITCH", "ROLL", "HDG", "THR", "WOW", "phase"
+        "{:>6}  {:>8}  {:>7}  {:>8}  {:>6}  {:>5}  {:>5}  {:>5}  {:>3}  phase",
+        "t[s]", "ALT[ft]", "IAS[kt]", "VS[fpm]", "PITCH", "ROLL", "HDG", "THR", "WOW"
     );
 
     let total_s = 180.0;

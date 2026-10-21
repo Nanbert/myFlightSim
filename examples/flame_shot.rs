@@ -1,7 +1,7 @@
 //! Screenshots the F-22's exhaust: the dry military plume and the afterburner,
 //! including the ignition flare, for eyeballing placement and tuning.
 //!
-//! Run: `FDM_BACKEND=rust AIRCRAFT=f22 SCENE=ab cargo run --example flame_shot`
+//! Run: `FDM_BACKEND=rust AIRCRAFT=f22 SCENE=ab cargo run --features shots --example flame_shot`
 //!
 //! `SCENE=mil` (default) holds a dry power setting; `SCENE=ab` goes to full
 //! reheat, so an early shot catches the light-up flare and a late one the
@@ -9,13 +9,11 @@
 //! up and back down, so the plume's automatic growth and fade are on camera.
 //! Shots land in `/tmp/opencode/`.
 
+mod common;
+
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
-use bevy::winit::WinitSettings;
-use my_flight_sim::{app_state, autopilot, config, fx, input, sim, view, weather};
-
-#[derive(Resource, Default)]
-struct Frame(u32);
+use my_flight_sim::{fx, input, sim};
 
 /// Which power setting to fly for the shot.
 #[derive(Resource, Default)]
@@ -30,33 +28,8 @@ fn main() {
     let scene = std::env::var("SCENE").unwrap_or_default();
     let afterburner = scene == "ab";
     let arcade = scene == "arc";
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "flame_shot".into(),
-                resolution: (1200, 800).into(),
-                ..default()
-            }),
-            ..default()
-        }))
-        // Keep stepping while unfocused, so the frame-counted shots fire.
-        .insert_resource(WinitSettings::continuous())
-        .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
-        .add_plugins((
-            sim::SimPlugin,
-            autopilot::AutopilotPlugin,
-            config::ConfigPlugin,
-            input::InputPlugin,
-            view::ViewPlugin,
-            fx::FxPlugin,
-            weather::WeatherPlugin,
-        ))
-        .insert_state(app_state::AppState::Flying)
-        .add_systems(
-            OnEnter(app_state::AppState::Flying),
-            (view::spawn_flight_aircraft, view::reset_control_rig).chain(),
-        )
-        .init_resource::<Frame>()
+    common::app("flame_shot", Some((1200, 800)))
+        .add_plugins(fx::FxPlugin)
         .insert_resource(Scene {
             afterburner,
             arcade,
@@ -80,8 +53,8 @@ fn launch(scene: Res<Scene>, mut sim: ResMut<sim::Sim>) {
 }
 
 /// Log the signals that drive the flame, so runs are self-describing.
-fn report(state: Res<sim::AircraftState>, f: Res<Frame>) {
-    if f.0 % 20 == 0 {
+fn report(state: Res<sim::AircraftState>, f: Res<common::Frame>) {
+    if f.0.is_multiple_of(20) {
         info!(
             "frame {} throttle {:.2}  mach {:.2}  ias {:.0} kt",
             f.0, state.throttle, state.mach, state.cas_kts
@@ -94,7 +67,7 @@ fn report(state: Res<sim::AircraftState>, f: Res<Frame>) {
 ///
 /// The light-up is held back a few frames so the ignition flare lands after the
 /// chase camera has settled — otherwise the early shots come out empty.
-fn drive(scene: Res<Scene>, f: Res<Frame>, mut bindings: ResMut<input::Bindings>) {
+fn drive(scene: Res<Scene>, f: Res<common::Frame>, mut bindings: ResMut<input::Bindings>) {
     let throttle = if scene.arcade {
         // Sweep idle → full reheat → idle so both the plume's growth and its
         // fade are on camera.
@@ -141,7 +114,7 @@ fn chase_cam(rp: Res<sim::RenderPose>, mut q: Query<&mut Transform, With<Camera3
 fn shot(
     mut commands: Commands,
     scene: Res<Scene>,
-    mut f: ResMut<Frame>,
+    mut f: ResMut<common::Frame>,
     mut exit: MessageWriter<AppExit>,
 ) {
     f.0 += 1;

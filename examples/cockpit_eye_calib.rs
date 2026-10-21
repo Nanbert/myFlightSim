@@ -15,14 +15,13 @@
 //!   P               print the pose and write /tmp/cockpit_eye.txt
 //!   Mouse           free-look (the crosshair stays fixed at screen centre)
 //!
-//! Run: `cargo run --example cockpit_eye_calib`
+//! Run: `cargo run --features shots --example cockpit_eye_calib`
+
+mod common;
 
 use bevy::prelude::*;
 use bevy::text::FontSize;
-use bevy::winit::WinitSettings;
-use my_flight_sim::{
-    app_state, autopilot, cockpit, config, input, mcp_ui, pfd, sim, view, weather,
-};
+use my_flight_sim::{cockpit, mcp_ui, pfd, view};
 
 /// The shipped 737 cockpit pose, kept in sync with `cockpit_spec("737")`.
 const DEFAULT_EYE: [f32; 3] = [0.2801, 2.06, 0.9355];
@@ -39,34 +38,9 @@ struct CalibLabel;
 fn main() {
     std::env::set_var("AIRCRAFT", "737");
     std::env::set_var("FDM_BACKEND", "rust");
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "737 cockpit eye calibration".into(),
-                resolution: (1400, 900).into(),
-                ..default()
-            }),
-            ..default()
-        }))
+    common::app("737 cockpit eye calibration", Some((1400, 900)))
         .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
-        .insert_resource(WinitSettings::continuous())
-        .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
-        .add_plugins((
-            sim::SimPlugin,
-            autopilot::AutopilotPlugin,
-            config::ConfigPlugin,
-            input::InputPlugin,
-            view::ViewPlugin,
-            mcp_ui::McpUiPlugin,
-            pfd::PfdPlugin,
-            cockpit::CockpitPlugin,
-            weather::WeatherPlugin,
-        ))
-        .insert_state(app_state::AppState::Flying)
-        .add_systems(
-            OnEnter(app_state::AppState::Flying),
-            (view::spawn_flight_aircraft, view::reset_control_rig).chain(),
-        )
+        .add_plugins((mcp_ui::McpUiPlugin, pfd::PfdPlugin, cockpit::CockpitPlugin))
         .add_systems(Startup, (init_cockpit, spawn_overlay))
         .add_systems(Update, force_cockpit)
         .add_systems(Update, tune.before(view::follow_camera))

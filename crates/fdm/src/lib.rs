@@ -3033,7 +3033,7 @@ mod tests {
         }
         let cl_clean = m.get("aero/cl-squared");
         m.set("fcs/speedbrake-cmd-norm", 1.0);
-        for _ in 0..120 * 1 {
+        for _ in 0..120 {
             m.step();
         }
         let pos = m.get("fcs/speedbrake-pos-norm");

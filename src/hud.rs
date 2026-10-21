@@ -25,12 +25,9 @@ use bevy::ui_render::prelude::{MaterialNode, UiMaterial, UiMaterialPlugin};
 use flight_model::wrap180;
 
 use crate::app_state::{unpaused, AppState};
-use crate::sim::{AircraftState, Sim};
+use crate::sim::{AircraftState, Sim, FPS_TO_KT};
 use crate::ui_theme;
 use crate::view::{CockpitModel, Ui};
-
-/// One knot in feet per second.
-const FPS_TO_KT: f64 = 0.592_483_801;
 
 /// Uniform for both HUD materials. Field order and packing match the WGSL
 /// `HudParams` struct in `assets/shaders/f22_hud_sym.wesl` exactly.

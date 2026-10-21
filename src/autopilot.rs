@@ -892,8 +892,10 @@ mod tests {
     #[test]
     fn heading_select_turns_onto_the_bug_and_levels() {
         let mut m = rust_737(10_000.0, 250.0);
-        let mut mcp = Mcp::default();
-        mcp.hdg_deg = 90.0;
+        let mcp = Mcp {
+            hdg_deg: 90.0,
+            ..default()
+        };
         let mut ap = Autopilot::default();
         ap.toggle(&*m);
         ap.press_mode(ToggleAction::AutoThrottle, &*m);
@@ -908,9 +910,11 @@ mod tests {
     #[test]
     fn vs_climbs_and_captures_the_mcp_altitude() {
         let mut m = rust_737(10_000.0, 250.0);
-        let mut mcp = Mcp::default();
-        mcp.alt_ft = 12_000.0;
-        mcp.vs_fpm = 1_000.0;
+        let mcp = Mcp {
+            alt_ft: 12_000.0,
+            vs_fpm: 1_000.0,
+            ..default()
+        };
         let mut ap = Autopilot::default();
         ap.toggle(&*m);
         ap.press_mode(ToggleAction::AutoThrottle, &*m);
@@ -930,8 +934,10 @@ mod tests {
     #[test]
     fn autothrottle_holds_the_mcp_speed() {
         let mut m = rust_737(10_000.0, 250.0);
-        let mut mcp = Mcp::default();
-        mcp.ias_kts = 230.0;
+        let mcp = Mcp {
+            ias_kts: 230.0,
+            ..default()
+        };
         let mut ap = Autopilot::default();
         ap.toggle(&*m);
         ap.press_mode(ToggleAction::AutoThrottle, &*m);
@@ -944,9 +950,11 @@ mod tests {
     #[test]
     fn level_change_climbs_to_the_window_and_hands_over_to_spd() {
         let mut m = rust_737(10_000.0, 250.0);
-        let mut mcp = Mcp::default();
-        mcp.alt_ft = 14_000.0;
-        mcp.ias_kts = 250.0;
+        let mcp = Mcp {
+            alt_ft: 14_000.0,
+            ias_kts: 250.0,
+            ..default()
+        };
         let mut ap = Autopilot::default();
         ap.toggle(&*m);
         ap.press_mode(ToggleAction::LvlChg, &*m);
@@ -1003,8 +1011,10 @@ mod tests {
         let mut m = rust_737(2_000.0, 170.0);
         m.set("gear/gear-cmd-norm", 1.0);
         m.set("fcs/flap-cmd-norm", 0.5);
-        let mut mcp = Mcp::default();
-        mcp.ias_kts = 150.0;
+        let mut mcp = Mcp {
+            ias_kts: 150.0,
+            ..default()
+        };
         let mut ap = Autopilot::default();
         ap.toggle(&*m);
         ap.press_mode(ToggleAction::AutoThrottle, &*m);

@@ -2,17 +2,14 @@
 //! haze) from a rear-quarter chase view, for eyeballing the anchor placement and
 //! tuning.
 //!
-//! Run: `FDM_BACKEND=rust AIRCRAFT=f22 cargo run --example fx_shot`
+//! Run: `FDM_BACKEND=rust AIRCRAFT=f22 cargo run --features shots --example fx_shot`
 //!
 //! `VIEW=side` swaps the camera to a broadside view of the exhaust.
 
-use bevy::prelude::*;
-use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
-use bevy::winit::WinitSettings;
-use my_flight_sim::{app_state, autopilot, config, fx, input, sim, view, weather};
+mod common;
 
-#[derive(Resource, Default)]
-struct Frame(u32);
+use bevy::prelude::*;
+use my_flight_sim::{fx, input, sim, weather};
 
 /// `VIEW=side` puts the camera broadside to the exhaust instead of the default
 /// rear-quarter view.
@@ -20,40 +17,29 @@ struct Frame(u32);
 struct SideView(bool);
 
 fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "fx_shot".into(),
-                resolution: (1200, 800).into(),
-                ..default()
-            }),
-            ..default()
-        }))
-        // Keep stepping while unfocused, so the frame-counted shots fire.
-        .insert_resource(WinitSettings::continuous())
-        .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
-        .add_plugins((
-            sim::SimPlugin,
-            autopilot::AutopilotPlugin,
-            config::ConfigPlugin,
-            input::InputPlugin,
-            view::ViewPlugin,
-            fx::FxPlugin,
-            weather::WeatherPlugin,
-        ))
-        .insert_state(app_state::AppState::Flying)
-        .add_systems(
-            OnEnter(app_state::AppState::Flying),
-            (view::spawn_flight_aircraft, view::reset_control_rig).chain(),
-        )
-        .init_resource::<Frame>()
+    common::app("fx_shot", Some((1200, 800)))
+        .add_plugins(fx::FxPlugin)
         .init_resource::<SideView>()
+        .insert_resource(common::Shots::new(
+            &[
+                (60, "/tmp/opencode/fx_level.png"),
+                (200, "/tmp/opencode/fx_pull.png"),
+                (340, "/tmp/opencode/fx_pull2.png"),
+            ],
+            380,
+        ))
         .add_systems(Startup, (launch, read_view_env))
         .add_systems(Update, clear_weather)
         .add_systems(Last, drive)
-        .add_systems(Update, shot)
+        .add_systems(Update, (progress, common::drive_shots))
         .add_systems(PostUpdate, chase_cam)
         .run();
+}
+
+fn progress(f: Res<common::Frame>) {
+    if f.0.is_multiple_of(100) {
+        info!("frame {}", f.0);
+    }
 }
 
 /// Start airborne so the gear is up and the jet is moving.
@@ -101,26 +87,4 @@ fn chase_cam(
     let pos = rp.curr_pos;
     let yaw = Quat::from_rotation_y(-rp.curr_heading);
     *t = Transform::from_translation(pos + yaw * local).looking_at(pos, Vec3::Y);
-}
-
-fn shot(mut commands: Commands, mut f: ResMut<Frame>, mut exit: MessageWriter<AppExit>) {
-    f.0 += 1;
-    if f.0 % 100 == 0 {
-        info!("frame {}", f.0);
-    }
-    for (n, path) in [
-        (60u32, "/tmp/opencode/fx_level.png"),
-        (200, "/tmp/opencode/fx_pull.png"),
-        (340, "/tmp/opencode/fx_pull2.png"),
-    ] {
-        if f.0 == n {
-            commands
-                .spawn(Screenshot::primary_window())
-                .observe(save_to_disk(path));
-            info!("screenshot -> {path}");
-        }
-    }
-    if f.0 == 380 {
-        exit.write(AppExit::Success);
-    }
 }

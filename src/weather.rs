@@ -518,8 +518,10 @@ mod tests {
     /// the north).
     #[test]
     fn wind_ned_components_match_the_from_direction() {
-        let mut w = Weather::default();
-        w.wind_kts = 10.0;
+        let w = Weather {
+            wind_kts: 10.0,
+            ..default()
+        };
         let (north, east) = w.wind_ned_fps();
         // toward 120 deg: cos(120) = -0.5, sin(120) = +0.866.
         assert!((north / east - (-0.5 / 0.866)).abs() < 1e-3);

@@ -5,15 +5,13 @@
 //! With `COCKPIT=1` it instead forces the pilot-eye cockpit camera and grabs a
 //! single shot, for verifying the interior view.
 //!
-//! Run: `cargo run --example sim_view_shot`  (or `COCKPIT=1 cargo run --example sim_view_shot`)
+//! Run: `cargo run --features shots --example sim_view_shot`  (or `COCKPIT=1 ...`)
+
+mod common;
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
-use bevy::winit::WinitSettings;
-use my_flight_sim::{app_state, autopilot, config, hud, input, lens, sim, view, weather};
-
-#[derive(Resource, Default)]
-struct Frame(u32);
+use my_flight_sim::{hud, input, lens, view, weather};
 
 /// `COCKPIT=1` forces the pilot-eye camera instead of the 3/4 chase override.
 #[derive(Resource, Default)]
@@ -24,39 +22,8 @@ struct Cockpit(bool);
 struct Rain(bool);
 
 fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "sim_view_shot".into(),
-                resolution: (1200, 800).into(),
-                ..default()
-            }),
-            ..default()
-        }))
-        // Keep stepping while the window is unfocused: game mode otherwise
-        // throttles the loop to ~1 Hz, so the frame-counted shots never fire.
-        .insert_resource(WinitSettings::continuous())
-        .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
-        .add_plugins((
-            sim::SimPlugin,
-            autopilot::AutopilotPlugin,
-            // Before `InputPlugin`: it builds the startup bindings from the
-            // saved keymap, so `GameConfig` must already exist.
-            config::ConfigPlugin,
-            input::InputPlugin,
-            view::ViewPlugin,
-            hud::HudPlugin,
-            lens::LensPlugin,
-            weather::WeatherPlugin,
-        ))
-        // No menu here: start directly in `Flying` and spawn the aircraft
-        // ourselves (MenuPlugin would otherwise do it on entering the state).
-        .insert_state(app_state::AppState::Flying)
-        .add_systems(
-            OnEnter(app_state::AppState::Flying),
-            (view::spawn_flight_aircraft, view::reset_control_rig).chain(),
-        )
-        .init_resource::<Frame>()
+    common::app("sim_view_shot", Some((1200, 800)))
+        .add_plugins((hud::HudPlugin, lens::LensPlugin))
         .init_resource::<Cockpit>()
         .init_resource::<Rain>()
         .add_systems(Startup, (read_cockpit_env, read_rain_env))
@@ -102,7 +69,7 @@ fn birdseye(cockpit: Res<Cockpit>, mut q: Query<&mut Transform, With<Camera3d>>)
 /// Deflect one surface at a time (brakes on, throttle 0) so each direction can
 /// be read unambiguously. Windows: neutral, aileron only, elevator only, rudder
 /// only — one screenshot each.
-fn pin_controls(frame: Res<Frame>, mut bindings: ResMut<input::Bindings>) {
+fn pin_controls(frame: Res<common::Frame>, mut bindings: ResMut<input::Bindings>) {
     let f = frame.0;
     let (ail, ele, rud) = if f < 160 {
         (0.0, 0.0, 0.0)
@@ -127,7 +94,7 @@ fn pin_controls(frame: Res<Frame>, mut bindings: ResMut<input::Bindings>) {
 
 fn shot(
     mut commands: Commands,
-    mut f: ResMut<Frame>,
+    mut f: ResMut<common::Frame>,
     cockpit: Res<Cockpit>,
     mut exit: MessageWriter<AppExit>,
 ) {

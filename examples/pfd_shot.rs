@@ -1,6 +1,7 @@
 //! Screenshot harness for the two 737 PFDs, with representative takeoff data.
 //!
-//! Run: `cargo run --example pfd_shot` and open `/tmp/pfd_shot.png`.
+//! Run: `cargo run --features shots --example pfd_shot` and open
+//! `/tmp/pfd_shot.png`.
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};

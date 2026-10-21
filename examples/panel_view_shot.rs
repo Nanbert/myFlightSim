@@ -11,7 +11,7 @@
 //! on their dials.
 //! `FOCUS=<name>` forces the instrument close-up (airspeed, altimeter, …) so a
 //! screenshot shows the zoomed lens.
-//! Run: `BEVY_ASSET_ROOT="$PWD" cargo run --example panel_view_shot`
+//! Run: `BEVY_ASSET_ROOT="$PWD" cargo run --features shots --example panel_view_shot`
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};

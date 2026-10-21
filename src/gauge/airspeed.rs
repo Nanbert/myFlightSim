@@ -70,15 +70,7 @@ fn build_tables() -> Tables {
     while kt <= V_MAX + 0.1 {
         let major = (kt as i32) % 10 == 0;
         let (class, half_w) = if major { (2u8, 0.65) } else { (1u8, 0.45) };
-        let center = kt_to_angle(kt);
-        let mut d = -half_w;
-        while d <= half_w {
-            let b = ang_bucket(center + d);
-            if t.tick[b] < class {
-                t.tick[b] = class;
-            }
-            d += 0.06;
-        }
+        paint_tick(&mut t.tick, kt_to_angle(kt), class, half_w);
         kt += 5.0;
     }
     t
@@ -86,13 +78,10 @@ fn build_tables() -> Tables {
 
 /// The colour of one dial sample at offset `(x, y)` from the centre (px).
 fn face_sample(t: &Tables, x: f32, y: f32) -> [u8; 4] {
-    let u = (x * x + y * y).sqrt() / DIAL_R;
-    if let Some(c) = bezel_grade(u, 0.90) {
+    let (u, ang, b, bezel) = dial_sample(x, y, 0.90);
+    if let Some(c) = bezel {
         return c;
     }
-
-    let ang = y.atan2(x).to_degrees();
-    let b = ang_bucket(ang);
 
     let mut c = FACE;
     // Coloured arcs: the white flap band sits just outside green/yellow.

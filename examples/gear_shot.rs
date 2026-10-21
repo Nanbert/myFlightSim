@@ -2,44 +2,27 @@
 //! screenshots each state from a low front-quarter view that follows the jet
 //! (the parked interlock won't retract on the ground, so this has to fly).
 //!
-//! Run: `FDM_BACKEND=rust AIRCRAFT=f22 cargo run --example gear_shot`
+//! Run: `FDM_BACKEND=rust AIRCRAFT=f22 cargo run --features shots --example gear_shot`
+
+mod common;
 
 use bevy::prelude::*;
-use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
-use my_flight_sim::{app_state, autopilot, input, sim, view, weather};
-
-#[derive(Resource, Default)]
-struct Frame(u32);
+use my_flight_sim::{input, sim};
 
 fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "gear_shot".into(),
-                resolution: (1200, 800).into(),
-                ..default()
-            }),
-            ..default()
-        }))
-        .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
-        .add_plugins((
-            sim::SimPlugin,
-            autopilot::AutopilotPlugin,
-            input::InputPlugin,
-            view::ViewPlugin,
-            weather::WeatherPlugin,
+    common::app("gear_shot", Some((1200, 800)))
+        .insert_resource(common::Shots::new(
+            &[
+                (100, "/tmp/gear_down.png"),
+                (120, "/tmp/gear_mid.png"),
+                (480, "/tmp/gear_transit.png"),
+                (1100, "/tmp/gear_up.png"),
+            ],
+            1140,
         ))
-        // No menu here: start directly in `Flying` and spawn the aircraft
-        // ourselves (MenuPlugin would otherwise do it on entering the state).
-        .insert_state(app_state::AppState::Flying)
-        .add_systems(
-            OnEnter(app_state::AppState::Flying),
-            (view::spawn_flight_aircraft, view::reset_control_rig).chain(),
-        )
-        .init_resource::<Frame>()
         .add_systems(Startup, launch)
         .add_systems(Last, drive)
-        .add_systems(Update, shot)
+        .add_systems(Update, common::drive_shots)
         .add_systems(PostUpdate, side_cam)
         .run();
 }
@@ -62,7 +45,11 @@ fn side_cam(rp: Res<sim::RenderPose>, mut q: Query<&mut Transform, With<Camera3d
     *t = Transform::from_translation(eye).looking_at(pos, Vec3::Y);
 }
 
-fn drive(frame: Res<Frame>, mut bindings: ResMut<input::Bindings>, mut sim: ResMut<sim::Sim>) {
+fn drive(
+    frame: Res<common::Frame>,
+    mut bindings: ResMut<input::Bindings>,
+    mut sim: ResMut<sim::Sim>,
+) {
     for b in &mut bindings.list {
         b.value = match b.property {
             "fcs/throttle-cmd-norm" => 0.75,
@@ -72,25 +59,5 @@ fn drive(frame: Res<Frame>, mut bindings: ResMut<input::Bindings>, mut sim: ResM
     if frame.0 == 120 {
         sim.model.set("gear/gear-cmd-norm", 0.0);
         info!("gear up commanded");
-    }
-}
-
-fn shot(mut commands: Commands, mut f: ResMut<Frame>, mut exit: MessageWriter<AppExit>) {
-    f.0 += 1;
-    for (n, path) in [
-        (100u32, "/tmp/gear_down.png"),
-        (120, "/tmp/gear_mid.png"),
-        (480, "/tmp/gear_transit.png"),
-        (1100, "/tmp/gear_up.png"),
-    ] {
-        if f.0 == n {
-            commands
-                .spawn(Screenshot::primary_window())
-                .observe(save_to_disk(path));
-            info!("screenshot -> {path}");
-        }
-    }
-    if f.0 == 1140 {
-        exit.write(AppExit::Success);
     }
 }

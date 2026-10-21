@@ -1,10 +1,11 @@
 //! Boots one arena mission in flight and screenshots it, for look-dev on the
-//! terrain centres of mass: `MAP=GLACIAL cargo run --example map_shot`.
+//! terrain centres of mass: `MAP=GLACIAL cargo run --features shots --example
+//! map_shot`.
 //!
 //! Replicates the menu's map-mission start (arcade F-22, seated airborne) and
 //! grabs a chase-view shot after the world has settled.
 //!
-//! Run: `MAP=GLACIAL cargo run --example map_shot`
+//! Run: `MAP=GLACIAL cargo run --features shots --example map_shot`
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};

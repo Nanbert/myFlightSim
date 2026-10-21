@@ -72,15 +72,14 @@ fn card_sample(x: f32, y: f32) -> [u8; 4] {
 /// The fixed part: bezel, the top course index, the dot rows and the GS
 /// column. Centre transparent — the card shows through behind the needle.
 fn face_sample(x: f32, y: f32) -> [u8; 4] {
-    let u = (x * x + y * y).sqrt() / DIAL_R;
-    if let Some(c) = bezel_grade(u, 0.88) {
+    let (u, ang, _, bezel) = dial_sample(x, y, 0.88);
+    if let Some(c) = bezel {
         return c;
     }
 
     let (nx, ny) = (x / DIAL_R, y / DIAL_R);
 
     // Course index: a small white wedge at the top of the bezel.
-    let ang = y.atan2(x).to_degrees();
     let cw = (ang - 270.0).rem_euclid(360.0);
     let cw_signed = if cw > 180.0 { cw - 360.0 } else { cw };
     if (0.885..0.945).contains(&u) && cw_signed.abs() < 4.0 {

@@ -87,6 +87,18 @@ pub fn bezel_grade(u: f32, start: f32) -> Option<[u8; 4]> {
     }
 }
 
+/// The shared preamble of every radial dial sample at offset `(x, y)` px from
+/// the dial centre: `(u, angle_deg, bucket, bezel)`. `u` is the radius in
+/// units of [`DIAL_R`]; `bezel` is the shared ring colour when the sample is
+/// off the face ([`bezel_grade`], with `start` 0.90 for the round gauges and
+/// 0.88 for the cards), else `None` and the instrument continues with its own
+/// face logic.
+pub fn dial_sample(x: f32, y: f32, start: f32) -> (f32, f32, usize, Option<[u8; 4]>) {
+    let u = (x * x + y * y).sqrt() / DIAL_R;
+    let ang = y.atan2(x).to_degrees();
+    (u, ang, ang_bucket(ang), bezel_grade(u, start))
+}
+
 /// Stamp one tick (length class 2 = long/heavy, 1 = short/short) across a
 /// `tick` bucket array, centred on angle `center` with half-width `half_w`
 /// degrees and the same 0.06° step every instrument uses.

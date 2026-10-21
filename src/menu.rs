@@ -627,11 +627,16 @@ fn update_menu_ui(
     mut footer: Query<&mut Text, FooterTextFilter>,
     mut pages: ResMut<menu_page::PageLines>,
 ) {
+    // Writes are guarded throughout: an unconditional `Mut` write marks the
+    // component changed, and a changed text/color/layout node forces Bevy UI
+    // to re-layout and repaint that subtree on an otherwise idle menu frame.
     let labels = top_labels();
     for (TopLabel(i), mut text, mut color) in &mut tops {
         let i = *i;
-        text.0 = labels[i].to_string();
-        color.0 = if i == sel.top {
+        if text.0 != labels[i] {
+            text.0 = labels[i].to_string();
+        }
+        let want = if i == sel.top {
             if sel.focus == Focus::Top {
                 color_active()
             } else {
@@ -640,15 +645,21 @@ fn update_menu_ui(
         } else {
             color_dim()
         };
+        if color.0 != want {
+            color.0 = want;
+        }
     }
     // The rail under the pointed-at entry lights; the rest stay dark so the
     // column reads as a tab strip rather than a row of links.
     for (TopUnderline(i), mut bg) in &mut bars {
-        bg.0 = if *i == sel.top {
+        let want = if *i == sel.top {
             color_active()
         } else {
             Color::NONE
         };
+        if bg.0 != want {
+            bg.0 = want;
+        }
     }
 
     let items = sub_items(sel.top);
@@ -656,25 +667,34 @@ fn update_menu_ui(
         let i = *i;
         match items.get(i) {
             Some(label) => {
-                text.0 = (*label).to_string();
-                color.0 = if sel.focus == Focus::Sub && i == sel.sub {
+                if text.0 != **label {
+                    text.0 = (*label).to_string();
+                }
+                let want = if sel.focus == Focus::Sub && i == sel.sub {
                     color_active()
                 } else if i == sel.sub {
                     color_selected()
                 } else {
                     color_dim()
                 };
+                if color.0 != want {
+                    color.0 = want;
+                }
             }
-            None => text.0.clear(),
+            None if !text.0.is_empty() => text.0.clear(),
+            None => {}
         }
     }
 
+    let want_display = if sel.page.is_some() {
+        Display::Flex
+    } else {
+        Display::None
+    };
     for mut node in &mut panel {
-        node.display = if sel.page.is_some() {
-            Display::Flex
-        } else {
-            Display::None
-        };
+        if node.display != want_display {
+            node.display = want_display;
+        }
     }
     // The page renders as structured rows (menu_page module); freeform pages
     // fold their prose through `freeform`, which keeps the old text look.
@@ -696,15 +716,17 @@ fn update_menu_ui(
     // The hint bar follows the focus level, so the player always sees what the
     // next keypress does.
     if let Ok(mut text) = footer.single_mut() {
-        text.0 = if sel.page.is_some() {
-            "[LEFT/RIGHT] ADJUST   [ENTER] / [ESC] CLOSE".to_string()
+        let want = if sel.page.is_some() {
+            "[LEFT/RIGHT] ADJUST   [ENTER] / [ESC] CLOSE"
         } else {
             match sel.focus {
-                Focus::Top => "[LEFT/RIGHT] BROWSE   [DOWN] MENU   [ENTER] SELECT"
-                    .to_string(),
-                Focus::Sub => "[LEFT/RIGHT] MOVE   [ENTER] OPEN   [ESC] BACK".to_string(),
+                Focus::Top => "[LEFT/RIGHT] BROWSE   [DOWN] MENU   [ENTER] SELECT",
+                Focus::Sub => "[LEFT/RIGHT] MOVE   [ENTER] OPEN   [ESC] BACK",
             }
         };
+        if text.0 != want {
+            text.0 = want.to_string();
+        }
     }
 }
 
