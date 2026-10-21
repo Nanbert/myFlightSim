@@ -14,7 +14,7 @@ use bevy::text::FontSize;
 
 use crate::aerodrome::{on_runway, runway_along, runway_lateral};
 use crate::aircraft_profile;
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim};
 
@@ -74,7 +74,7 @@ impl Plugin for LandingPlugin {
         app.init_resource::<LandingState>()
             .add_systems(Startup, spawn_report)
             .add_systems(OnEnter(AppState::Flying), reset_landing)
-            .add_systems(Update, update_landing.run_if(in_state(AppState::Flying)))
+            .add_systems(Update, update_landing.run_if(unpaused))
             .add_systems(OnExit(AppState::Flying), hide_report);
     }
 }

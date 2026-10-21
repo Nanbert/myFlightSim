@@ -26,6 +26,7 @@ mod menu;
 mod menu_page;
 mod mission;
 mod pfd;
+mod pause;
 mod sim;
 mod sky;
 mod takeoff;
@@ -88,8 +89,7 @@ fn main() {
         // After the menu: it builds terrain for whatever mission
         // `start_flight` just launched. (A separate call: Bevy's plugin tuples
         // top out at 15.)
-        .add_plugins(map::MapPlugin)
-        .add_plugins(cockpit::CockpitPlugin)
+        .add_plugins(map::MapPlugin)        .add_plugins(cockpit::CockpitPlugin)
         .add_plugins(controls::ControlPlugin)
         .add_plugins(assist::AssistPlugin)
         .add_plugins(aerodrome::AerodromePlugin)
@@ -102,6 +102,7 @@ fn main() {
         .add_plugins(mission::MissionPlugin)
         .add_plugins(combat::CombatPlugin)
         .add_plugins(lights::LightsPlugin)
+        .add_plugins(pause::PausePlugin)
         .init_resource::<ShotTimer>()
         .add_systems(Update, auto_shot)
         .run();

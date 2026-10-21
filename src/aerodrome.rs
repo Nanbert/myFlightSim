@@ -12,7 +12,7 @@
 use bevy::prelude::*;
 
 use crate::aircraft_profile;
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim, StartFlight};
 
@@ -152,9 +152,9 @@ impl Plugin for AerodromePlugin {
         )
         .add_systems(
             Update,
-            (update_papi, update_windsock).run_if(in_state(AppState::Flying)),
+            (update_papi, update_windsock).run_if(unpaused),
         )
-        .add_systems(FixedUpdate, update_pump.run_if(in_state(AppState::Flying)));
+        .add_systems(FixedUpdate, update_pump.run_if(unpaused));
     }
 }
 

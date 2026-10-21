@@ -15,7 +15,7 @@
 use bevy::prelude::*;
 
 use crate::aircraft_profile::{self, Action, Axis, ToggleAction, ToggleSpec};
-use crate::app_state::AppState;
+use crate::app_state::unpaused;
 use crate::autopilot::{Autopilot, Mcp};
 use crate::config::GameConfig;
 
@@ -352,7 +352,7 @@ impl Plugin for InputPlugin {
             bindings.enable_arcade(&name);
         }
         app.insert_resource(bindings)
-            .add_systems(Update, read_input.run_if(in_state(AppState::Flying)));
+            .add_systems(Update, read_input.run_if(unpaused));
     }
 }
 

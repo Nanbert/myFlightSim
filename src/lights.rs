@@ -15,7 +15,7 @@
 
 use bevy::prelude::*;
 
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::sim::Sim;
 use crate::view::{spawn_flight_aircraft, AircraftRoot};
 use crate::weather::Weather;
@@ -291,7 +291,7 @@ impl Plugin for LightsPlugin {
             )
             .add_systems(
                 Update,
-                (sync_steady_lights, sync_flashing_lights).run_if(in_state(AppState::Flying)),
+                (sync_steady_lights, sync_flashing_lights).run_if(unpaused),
             );
     }
 }

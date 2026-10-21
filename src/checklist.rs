@@ -30,7 +30,7 @@
 
 use bevy::prelude::*;
 
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::sim::{AircraftState, Sim};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -256,7 +256,7 @@ impl Plugin for ChecklistPlugin {
         app.init_resource::<ChecklistState>()
             .add_systems(Startup, spawn_panel)
             .add_systems(OnEnter(AppState::Flying), reset_checklist)
-            .add_systems(Update, update.run_if(in_state(AppState::Flying)));
+            .add_systems(Update, update.run_if(unpaused));
     }
 }
 

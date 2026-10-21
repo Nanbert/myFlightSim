@@ -19,7 +19,7 @@ use bevy::text::FontSize;
 use bevy::window::PrimaryWindow;
 
 use crate::aircraft_profile::{self, Action};
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::assist::AssistState;
 use crate::gauge;
 use crate::input::Bindings;
@@ -87,9 +87,9 @@ impl Plugin for ControlPlugin {
             Update,
             (
                 layout_indicators,
-                update_stick.run_if(in_state(AppState::Flying)),
-                update_pedals.run_if(in_state(AppState::Flying)),
-                update_assist_labels.run_if(in_state(AppState::Flying)),
+                update_stick.run_if(unpaused),
+                update_pedals.run_if(unpaused),
+                update_assist_labels.run_if(unpaused),
             ),
         );
     }

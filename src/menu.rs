@@ -1,7 +1,7 @@
 //! Start menu: a 3D hangar with all aircraft parked in a row and a text overlay.
 //!
 //! [`AppState`] gates the flight sim — every flight system carries
-//! `run_if(in_state(AppState::Flying))`, so while the menu is up the sim sits
+//! `run_if(unpaused)`, so while the menu is up the sim sits
 //! frozen. PLAY swaps in the selected aircraft's FDM and enters `Flying`.
 //!
 //! Navigation: Left/Right switch the top row, Down/Up move focus between the top
@@ -308,7 +308,6 @@ impl Plugin for MenuPlugin {
                         .run_if(in_state(AppState::Menu)),
                     auto_open_page.run_if(in_state(AppState::Menu)),
                     menu_camera.run_if(in_state(AppState::Menu)),
-                    exit_to_menu.run_if(in_state(AppState::Flying)),
                 ),
             );
     }
@@ -1193,13 +1192,6 @@ fn dev_lesson() -> Option<Lesson> {
         "LANDING" | "M3" => Some(Lesson::Landing),
         "FINAL" | "FULL" | "M4" => Some(Lesson::FullFlight),
         _ => None,
-    }
-}
-
-/// Escape while flying returns to the menu (the flight is discarded).
-fn exit_to_menu(keys: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextState<AppState>>) {
-    if keys.just_pressed(KeyCode::Escape) {
-        next.set(AppState::Menu);
     }
 }
 

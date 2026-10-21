@@ -29,7 +29,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::ui_render::prelude::UiMaterialPlugin;
 
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::sim::Sim;
 
 /// On-screen size of one round instrument, logical px.
@@ -230,7 +230,7 @@ impl Plugin for GaugePlugin {
                         fuel::update_needles,
                         cdi::update,
                     )
-                        .run_if(in_state(AppState::Flying)),
+                        .run_if(unpaused),
                     sync_visibility,
                     // After the camera and airframe have this frame's pose, so the
                     // panel projection matches what actually gets drawn (and will

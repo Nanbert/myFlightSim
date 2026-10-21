@@ -40,7 +40,7 @@ use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 use bevy::transform::TransformSystems;
 
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::sim::{AircraftState, Sim};
 use crate::view::{model_to_body, AircraftRoot};
 use crate::weather::Weather;
@@ -234,32 +234,32 @@ impl Plugin for VaporPlugin {
         .init_resource::<SheetState>()
         .init_resource::<WingPuffs>()
         .add_systems(OnEnter(AppState::Flying), reset_vapor_state)
-        .add_systems(Update, spawn_vapor.run_if(in_state(AppState::Flying)))
+        .add_systems(Update, spawn_vapor.run_if(unpaused))
         // Reads the freshly-written airframe pose, so it must run after
         // `sync_aircraft` placed the aircraft this frame.
         .add_systems(
             Update,
             drive_vapor
                 .after(crate::view::sync_aircraft)
-                .run_if(in_state(AppState::Flying)),
+                .run_if(unpaused),
         )
         .add_systems(
             Update,
             drive_sheet
                 .after(drive_vapor)
-                .run_if(in_state(AppState::Flying)),
+                .run_if(unpaused),
         )
         .add_systems(
             PostUpdate,
             drive_box
                 .after(TransformSystems::Propagate)
-                .run_if(in_state(AppState::Flying)),
+                .run_if(unpaused),
         )
         .add_systems(
             Update,
             drive_shadow
                 .after(drive_vapor)
-                .run_if(in_state(AppState::Flying)),
+                .run_if(unpaused),
         );
     }
 }

@@ -27,7 +27,7 @@ use bevy::text::FontSize;
 
 use crate::aerodrome::on_runway;
 use crate::aircraft_profile;
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim};
 
@@ -108,7 +108,7 @@ impl Plugin for TakeoffPlugin {
         app.init_resource::<TakeoffState>()
             .add_systems(Startup, spawn_report)
             .add_systems(OnEnter(AppState::Flying), reset_takeoff)
-            .add_systems(Update, update_takeoff.run_if(in_state(AppState::Flying)))
+            .add_systems(Update, update_takeoff.run_if(unpaused))
             .add_systems(OnExit(AppState::Flying), hide_report);
     }
 }

@@ -16,7 +16,7 @@ use bevy::prelude::*;
 use bevy::text::FontSize;
 
 use crate::aircraft_profile::ToggleAction;
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::input::Bindings;
 use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim};
@@ -373,7 +373,7 @@ impl Plugin for CombatPlugin {
                     update_radar,
                 )
                     .chain()
-                    .run_if(in_state(AppState::Flying)),
+                    .run_if(unpaused),
             )
             .add_systems(OnEnter(AppState::Flying), reset_combat);
     }

@@ -11,7 +11,7 @@
 
 use bevy::prelude::*;
 
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::sim::AircraftState;
 
 /// The lead-in corridor: z within this of the line, x from the runway edge
@@ -116,7 +116,7 @@ impl Plugin for TaxiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Taximeter>()
             .add_systems(OnEnter(AppState::Flying), reset_taximeter)
-            .add_systems(Update, update.run_if(in_state(AppState::Flying)));
+            .add_systems(Update, update.run_if(unpaused));
     }
 }
 

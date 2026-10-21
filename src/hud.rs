@@ -23,7 +23,7 @@ use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 use bevy::ui_render::prelude::{MaterialNode, UiMaterial, UiMaterialPlugin};
 
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::sim::{AircraftState, Sim};
 use crate::view::{CockpitModel, Ui};
 
@@ -236,7 +236,7 @@ impl Plugin for HudPlugin {
                 tune_glass,
                 update,
                 update_ah64,
-                toggle_shown.run_if(in_state(AppState::Flying)),
+                toggle_shown.run_if(unpaused),
                 sync_visibility,
                 sync_visibility_ah64,
             ),

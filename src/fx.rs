@@ -38,7 +38,7 @@ use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::render::RenderApp;
 use bevy::shader::ShaderRef;
 
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::sim::{AircraftState, Sim};
 use crate::view::{model_to_body, AircraftRoot};
 
@@ -332,14 +332,14 @@ impl Plugin for FxPlugin {
         ))
         .init_resource::<Burner>()
         .init_resource::<Plume>()
-        .add_systems(Update, spawn_fx.run_if(in_state(AppState::Flying)))
+        .add_systems(Update, spawn_fx.run_if(unpaused))
         // Reads the freshly-written airframe pose, so it must run after
         // `sync_aircraft` placed the aircraft this frame.
         .add_systems(
             Update,
             drive_flames
                 .after(crate::view::sync_aircraft)
-                .run_if(in_state(AppState::Flying)),
+                .run_if(unpaused),
         )
         // The haze needs the final airframe/camera pose — including this frame's
         // camera shake — so it runs after transform propagation has folded the
@@ -349,7 +349,7 @@ impl Plugin for FxPlugin {
             PostUpdate,
             manage_haze
                 .after(bevy::transform::TransformSystems::Propagate)
-                .run_if(in_state(AppState::Flying)),
+                .run_if(unpaused),
         );
     }
 }

@@ -23,7 +23,7 @@ use bevy::prelude::*;
 use bevy::text::FontSize;
 
 use crate::aircraft_profile;
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim};
 
@@ -87,7 +87,7 @@ impl Plugin for ApproachPlugin {
         app.init_resource::<ApproachState>()
             .add_systems(Startup, spawn_banner)
             .add_systems(OnEnter(AppState::Flying), reset_approach)
-            .add_systems(Update, update_approach.run_if(in_state(AppState::Flying)));
+            .add_systems(Update, update_approach.run_if(unpaused));
     }
 }
 

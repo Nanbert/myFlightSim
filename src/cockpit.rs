@@ -12,7 +12,7 @@ use bevy::prelude::*;
 use bevy::text::FontSize;
 
 use crate::aircraft_profile;
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::sim::Sim;
 use crate::view::{self, CockpitTune, Ui};
 
@@ -58,7 +58,7 @@ impl Plugin for CockpitPlugin {
                 Update,
                 (board_probe, sync_overlay)
                     .chain()
-                    .run_if(in_state(AppState::Flying)),
+                    .run_if(unpaused),
             );
     }
 }

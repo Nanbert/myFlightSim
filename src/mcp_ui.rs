@@ -15,7 +15,7 @@ use bevy::ui_widgets::{Activate, Button};
 use bevy::window::PrimaryWindow;
 
 use crate::aircraft_profile::{self, ToggleAction};
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::autopilot::{AtMode, Autopilot, LatMode, Mcp, McpWindow, SpeedUnit, VertMode};
 use crate::sim::Sim;
 use crate::view::Ui;
@@ -184,7 +184,7 @@ impl Plugin for McpUiPlugin {
                     cockpit_visibility,
                 )
                     .chain()
-                    .run_if(in_state(AppState::Flying)),
+                    .run_if(unpaused),
             );
     }
 }

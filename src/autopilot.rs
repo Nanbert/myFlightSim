@@ -15,7 +15,7 @@ use bevy::prelude::*;
 use flight_model::FlightModel;
 
 use crate::aircraft_profile::{self, ToggleAction};
-use crate::app_state::AppState;
+use crate::app_state::unpaused;
 use crate::sim::Sim;
 
 const R2D: f64 = 180.0 / std::f64::consts::PI;
@@ -784,7 +784,7 @@ impl Plugin for AutopilotPlugin {
         app.init_resource::<Mcp>()
             .init_resource::<Autopilot>()
             .init_resource::<McpRepeat>()
-            .add_systems(Update, mcp_input.run_if(in_state(AppState::Flying)));
+            .add_systems(Update, mcp_input.run_if(unpaused));
     }
 }
 

@@ -12,7 +12,7 @@ use bevy::window::{CursorGrabMode, CursorOptions};
 use std::collections::{HashMap, HashSet};
 
 use crate::aircraft_profile;
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::autopilot::Autopilot;
 use crate::input::Bindings;
 use crate::sim::{AircraftState, RenderPose, Sim};
@@ -584,20 +584,20 @@ impl Plugin for ViewPlugin {
             .add_systems(
                 Update,
                 (
-                    sync_aircraft.run_if(in_state(AppState::Flying)),
+                    sync_aircraft.run_if(unpaused),
                     cockpit_look
-                        .run_if(in_state(AppState::Flying))
+                        .run_if(unpaused)
                         .before(follow_camera),
                     (follow_camera, camera_feel)
                         .chain()
-                        .run_if(in_state(AppState::Flying)),
-                    update_hud.run_if(in_state(AppState::Flying)),
-                    toggle_ui.run_if(in_state(AppState::Flying)),
-                    sync_view_models.run_if(in_state(AppState::Flying)),
-                    hide_737_yoke.run_if(in_state(AppState::Flying)),
-                    capture_rig.run_if(in_state(AppState::Flying)),
-                    drive_surfaces.run_if(in_state(AppState::Flying)),
-                    drive_gear.run_if(in_state(AppState::Flying)),
+                        .run_if(unpaused),
+                    update_hud.run_if(unpaused),
+                    toggle_ui.run_if(unpaused),
+                    sync_view_models.run_if(unpaused),
+                    hide_737_yoke.run_if(unpaused),
+                    capture_rig.run_if(unpaused),
+                    drive_surfaces.run_if(unpaused),
+                    drive_gear.run_if(unpaused),
                     draw_grid,
                     dim_lights,
                     hide_scene_junk,

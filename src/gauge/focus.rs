@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use bevy::text::FontSize;
 
 use super::{project_dial, PanelKey, DIAL_PX};
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::sim::Sim;
 use crate::view::{AircraftRoot, CockpitTune, Ui};
 
@@ -88,7 +88,7 @@ impl Plugin for FocusPlugin {
                     // frame whenever the aircraft is moving.
                     .after(crate::view::follow_camera)
                     .after(crate::view::sync_aircraft)
-                    .run_if(in_state(AppState::Flying)),
+                    .run_if(unpaused),
             );
     }
 }

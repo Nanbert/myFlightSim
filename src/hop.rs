@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use bevy::text::FontSize;
 
 use crate::approach::ApproachState;
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::config::app_dir;
 use crate::landing::LandingState;
 use crate::sim::Sim;
@@ -118,7 +118,7 @@ impl Plugin for HopPlugin {
             .add_systems(Startup, load_ledger)
             .add_systems(Startup, spawn_panel)
             .add_systems(OnEnter(AppState::Flying), reset_panel)
-            .add_systems(Update, update_panel.run_if(in_state(AppState::Flying)))
+            .add_systems(Update, update_panel.run_if(unpaused))
             .add_systems(OnExit(AppState::Flying), flush);
     }
 }

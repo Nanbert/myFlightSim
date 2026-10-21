@@ -456,6 +456,12 @@ fn ah64() -> Vec<String> {
     p.line("  TODO engine/APU start, rotor engagement and RPM limits.");
     p.line("  TODO autorotation, governor, hydraulics and damage.");
     p.line("  TODO weapons, TADS/PNVS, IHADSS, sensors, countermeasures.");
+    p.line("  TODO helicopter combat: ground targets, gun/rockets/ATGM, a TADS");
+    p.line("        sight, AAA/SAM threats and terrain-masking attack runs.");
+    p.line("  TODO missions: LZ rescue/medevac, sling-load supply and convoy");
+    p.line("        escort, with timed objectives, landing score and fail states.");
+    p.line("  TODO mission layer: LZ triggers, pickup/hover timers, cargo weight");
+    p.line("        in the rotor model, low-altitude threat cues.");
     p.line("  TODO dual-crew station and copilot/gunner operation.");
     p.line("  TODO force-trim release, SCAS/autopilot hold modes and fuel.");
     p.line("  TODO weight and balance, dust and ground effect.");

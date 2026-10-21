@@ -17,7 +17,7 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::sim::StartFlight;
 use crate::sky::{coverage_for, CloudField};
 
@@ -281,7 +281,7 @@ impl Plugin for MapPlugin {
         .init_resource::<SunPose>()
         .add_systems(OnEnter(AppState::Flying), enter_mission.after(StartFlight))
         .add_systems(OnExit(AppState::Flying), leave_mission)
-        .add_systems(Update, update_map_params.run_if(in_state(AppState::Flying)));
+        .add_systems(Update, update_map_params.run_if(unpaused));
     }
 }
 

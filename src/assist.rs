@@ -13,7 +13,7 @@
 use bevy::prelude::*;
 
 use crate::aircraft_profile::{self, Action};
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::config::GameConfig;
 use crate::input::Bindings;
 use crate::sim::Sim;
@@ -40,7 +40,7 @@ impl Plugin for AssistPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AssistState>()
             .add_systems(OnEnter(AppState::Flying), reset_assists)
-            .add_systems(Update, update_assists.run_if(in_state(AppState::Flying)));
+            .add_systems(Update, update_assists.run_if(unpaused));
     }
 }
 

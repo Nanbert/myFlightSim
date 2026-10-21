@@ -18,7 +18,7 @@ use bevy::ui_render::prelude::{MaterialNode, UiMaterial, UiMaterialPlugin};
 use bevy::window::PrimaryWindow;
 
 use crate::aircraft_profile;
-use crate::app_state::AppState;
+use crate::app_state::{unpaused, AppState};
 use crate::autopilot::{AtMode, Autopilot, LatMode, Mcp, SpeedUnit, VertMode};
 use crate::ils;
 use crate::mcp_ui::PANEL_W;
@@ -139,7 +139,7 @@ impl Plugin for PfdPlugin {
             Update,
             (fit_to_window, cockpit_visibility, spawn_3d, update_params)
                 .chain()
-                .run_if(in_state(AppState::Flying)),
+                .run_if(unpaused),
         );
     }
 }

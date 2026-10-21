@@ -12,7 +12,7 @@
 use bevy::prelude::*;
 use flight_model::FlightModel;
 
-use crate::app_state::AppState;
+use crate::app_state::unpaused;
 use crate::autopilot::{Autopilot, Mcp};
 
 /// The menu rebuilds [`Sim`] for the selected aircraft when flying starts.
@@ -487,9 +487,9 @@ impl Plugin for SimPlugin {
                 FixedUpdate,
                 (advance_fdm, capture_render_pose)
                     .chain()
-                    .run_if(in_state(AppState::Flying)),
+                    .run_if(unpaused),
             )
-            .add_systems(Update, publish_state.run_if(in_state(AppState::Flying)));
+            .add_systems(Update, publish_state.run_if(unpaused));
     }
 }
 
