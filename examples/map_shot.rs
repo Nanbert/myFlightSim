@@ -42,6 +42,8 @@ mod taxi;
 mod view;
 #[path = "../src/weather.rs"]
 mod weather;
+#[path = "../src/ui_theme.rs"]
+mod ui_theme;
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};

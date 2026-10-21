@@ -42,6 +42,7 @@ use bevy::transform::TransformSystems;
 
 use crate::app_state::{unpaused, AppState};
 use crate::sim::{AircraftState, Sim};
+use crate::ui_theme::blend_material;
 use crate::view::{model_to_body, AircraftRoot};
 use crate::weather::Weather;
 
@@ -282,31 +283,15 @@ struct PuffParams {
     anim: Vec4,
 }
 
+// Vapor is translucent, not emissive: it dims the sky behind it rather than
+// adding to it. Each puff owns its material so it can fade on its own.
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 struct PuffMaterial {
     #[uniform(0)]
     params: PuffParams,
 }
 
-impl Material for PuffMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/vapor_puff.wesl".into()
-    }
-
-    // Vapor is translucent, not emissive: it dims the sky behind it rather than
-    // adding to it. Each puff owns its material so it can fade on its own.
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
-    }
-
-    fn enable_prepass() -> bool {
-        false
-    }
-
-    fn enable_shadows() -> bool {
-        false
-    }
-}
+blend_material!(PuffMaterial, "shaders/vapor_puff.wesl");
 
 /// One quad of a wingtip trail, addressed by its slot in [`Trails`]. Not
 /// parented to the aircraft: the puffs hang in world space once dropped.
@@ -365,23 +350,7 @@ struct ConeMaterial {
     params: ConeParams,
 }
 
-impl Material for ConeMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/vapor_cone.wesl".into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
-    }
-
-    fn enable_prepass() -> bool {
-        false
-    }
-
-    fn enable_shadows() -> bool {
-        false
-    }
-}
+blend_material!(ConeMaterial, "shaders/vapor_cone.wesl");
 
 #[derive(Component)]
 struct VaporCone;
@@ -441,23 +410,7 @@ struct SheetMaterial {
     params: SheetParams,
 }
 
-impl Material for SheetMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/vapor_sheet.wesl".into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
-    }
-
-    fn enable_prepass() -> bool {
-        false
-    }
-
-    fn enable_shadows() -> bool {
-        false
-    }
-}
+blend_material!(SheetMaterial, "shaders/vapor_sheet.wesl");
 
 /// One attached sheet per wing. The mesh is authored in the body frame and
 /// parented to `AircraftRoot`, so the vapor stays on the wing instead of being
@@ -522,23 +475,7 @@ struct VolumeMaterial {
     params: VolumeParams,
 }
 
-impl Material for VolumeMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/vapor_volume.wesl".into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
-    }
-
-    fn enable_prepass() -> bool {
-        false
-    }
-
-    fn enable_shadows() -> bool {
-        false
-    }
-}
+blend_material!(VolumeMaterial, "shaders/vapor_volume.wesl");
 
 /// Uniform for `assets/shaders/vapor_box.wesl`.
 #[derive(Clone, Copy, ShaderType, Default)]
@@ -561,23 +498,7 @@ struct BoxMaterial {
     params: BoxParams,
 }
 
-impl Material for BoxMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/vapor_box.wesl".into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
-    }
-
-    fn enable_prepass() -> bool {
-        false
-    }
-
-    fn enable_shadows() -> bool {
-        false
-    }
-}
+blend_material!(BoxMaterial, "shaders/vapor_box.wesl");
 
 /// Soft dark pool on the wing under a mass. It gives the white cloud a base to
 /// sit on and keeps it from reading as a floating oval against the white wing.
@@ -595,23 +516,7 @@ struct ShadowMaterial {
     params: ShadowParams,
 }
 
-impl Material for ShadowMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/vapor_shadow.wesl".into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
-    }
-
-    fn enable_prepass() -> bool {
-        false
-    }
-
-    fn enable_shadows() -> bool {
-        false
-    }
-}
+blend_material!(ShadowMaterial, "shaders/vapor_shadow.wesl");
 
 #[derive(Component)]
 struct MassShadow {
@@ -832,7 +737,7 @@ fn spawn_vapor(
     if SHEET_ENABLED {
         for side in 0..2 {
             let mirror = if side == 0 { 1.0 } else { -1.0 };
-            for layer in 0..SHEET_LAYERS {
+            for (layer, layer_y) in SHEET_LAYER_OFFSET.iter().copied().enumerate() {
                 let material = sheet_mats.add(SheetMaterial {
                     params: SheetParams::default(),
                 });
@@ -840,7 +745,7 @@ fn spawn_vapor(
                     VaporSheet { side, layer },
                     Mesh3d(meshes.add(wing_sheet_mesh(&sim.name, mirror, layer))),
                     MeshMaterial3d(material),
-                    Transform::from_xyz(0.0, SHEET_LAYER_OFFSET[layer], 0.0),
+                    Transform::from_xyz(0.0, layer_y, 0.0),
                     Visibility::Hidden,
                     DespawnOnExit(AppState::Flying),
                     ChildOf(root),
@@ -1114,8 +1019,7 @@ fn drive_vapor(
     let g_spike = previous_g.abs() > 0.5
         && ((g - previous_g).abs() > 0.5 || (previous_g.abs() < 3.0 && g.abs() >= 3.0));
 
-    for side in 0..2 {
-        let a = local_alpha[side];
+    for (side, &a) in local_alpha.iter().enumerate() {
         let prev_a = sheet_state.prev_local_alpha[side];
         let alpha_load = ((a.abs() - 8.0) / 8.0).clamp(0.0, 1.0);
         let alpha_rate = (a - prev_a) / dt.max(1.0e-3);

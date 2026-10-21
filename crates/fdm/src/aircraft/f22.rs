@@ -22,11 +22,11 @@
 // limits, not approximations of the math constants clippy is looking for.
 #![allow(clippy::approx_constant)]
 
-use super::{Aircraft, MassSpec, PointMass};
+use super::{bogey, Aircraft, MassSpec, PointMass};
 use crate::aero::{Aerodynamics, Axis, Factor, Function, NamedFn};
 use crate::engine::{PowerplantSpec, TurbineSpec};
 use crate::fcs::{ControlSystem, FbwSpec};
-use crate::gear::{BrakeGroup, ContactType, Gear};
+use crate::gear::{BrakeGroup, Gear};
 use crate::table::{Table1, Table2};
 
 // --- shorthands for the property names the coefficients multiply ---
@@ -56,19 +56,7 @@ const SBN: Factor = Factor::Prop("fcs/speedbrake-pos-norm");
 const GEARN: Factor = Factor::Prop("gear/gear-pos-norm");
 const THRUSTN: Factor = Factor::Prop("fcs/thrust-norm");
 
-/// A literal factor.
-macro_rules! val {
-    ($x:expr) => {
-        Factor::Value($x)
-    };
-}
-
-/// A `<product>` function from a factor list.
-macro_rules! prod {
-    ($($f:expr),* $(,)?) => {
-        Function::product(&[$($f),*])
-    };
-}
+// `val!` / `prod!` are shared from `super` (both defined in aircraft/mod.rs).
 
 // --- ground-effect functions (<function name="aero/function/...">) ---------
 
@@ -670,22 +658,9 @@ const YAW: Axis = Axis::new(&[
 ]);
 
 /// File-level functions computed before the axes.
-const PRE: &[NamedFn] = &[
-    NamedFn {
-        name: "aero/function/kCLge",
-        func: Function::product(&[Factor::Table1 {
-            var: "aero/h_b-mac-ft",
-            table: T_KCLGE,
-        }]),
-    },
-    NamedFn {
-        name: "aero/function/kCDge",
-        func: Function::product(&[Factor::Table1 {
-            var: "aero/h_b-mac-ft",
-            table: T_KCDGE,
-        }]),
-    },
-];
+const GE_CL: NamedFn = ground_effect!("aero/function/kCLge", T_KCLGE);
+const GE_CD: NamedFn = ground_effect!("aero/function/kCDge", T_KCDGE);
+const PRE: &[NamedFn] = &[GE_CL, GE_CD];
 
 // --- mass & balance -------------------------------------------------------
 
@@ -840,34 +815,23 @@ static F22_FBW: FbwSpec = FbwSpec {
 };
 
 // --- landing gear (<ground_reactions>) ------------------------------------
-
-const fn bogey(
-    pos_in: [f64; 3],
-    spring: f64,
-    damp: f64,
-    steer_max_deg: f64,
-    brake: BrakeGroup,
-) -> Gear {
-    Gear {
-        pos_in,
-        spring,
-        damp,
-        damp_rebound: damp,
-        static_f: 0.8,
-        dyn_f: 0.5,
-        roll_f: 0.02,
-        contact: ContactType::Bogey,
-        steer_max_deg,
-        brake,
-    }
-}
+// `bogey` is the shared tyre constructor in `super`; the F-22's XML implies
+// rebound damping equal to the compress damping.
 
 /// Nosewheel steers (max 80 deg); the mains carry the brakes.
 const GEAR: &[Gear] = &[
-    bogey([96.7, 0.0, -89.3], 18603.4, 6201.1, 80.0, BrakeGroup::None),
+    bogey(
+        [96.7, 0.0, -89.3],
+        18603.4,
+        6201.1,
+        6201.1,
+        80.0,
+        BrakeGroup::None,
+    ),
     bogey(
         [468.8, -48.0, -89.3],
         82011.2,
+        22402.2,
         22402.2,
         0.0,
         BrakeGroup::Left,
@@ -875,6 +839,7 @@ const GEAR: &[Gear] = &[
     bogey(
         [468.8, 48.0, -89.3],
         82011.2,
+        22402.2,
         22402.2,
         0.0,
         BrakeGroup::Right,

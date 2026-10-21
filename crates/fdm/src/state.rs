@@ -325,16 +325,7 @@ mod tests {
     const R2D: f64 = 180.0 / std::f64::consts::PI;
 
     fn quat_from_euler(phi: f64, theta: f64, psi: f64) -> [f64; 4] {
-        let (cp, sp) = ((phi / 2.0).cos(), (phi / 2.0).sin());
-        let (ct, st) = ((theta / 2.0).cos(), (theta / 2.0).sin());
-        let (cy, sy) = ((psi / 2.0).cos(), (psi / 2.0).sin());
-        // ZYX: q = qz * qy * qx
-        [
-            cy * ct * cp + sy * st * sp,
-            cy * ct * sp - sy * st * cp,
-            cy * st * cp + sy * ct * sp,
-            sy * ct * cp - cy * st * sp,
-        ]
+        crate::euler_to_quat(phi, theta, psi)
     }
 
     #[test]

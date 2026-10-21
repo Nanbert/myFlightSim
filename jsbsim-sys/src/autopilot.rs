@@ -5,6 +5,7 @@
 //! Shared by the `takeoff` example and the game, so the 3D view flies the exact
 //! same law that was validated headlessly.
 
+use flight_model::wrap180;
 use flight_model::FlightModel;
 
 const R2D: f64 = 180.0 / std::f64::consts::PI;
@@ -111,16 +112,6 @@ pub fn apply(fdm: &mut dyn FlightModel, cmds: &Cmds) {
 
 fn clampf(x: f64, lo: f64, hi: f64) -> f64 {
     x.max(lo).min(hi)
-}
-
-/// Wrap an angle in degrees to (-180, 180].
-fn wrap180(mut d: f64) -> f64 {
-    d = (d + 180.0).rem_euclid(360.0) - 180.0;
-    if d <= -180.0 {
-        d + 360.0
-    } else {
-        d
-    }
 }
 
 #[cfg(test)]

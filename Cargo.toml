@@ -3,6 +3,17 @@ name = "my_flight_sim"
 version = "0.1.0"
 edition = "2021"
 
+# The 20+ `*_shot.rs` screenshot/calibration harnesses are look-dev tools with
+# no assertions; building every ~2 GB example binary on each `cargo test` made
+# test runs crawl (and the machine thrash). They are therefore declared below
+# gated behind the `shots` feature: `cargo test` skips them entirely, while
+# `cargo run --features shots --example <name>` builds exactly the one you
+# want, still resolving explicitly.
+autoexamples = false
+
+[features]
+shots = []
+
 [dependencies]
 bevy = { version = "0.20", features = ["wav", "jpeg"] }
 fdm = { path = "crates/fdm" }
@@ -19,3 +30,152 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# Look-dev harnesses on demand (see autoexamples above).
+[[example]]
+name = "ah64_cockpit_shot"
+path = "examples/ah64_cockpit_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "ah64_cockpit_view"
+path = "examples/ah64_cockpit_view.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "b737_cockpit_shot"
+path = "examples/b737_cockpit_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "cloud_shot"
+path = "examples/cloud_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "cockpit_eye_calib"
+path = "examples/cockpit_eye_calib.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "cockpit_shot"
+path = "examples/cockpit_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "f22_cockpit_shot"
+path = "examples/f22_cockpit_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "flame_shot"
+path = "examples/flame_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "fx_shot"
+path = "examples/fx_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "gauge_shot"
+path = "examples/gauge_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "gear_shot"
+path = "examples/gear_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "hud_shot"
+path = "examples/hud_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "lens_shot"
+path = "examples/lens_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "map_shot"
+path = "examples/map_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "menu_shot"
+path = "examples/menu_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "panel_calib"
+path = "examples/panel_calib.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "panel_view_shot"
+path = "examples/panel_view_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "pfd_shot"
+path = "examples/pfd_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "sim_view_shot"
+path = "examples/sim_view_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "vapor_shot"
+path = "examples/vapor_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "water_shot"
+path = "examples/water_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+

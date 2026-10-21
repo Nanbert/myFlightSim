@@ -64,7 +64,7 @@ fn main() {
             ..default()
         }))
         .insert_resource(WinitSettings::continuous())
-        .insert_resource(weather::Weather { rain })
+        .insert_resource(weather::Weather { rain, ..Default::default() })
         .add_plugins(sky::SkyPlugin)
         .insert_resource(Poses(poses))
         .add_systems(Startup, setup)

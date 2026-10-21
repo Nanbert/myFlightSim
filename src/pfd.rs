@@ -23,6 +23,7 @@ use crate::autopilot::{AtMode, Autopilot, LatMode, Mcp, SpeedUnit, VertMode};
 use crate::ils;
 use crate::mcp_ui::PANEL_W;
 use crate::sim::{AircraftState, Sim};
+use crate::ui_theme;
 use crate::view::{CockpitModel, Ui};
 
 /// Nominal display size in logical px. The screen is portrait, like the 737's.
@@ -204,17 +205,15 @@ fn fit_to_window(windows: Query<&Window, With<PrimaryWindow>>, mut q: Query<&mut
 
 /// The 2D corner PFDs are chase-view instruments; the cockpit has the real
 /// screens. Hide the overlays while the pilot's eye is inside.
-fn cockpit_visibility(ui: Res<Ui>, mut q: Query<&mut Node, With<Pfd>>) {
-    let display = if ui.cockpit {
-        Display::None
-    } else {
-        Display::Flex
-    };
-    for mut node in &mut q {
-        if node.display != display {
-            node.display = display;
-        }
-    }
+fn cockpit_visibility(ui: Res<Ui>, q: Query<&mut Node, With<Pfd>>) {
+    ui_theme::set_display(
+        q,
+        if ui.cockpit {
+            Display::None
+        } else {
+            Display::Flex
+        },
+    );
 }
 
 /// Put the PFDs on the 737's two inboard display units once the cockpit model
@@ -325,7 +324,7 @@ fn update_params(
             state.mach as f32,
         ),
         g: Vec4::new(
-            time.elapsed_secs() as f32,
+            time.elapsed_secs(),
             state.slip as f32,
             state.tas_kts as f32,
             (on_ils && ap.app_armed) as u8 as f32,

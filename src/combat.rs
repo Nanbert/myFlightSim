@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use bevy::audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
+use bevy::ecs::query::QueryFilter;
 use bevy::prelude::*;
 use bevy::text::FontSize;
 
@@ -1398,95 +1399,34 @@ fn boom(commands: &mut Commands, assets: &CombatAssets, at: Vec3) {
     ));
 }
 
-fn guide_missiles(
-    mut commands: Commands,
-    time: Res<Time>,
-    assets: Option<Res<CombatAssets>>,
-    mut combat: ResMut<Combat>,
-    mut missiles: Query<(Entity, &mut Missile, &mut Transform), Without<Bandit>>,
-    mut flames: Query<&mut Transform, (With<MissileFlame>, Without<Missile>, Without<Bandit>)>,
-    bandits: Query<(&Bandit, &Transform), Without<Missile>>,
+/// The plume rides a metre or so behind the tail and flickers while the motor
+/// burns; the grain-out frame takes it away. Shared by both sides' rounds
+/// (`width` is the x/y bead scale, `len_scale` stretches the z plume). Generic
+/// over the query filter so each guiding system keeps its own `Without` set.
+#[allow(clippy::too_many_arguments)]
+fn service_flame<F: QueryFilter>(
+    commands: &mut Commands,
+    flames: &mut Query<&mut Transform, F>,
+    slot: &mut Option<Entity>,
+    burning: bool,
+    tf: &Transform,
+    dir: Vec3,
+    now: f32,
+    behind: f32,
+    width: f32,
+    len_scale: f32,
 ) {
-    let Some(assets) = assets else {
-        return;
-    };
-    let dt = time.delta_secs();
-    for (entity, mut m, mut tf) in &mut missiles {
-        m.life -= dt;
-        if m.life <= 0.0 {
-            despawn_missile(&mut commands, entity, &mut m);
-            continue;
+    let Some(f) = *slot else { return };
+    if burning {
+        if let Ok(mut ft) = flames.get_mut(f) {
+            let pulse = 1.0 + 0.16 * (now * 90.0).sin();
+            ft.translation = tf.translation - dir * behind;
+            ft.rotation = Quat::from_rotation_arc(Vec3::Z, -dir);
+            ft.scale = Vec3::new(width, width, FLAME_LEN * len_scale * pulse);
         }
-        let Ok((bandit, target_tf)) = bandits.get(m.target) else {
-            despawn_missile(&mut commands, entity, &mut m);
-            continue;
-        };
-        let pos = tf.translation;
-        let speed = m.vel.length().max(1.0);
-        // Lead the target by the time the missile needs to close the gap.
-        let t_go = (target_tf.translation - pos).length() / speed;
-        let predicted = target_tf.translation + bandit.vel * t_go;
-        let desired = (predicted - pos).normalize_or_zero();
-        let current = m.vel / speed;
-        let angle = current.dot(desired).clamp(-1.0, 1.0).acos();
-        let dir = if angle > 1e-4 {
-            let axis = current.cross(desired).normalize_or_zero();
-            let turn = (m.turn * dt).min(angle);
-            Quat::from_axis_angle(axis, turn) * current
-        } else {
-            current
-        };
-        // Motor burn, then a little drag once the grain is gone.
-        let accel = if m.motor > 0.0 {
-            m.motor -= dt;
-            m.accel
-        } else {
-            -8.0
-        };
-        let speed = (speed + accel * dt).clamp(80.0, m.max_speed);
-        m.vel = dir * speed;
-        let next = pos + m.vel * dt;
-        tf.translation = next;
-        tf.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, dir);
-
-        // The plume rides a metre or so behind the tail and flickers while the
-        // motor burns; the grain-out frame takes it away.
-        if let Some(f) = m.flame {
-            if m.motor > 0.0 {
-                if let Ok(mut ft) = flames.get_mut(f) {
-                    let pulse = 1.0 + 0.16 * (time.elapsed_secs() * 90.0).sin();
-                    ft.translation = tf.translation - dir * 1.8;
-                    ft.rotation = Quat::from_rotation_arc(Vec3::Z, -dir);
-                    ft.scale = Vec3::new(0.55, 0.55, FLAME_LEN * pulse);
-                }
-            } else {
-                commands.entity(f).despawn();
-                m.flame = None;
-            }
-        }
-
-        if segment_point_distance(pos, next, target_tf.translation) < MISSILE_HIT_M {
-            let at = target_tf.translation;
-            despawn_missile(&mut commands, entity, &mut m);
-            commands.entity(m.target).despawn();
-            boom(&mut commands, &assets, at);
-            combat.kills += 1;
-        }
-    }
-}
-
-/// Take a missile (and its exhaust bead) out of the world together.
-fn despawn_missile(commands: &mut Commands, entity: Entity, m: &mut Missile) {
-    commands.entity(entity).despawn();
-    if let Some(f) = m.flame.take() {
+    } else {
         commands.entity(f).despawn();
-    }
-}
-
-fn despawn_threat(commands: &mut Commands, entity: Entity, m: &mut EnemyMissile) {
-    commands.entity(entity).despawn();
-    if let Some(f) = m.flame.take() {
-        commands.entity(f).despawn();
+        *slot = None;
     }
 }
 
@@ -1542,7 +1482,7 @@ fn guide_threats(
     for (entity, mut m, mut tf) in &mut threats {
         m.life -= dt;
         if m.life <= 0.0 {
-            despawn_threat(&mut commands, entity, &mut m);
+            despawn_flying(&mut commands, entity, &mut m.flame);
             continue;
         }
 
@@ -1574,7 +1514,7 @@ fn guide_threats(
                 // It followed the decoy in; with the flare gone the round is
                 // spent rather than circling back as an unkillable ghost.
                 Err(_) => {
-                    despawn_threat(&mut commands, entity, &mut m);
+                    despawn_flying(&mut commands, entity, &mut m.flame);
                     continue;
                 }
             },
@@ -1582,18 +1522,7 @@ fn guide_threats(
         };
         let pos = tf.translation;
         let speed = m.vel.length().max(1.0);
-        let t_go = (target_pos - pos).length() / speed;
-        let predicted = target_pos + target_vel * t_go;
-        let desired = (predicted - pos).normalize_or_zero();
-        let current = m.vel / speed;
-        let angle = current.dot(desired).clamp(-1.0, 1.0).acos();
-        let dir = if angle > 1e-4 {
-            let axis = current.cross(desired).normalize_or_zero();
-            let turn = (THREAT_TURN_RAD_S * dt).min(angle);
-            Quat::from_axis_angle(axis, turn) * current
-        } else {
-            current
-        };
+        let dir = lead_chase_dir(pos, m.vel, target_pos, target_vel, THREAT_TURN_RAD_S, dt);
         let accel = if m.motor > 0.0 {
             m.motor -= dt;
             THREAT_ACCEL
@@ -1605,19 +1534,19 @@ fn guide_threats(
         let next = pos + m.vel * dt;
         tf.translation = next;
         tf.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, dir);
-        if let Some(f) = m.flame {
-            if m.motor > 0.0 {
-                if let Ok(mut ft) = flames.get_mut(f) {
-                    let pulse = 1.0 + 0.16 * (time.elapsed_secs() * 90.0).sin();
-                    ft.translation = tf.translation - dir * 1.6;
-                    ft.rotation = Quat::from_rotation_arc(Vec3::Z, -dir);
-                    ft.scale = Vec3::new(0.45, 0.45, FLAME_LEN * 0.8 * pulse);
-                }
-            } else {
-                commands.entity(f).despawn();
-                m.flame = None;
-            }
-        }
+        let burning = m.motor > 0.0;
+        service_flame(
+            &mut commands,
+            &mut flames,
+            &mut m.flame,
+            burning,
+            &tf,
+            dir,
+            time.elapsed_secs(),
+            1.6,
+            0.45,
+            0.8,
+        );
 
         // A seduced round only kills flares; the jet is safe from it now.
         if m.decoy.is_none() && segment_point_distance(pos, next, player_pos) < THREAT_HIT_M {
@@ -1631,7 +1560,7 @@ fn guide_threats(
                     commands.entity(*f).despawn();
                 }
             }
-            despawn_threat(&mut commands, entity, &mut m);
+            despawn_flying(&mut commands, entity, &mut m.flame);
             boom(&mut commands, &assets, at);
             // Arcade respawn: a fresh jet at the mission spawn, score and wave
             // intact. The camera snaps over the next fixed step.
@@ -1649,6 +1578,104 @@ fn guide_threats(
             combat.bay = 0.0;
             combat.down = 3.0;
         }
+    }
+}
+
+fn guide_missiles(
+    mut commands: Commands,
+    time: Res<Time>,
+    assets: Option<Res<CombatAssets>>,
+    mut combat: ResMut<Combat>,
+    mut missiles: Query<(Entity, &mut Missile, &mut Transform), Without<Bandit>>,
+    mut flames: Query<&mut Transform, (With<MissileFlame>, Without<Missile>, Without<Bandit>)>,
+    bandits: Query<(&Bandit, &Transform), Without<Missile>>,
+) {
+    let Some(assets) = assets else {
+        return;
+    };
+    let dt = time.delta_secs();
+    for (entity, mut m, mut tf) in &mut missiles {
+        m.life -= dt;
+        if m.life <= 0.0 {
+            despawn_flying(&mut commands, entity, &mut m.flame);
+            continue;
+        }
+        let Ok((bandit, target_tf)) = bandits.get(m.target) else {
+            despawn_flying(&mut commands, entity, &mut m.flame);
+            continue;
+        };
+        let pos = tf.translation;
+        let speed = m.vel.length().max(1.0);
+        // Lead the target by the time the missile needs to close the gap.
+        let dir = lead_chase_dir(pos, m.vel, target_tf.translation, bandit.vel, m.turn, dt);
+        // Motor burn, then a little drag once the grain is gone.
+        let accel = if m.motor > 0.0 {
+            m.motor -= dt;
+            m.accel
+        } else {
+            -8.0
+        };
+        let speed = (speed + accel * dt).clamp(80.0, m.max_speed);
+        m.vel = dir * speed;
+        let next = pos + m.vel * dt;
+        tf.translation = next;
+        tf.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, dir);
+
+        let burning = m.motor > 0.0;
+        service_flame(
+            &mut commands,
+            &mut flames,
+            &mut m.flame,
+            burning,
+            &tf,
+            dir,
+            time.elapsed_secs(),
+            1.8,
+            0.55,
+            1.0,
+        );
+
+        if segment_point_distance(pos, next, target_tf.translation) < MISSILE_HIT_M {
+            let at = target_tf.translation;
+            despawn_flying(&mut commands, entity, &mut m.flame);
+            commands.entity(m.target).despawn();
+            boom(&mut commands, &assets, at);
+            combat.kills += 1;
+        }
+    }
+}
+
+/// Despawn a round and its plume; both sides' rounds fly the same shape.
+fn despawn_flying(commands: &mut Commands, entity: Entity, flame: &mut Option<Entity>) {
+    commands.entity(entity).despawn();
+    if let Some(f) = flame.take() {
+        commands.entity(f).despawn();
+    }
+}
+
+/// Lead-pursuit guidance: steer toward the closing time's predicted target
+/// point, capped to `turn_cap` rad/s (same solve the player's missiles and the
+/// threats both run).
+fn lead_chase_dir(
+    pos: Vec3,
+    vel: Vec3,
+    target: Vec3,
+    target_vel: Vec3,
+    turn_cap: f32,
+    dt: f32,
+) -> Vec3 {
+    let speed = vel.length().max(1.0);
+    let t_go = (target - pos).length() / speed;
+    let predicted = target + target_vel * t_go;
+    let desired = (predicted - pos).normalize_or_zero();
+    let current = vel / speed;
+    let angle = current.dot(desired).clamp(-1.0, 1.0).acos();
+    if angle > 1e-4 {
+        let axis = current.cross(desired).normalize_or_zero();
+        let turn = (turn_cap * dt).min(angle);
+        Quat::from_axis_angle(axis, turn) * current
+    } else {
+        current
     }
 }
 

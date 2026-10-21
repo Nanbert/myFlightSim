@@ -5,21 +5,80 @@
 //! thrust-vectoring F-22 a new data file, not new code — their engines, control
 //! laws, and gear layouts land as further structs here.
 
+use crate::aero::Aerodynamics;
+use crate::engine::PowerplantSpec;
+use crate::fcs::ControlSystem;
+use crate::gear::{BrakeGroup, ContactType, Gear};
+use crate::rotor::RotorSpec;
+use crate::state::{Inertia, Vec3};
+
+/// A literal factor — JSBSim's `<value>` inside a function's factor list.
+/// Defined here (before the module declarations) so every airframe file can
+/// use it without repeating the definitions.
+macro_rules! val {
+    ($x:expr) => {
+        Factor::Value($x)
+    };
+}
+
+/// A `<product>` function built from a factor list.
+macro_rules! prod {
+    ($($f:expr),* $(,)?) => {
+        Function::product(&[$($f),*])
+    };
+}
+
+/// One ground-effect scale function — the same JSBSim shape
+/// `product(table(aero/h_b-mac-ft))` that every airframe with `<ground_effect>`
+/// repeats in its `PRE` list, with only the name and table varying. A macro
+/// rather than a `const fn`: the factor slice must be promoted to `&'static`
+/// at the call site, which a runtime parameter would block.
+macro_rules! ground_effect {
+    ($name:expr, $table:ident) => {
+        NamedFn {
+            name: $name,
+            func: Function::product(&[Factor::Table1 {
+                var: "aero/h_b-mac-ft",
+                table: $table,
+            }]),
+        }
+    };
+}
+
 pub mod ah1s;
 pub mod b737;
 pub mod c172;
 pub mod f22;
 
-use crate::aero::Aerodynamics;
-use crate::engine::PowerplantSpec;
-use crate::fcs::ControlSystem;
-use crate::gear::Gear;
-use crate::rotor::RotorSpec;
-use crate::state::{Inertia, Vec3};
-
 /// Pound-mass -> slug (JSBSim's `lbtoslug`).
 pub const LB_TO_SLUG: f64 = 1.0 / 32.174049;
 pub const INCH_TO_FT: f64 = 1.0 / 12.0;
+
+/// A tyre on a strut, transcribed from `<contact type="BOGEY">`. The three
+/// fixed-gear airframes share JSBSim's default static/dynamic/rolling friction
+/// triple (0.8/0.5/0.02); the rebound damping equals the compress damping
+/// unless the airframe's XML overrides it (the 737 does).
+const fn bogey(
+    pos_in: [f64; 3],
+    spring: f64,
+    damp: f64,
+    damp_rebound: f64,
+    steer_max_deg: f64,
+    brake: BrakeGroup,
+) -> Gear {
+    Gear {
+        pos_in,
+        spring,
+        damp,
+        damp_rebound,
+        static_f: 0.8,
+        dyn_f: 0.5,
+        roll_f: 0.02,
+        contact: ContactType::Bogey,
+        steer_max_deg,
+        brake,
+    }
+}
 
 /// A discrete mass at a structural-frame position (inches from the datum).
 pub struct PointMass {

@@ -35,11 +35,6 @@ pub(super) struct TachNeedle;
 
 // --- Face rasterisation ---------------------------------------------------
 
-const FACE: [u8; 4] = [16, 16, 18, 255];
-const BEZEL: [u8; 4] = [14, 14, 16, 255];
-const BEZEL_HI: [u8; 4] = [46, 48, 54, 255];
-const BEZEL_RIM: [u8; 4] = [104, 108, 116, 255];
-const TICK: [u8; 4] = [228, 228, 228, 255];
 const ARC_GREEN: [u8; 4] = [26, 158, 68, 255];
 const RED: [u8; 4] = [214, 40, 40, 255];
 
@@ -49,8 +44,6 @@ struct Tables {
     green: Vec<u8>, // 0 none, 1..3 = band
     red: Vec<u8>,   // 0/1
 }
-
-const BUCKETS: usize = 1440; // 4 buckets per degree
 
 fn build_tables() -> Tables {
     let mut t = Tables {
@@ -82,7 +75,7 @@ fn build_tables() -> Tables {
         let center = rpm_to_cw(k as f32 * 100.0);
         let mut d = -half_w;
         while d <= half_w {
-            let b = ((center + d).rem_euclid(360.0) / 360.0 * BUCKETS as f32) as usize % BUCKETS;
+            let b = ang_bucket(center + d);
             if t.tick[b] < class {
                 t.tick[b] = class;
             }
@@ -95,21 +88,12 @@ fn build_tables() -> Tables {
 /// The colour of one dial sample at offset `(x, y)` from the centre (px).
 fn face_sample(t: &Tables, x: f32, y: f32) -> [u8; 4] {
     let u = (x * x + y * y).sqrt() / DIAL_R;
-    if u > 1.0 {
-        return [0, 0, 0, 0];
-    }
-    if u >= 0.90 {
-        return if u > 0.985 {
-            BEZEL_RIM
-        } else if u > 0.95 {
-            BEZEL_HI
-        } else {
-            BEZEL
-        };
+    if let Some(c) = bezel_grade(u, 0.90) {
+        return c;
     }
 
     let ang = y.atan2(x).to_degrees();
-    let b = (ang.rem_euclid(360.0) / 360.0 * BUCKETS as f32) as usize % BUCKETS;
+    let b = ang_bucket(ang);
 
     let mut c = FACE;
     // Ticks, just inside the arc band.

@@ -20,6 +20,7 @@ use bevy::shader::ShaderRef;
 use crate::app_state::{unpaused, AppState};
 use crate::sim::StartFlight;
 use crate::sky::{coverage_for, CloudField};
+use crate::ui_theme::opaque_material;
 use std::sync::OnceLock;
 
 /// Half-width of the square arena, metres. The terrain spans ±48 km.
@@ -232,17 +233,7 @@ struct TerrainMaterial {
     cloud_noise: Handle<Image>,
 }
 
-impl Material for TerrainMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/terrain.wesl".into()
-    }
-    fn enable_prepass() -> bool {
-        false
-    }
-    fn enable_shadows() -> bool {
-        false
-    }
-}
+opaque_material!(TerrainMaterial, "shaders/terrain.wesl");
 
 #[derive(Clone, Copy, ShaderType, Default)]
 struct WaterParams {
@@ -273,17 +264,7 @@ struct WaterMaterial {
     cloud_noise: Handle<Image>,
 }
 
-impl Material for WaterMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/water.wesl".into()
-    }
-    fn enable_prepass() -> bool {
-        false
-    }
-    fn enable_shadows() -> bool {
-        false
-    }
-}
+opaque_material!(WaterMaterial, "shaders/water.wesl");
 
 // --- plugin -----------------------------------------------------------------
 
@@ -415,7 +396,7 @@ fn update_map_params(
     };
     let pos = cam.translation();
     let sun_dir = (sun.rotation() * Vec3::Z).normalize_or_zero();
-    let rain = weather.rain as f32;
+    let rain = weather.rain;
     let night = weather.night_factor();
     let fog = fog_color(rain, night);
     let t = time.elapsed_secs();

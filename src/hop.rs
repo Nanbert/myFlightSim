@@ -17,14 +17,14 @@
 //! once at flight end.
 
 use bevy::prelude::*;
-use bevy::text::FontSize;
 
-use crate::approach::ApproachState;
 use crate::app_state::{unpaused, AppState};
+use crate::approach::ApproachState;
 use crate::config::app_dir;
 use crate::landing::LandingState;
 use crate::sim::Sim;
 use crate::takeoff::TakeoffState;
+use crate::ui_theme;
 
 /// The lifetime aggregates across all hops.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
@@ -50,9 +50,7 @@ pub fn record(mut ledger: Ledger, landing: Option<u32>, takeoff: Option<u32>, ga
     if let Some(takeoff) = takeoff {
         ledger.best_takeoff = Some(ledger.best_takeoff.map_or(takeoff, |b| b.max(takeoff)));
     }
-    let green = landing >= 75
-        && takeoff.map_or(true, |t| t >= 75)
-        && gate.map_or(true, |s| s);
+    let green = landing >= 75 && takeoff.is_none_or(|t| t >= 75) && gate.unwrap_or(true);
     ledger.green_streak = if green { ledger.green_streak + 1 } else { 0 };
     ledger.best_streak = ledger.best_streak.max(ledger.green_streak);
     ledger
@@ -107,7 +105,7 @@ pub(crate) struct HopState {
     landed: bool,
 }
 
-#[derive(Component)]
+#[derive(Component, Default)]
 struct LedgerPanel;
 
 pub struct HopPlugin;
@@ -130,28 +128,7 @@ fn load_ledger(mut state: ResMut<HopState>) {
 }
 
 fn spawn_panel(mut commands: Commands) {
-    commands.spawn((
-        LedgerPanel,
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.92, 0.94, 0.90)),
-        BackgroundColor(Color::srgba(0.02, 0.03, 0.04, 0.80)),
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(18.0),
-            top: Val::Px(320.0),
-            padding: UiRect::all(Val::Px(10.0)),
-            border: UiRect::all(Val::Px(1.0)),
-            display: Display::None,
-            ..default()
-        },
-        BorderColor::all(Color::srgba(0.7, 0.75, 0.7, 0.35)),
-        GlobalZIndex(14),
-        Pickable::IGNORE,
-    ));
+    ui_theme::float_report::<LedgerPanel>(&mut commands, ui_theme::ReportAnchor::RightTop(320.0));
 }
 
 /// Only the 737 subscribes to the ledger for now — the grades it reads are
@@ -176,8 +153,8 @@ fn update_panel(
          BEST LDG  {:>4}\n\
          GREEN     {} / BEST {}",
         l.hops,
-        l.best_takeoff.map_or(0, |v| v),
-        l.best_landing.map_or(0, |v| v),
+        l.best_takeoff.unwrap_or(0),
+        l.best_landing.unwrap_or(0),
         l.green_streak,
         l.best_streak,
     );
@@ -195,12 +172,7 @@ fn flush(
         return;
     }
     state.landed = true;
-    state.ledger = record(
-        state.ledger,
-        landing.last,
-        takeoff.last,
-        approach.stable,
-    );
+    state.ledger = record(state.ledger, landing.last, takeoff.last, approach.stable);
     let dir = app_dir();
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::fs::write(ledger_path(), render(&state.ledger));

@@ -808,8 +808,7 @@ pub(crate) fn runway_lateral(x: f32) -> f32 {
 /// Whether a world point is on the paved surface (with a small tolerance).
 pub(crate) fn on_runway(x: f32, z: f32) -> bool {
     runway_lateral(x) <= RUNWAY_WIDTH * 0.5 + 1.0
-        && z <= THRESHOLD_Z + 1.0
-        && z >= RUNWAY_END_Z - 1.0
+        && (RUNWAY_END_Z - 1.0..=THRESHOLD_Z + 1.0).contains(&z)
 }
 
 #[cfg(test)]

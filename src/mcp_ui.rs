@@ -18,6 +18,7 @@ use crate::aircraft_profile::{self, ToggleAction};
 use crate::app_state::{unpaused, AppState};
 use crate::autopilot::{AtMode, Autopilot, LatMode, Mcp, McpWindow, SpeedUnit, VertMode};
 use crate::sim::Sim;
+use crate::ui_theme;
 use crate::view::Ui;
 
 /// Panel size on screen. The texture is 2470×449, i.e. the same 5.5:1 ratio.
@@ -943,12 +944,10 @@ fn sync_panel(
                 seg_lit(ch, seg)
             }
             LedPart::Dot { window, slot } => chars(window).get(slot).copied().unwrap_or(' ') == '.',
-            LedPart::Sign { horizontal } => {
-                match (chars(McpWindow::VerticalSpeed)[0], horizontal) {
-                    ('+', _) | ('-', true) => true,
-                    _ => false,
-                }
-            }
+            LedPart::Sign { horizontal } => matches!(
+                (chars(McpWindow::VerticalSpeed)[0], horizontal),
+                ('+', _) | ('-', true)
+            ),
         };
         *vis = if lit {
             Visibility::Inherited
@@ -993,22 +992,20 @@ fn sync_panel(
 fn cockpit_visibility(
     ui: Option<Res<Ui>>,
     anim: Res<FocusAnim>,
-    mut q: Query<&mut Node, With<McpPanel>>,
+    q: Query<&mut Node, With<McpPanel>>,
 ) {
     // `Ui` is absent in tests that mount the panel on its own.
     let ui = ui.as_deref();
     let cockpit = ui.is_some_and(|ui| ui.cockpit);
     let focused = ui.is_some_and(|ui| ui.mcp_focus);
-    let display = if cockpit && !focused && anim.e <= 0.001 {
-        Display::None
-    } else {
-        Display::Flex
-    };
-    for mut node in &mut q {
-        if node.display != display {
-            node.display = display;
-        }
-    }
+    ui_theme::set_display(
+        q,
+        if cockpit && !focused && anim.e <= 0.001 {
+            Display::None
+        } else {
+            Display::Flex
+        },
+    );
 }
 
 fn glow(active: bool, hovered: bool, pressed: bool) -> Color {

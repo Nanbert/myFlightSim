@@ -236,7 +236,7 @@ fn pick_dial(origin: Vec3, dir: Vec3, root_tf: &Transform) -> Option<PanelKey> {
         if x * x + y * y > 1.0 {
             continue;
         }
-        if best.map_or(true, |(bt, _)| t < bt) {
+        if best.is_none_or(|(bt, _)| t < bt) {
             best = Some((t, key));
         }
     }

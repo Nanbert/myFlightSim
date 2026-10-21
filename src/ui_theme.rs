@@ -11,6 +11,7 @@
 //! gauges, checklist, ...) pick it up without touching each spawn site.
 
 use bevy::prelude::*;
+use bevy::text::FontSize;
 
 /// Bright phosphor green: the active/selected accent, borders, indicators.
 pub fn accent() -> Color {
@@ -83,6 +84,117 @@ fn apply_default_font(fonts: Res<UiFonts>, mut q: Query<&mut TextFont, Added<Tex
         };
         if !ours {
             tf.font = FontSource::Handle(fonts.mono.clone());
+        }
+    }
+}
+
+/// Screen anchor for [`float_report`]. The floating report panels always hang
+/// 18 px from their chosen edge; the payload is the y offset in px, measured
+/// from the top (or, for the bottom variants, from the bottom).
+pub enum ReportAnchor {
+    RightTop(f32),
+    LeftTop(f32),
+    LeftBottom(f32),
+}
+
+/// One of the five floating flight-report panels (takeoff grade, landing
+/// roll, approach banner, checklist card, hop ledger). They render the same
+/// 14 px monospace box — dark translucent pane, hairline border, absolute pin,
+/// `GlobalZIndex(14)`, hidden until their update system fills the text in.
+/// Only the marker component and the anchor previously varied, which used to
+/// mean five near-identical 23-line spawn blocks. Call sites pass their unit
+/// marker via `M::default()`.
+pub fn float_report<M: Component + Default>(commands: &mut Commands, anchor: ReportAnchor) {
+    let (left, right, top, bottom) = match anchor {
+        ReportAnchor::RightTop(y) => (Val::Auto, Val::Px(18.0), Val::Px(y), Val::Auto),
+        ReportAnchor::LeftTop(y) => (Val::Px(18.0), Val::Auto, Val::Px(y), Val::Auto),
+        ReportAnchor::LeftBottom(y) => (Val::Px(18.0), Val::Auto, Val::Auto, Val::Px(y)),
+    };
+    let node = Node {
+        position_type: PositionType::Absolute,
+        left,
+        right,
+        top,
+        bottom,
+        padding: UiRect::all(Val::Px(10.0)),
+        border: UiRect::all(Val::Px(1.0)),
+        display: Display::None,
+        ..default()
+    };
+
+    commands.spawn((
+        M::default(),
+        Text::new(""),
+        TextFont {
+            font_size: FontSize::Px(14.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.92, 0.94, 0.90)),
+        BackgroundColor(Color::srgba(0.02, 0.03, 0.04, 0.80)),
+        node,
+        BorderColor::all(Color::srgba(0.7, 0.75, 0.7, 0.35)),
+        GlobalZIndex(14),
+        Pickable::IGNORE,
+    ));
+}
+
+// --- Bevy Material impl boilerplate -----------------------------------------
+//
+// Every custom `Material` in the sim carries the same three "calm the renderer
+// down" overrides: null depth prepass, null shadow pass, and (for translucent
+// effects) `AlphaMode::Blend`. Nine copies of that four-method impl used to be
+// hand-typed next to each shader type; these two macros replace them. `mat`
+// must be a unit-ish struct deriving `AsBindGroup` + `ShaderType`.
+
+/// A translucent `Material` (`AlphaMode::Blend`) bound to one `.wesl` shader:
+/// `blend_material!(PuffMaterial, "shaders/vapor_puff.wesl");`
+macro_rules! blend_material {
+    ($mat:ty, $path:literal) => {
+        impl Material for $mat {
+            fn fragment_shader() -> ShaderRef {
+                $path.into()
+            }
+            fn alpha_mode(&self) -> AlphaMode {
+                AlphaMode::Blend
+            }
+            fn enable_prepass() -> bool {
+                false
+            }
+            fn enable_shadows() -> bool {
+                false
+            }
+        }
+    };
+}
+pub(crate) use blend_material;
+
+/// An opaque `Material` bound to one `.wesl` shader:
+/// `opaque_material!(TerrainMaterial, "shaders/terrain.wesl");`
+macro_rules! opaque_material {
+    ($mat:ty, $path:literal) => {
+        impl Material for $mat {
+            fn fragment_shader() -> ShaderRef {
+                $path.into()
+            }
+            fn enable_prepass() -> bool {
+                false
+            }
+            fn enable_shadows() -> bool {
+                false
+            }
+        }
+    };
+}
+pub(crate) use opaque_material;
+
+/// Set every listed node's `display` to `want`, writing only on change (the
+/// read-then-write keeps Bevy change detection from replaying the render sync
+/// each frame). All the "hide this overlay unless state X" systems converge
+/// here; their bodies shrink to computing `want`.
+pub fn set_display<M: Component>(mut q: Query<&mut Node, With<M>>, want: Display) {
+    for mut node in q.iter_mut() {
+        if node.display != want {
+            node.display = want;
         }
     }
 }

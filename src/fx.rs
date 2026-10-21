@@ -40,6 +40,7 @@ use bevy::shader::ShaderRef;
 
 use crate::app_state::{unpaused, AppState};
 use crate::sim::{AircraftState, Sim};
+use crate::ui_theme::blend_material;
 use crate::view::{model_to_body, AircraftRoot};
 
 /// Engine nozzle exits in the F-22's own glTF frame (metres, +X left / +Y up /
@@ -180,35 +181,18 @@ struct FlamePuffParams {
     anim: Vec4,
 }
 
+/// Translucent, not additive: `AlphaMode::Add` on a custom material does *not*
+/// mean `One/One` — it maps to Bevy's `PREMULTIPLIED_ALPHA_BLENDING`, an
+/// ordinary "over". Compositing the plume properly keeps it readable: it is
+/// thirty-odd puffs deep, and an additive stack runs off the top of the range
+/// before the first puff is drawn.
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 struct FlamePuffMaterial {
     #[uniform(0)]
     params: FlamePuffParams,
 }
 
-impl Material for FlamePuffMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/flame_puff.wesl".into()
-    }
-
-    // Translucent, not additive. `AlphaMode::Add` does *not* mean `One/One` on a
-    // custom material — it maps to Bevy's `PREMULTIPLIED_ALPHA_BLENDING`, which
-    // is an ordinary "over". Having the puffs composite properly is what keeps
-    // the plume readable: it is thirty-odd deep, and an additive stack runs off
-    // the top of the range before the first puff is drawn.
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
-    }
-
-    // A pure additive glow: nothing to write to a depth prepass, no shadows.
-    fn enable_prepass() -> bool {
-        false
-    }
-
-    fn enable_shadows() -> bool {
-        false
-    }
-}
+blend_material!(FlamePuffMaterial, "shaders/flame_puff.wesl");
 
 /// One billboard of a nozzle's plume, addressed by its slot in [`Plume`]. Not
 /// parented to the aircraft: it is positioned in world space each frame from its

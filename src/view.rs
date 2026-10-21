@@ -16,6 +16,7 @@ use crate::app_state::{unpaused, AppState};
 use crate::autopilot::Autopilot;
 use crate::input::Bindings;
 use crate::sim::{AircraftState, RenderPose, Sim};
+use crate::ui_theme;
 use crate::weather::Weather;
 
 /// Per-aircraft visual config: which mesh to load and how to seat it on the
@@ -903,17 +904,15 @@ fn setup_hud(mut commands: Commands) {
 
 /// Show the HUD only while flying; hide it in the menu (otherwise the last
 /// frame's text sits over the menu).
-fn sync_hud_visibility(state: Res<State<AppState>>, mut q: Query<&mut Node, With<Hud>>) {
-    let want = if *state.get() == AppState::Flying {
-        Display::Flex
-    } else {
-        Display::None
-    };
-    for mut node in &mut q {
-        if node.display != want {
-            node.display = want;
-        }
-    }
+fn sync_hud_visibility(state: Res<State<AppState>>, q: Query<&mut Node, With<Hud>>) {
+    ui_theme::set_display(
+        q,
+        if *state.get() == AppState::Flying {
+            Display::Flex
+        } else {
+            Display::None
+        },
+    );
 }
 
 /// Place the aircraft between the two latest FDM steps so its motion is smooth

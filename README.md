@@ -380,22 +380,22 @@ ah1s = 1
 - `cargo run -p jsbsim-sys --example takeoff` —— 无窗口跑完整自动驾驶任务，
   打印遥测表（高度/空速/升降率/姿态/油门/phase）。用来证明 FDM 本身能飞出一条
   正常的航线，从而把手感问题归因到“操纵”而非“模拟”。
-- `cargo run --example sim_view_shot` —— 离屏渲染场景，逐个偏转副翼 / 升降舵 /
-  方向舵各出一张图，核对新机模的操纵面接线；`COCKPIT=1 cargo run --example
+- `cargo run --features shots --example sim_view_shot` —— 离屏渲染场景，逐个偏转副翼 / 升降舵 /
+  方向舵各出一张图，核对新机模的操纵面接线；`COCKPIT=1 cargo run --features shots --example
   sim_view_shot` 则强制座舱视角，只出一张图，核对内饰框景。
-- `cargo run --example cockpit_shot` —— 单独加载大机模 + 自由相机，用来手工调
+- `cargo run --features shots --example cockpit_shot` —— 单独加载大机模 + 自由相机，用来手工调
   座舱眼睛位置（见下）。
-- `cargo run --example panel_calib` —— 座舱面板标定：把 `src/gauge/mod.rs` 里
+- `cargo run --features shots --example panel_calib` —— 座舱面板标定：把 `src/gauge/mod.rs` 里
   的 7 个表位重新投回屏幕，在画面上撒红球标记，用来核对/测量面板表盘的中心与
   半径（读数取自 `/tmp/dials.txt`，缺省用内置值）。
-- `cargo run --example panel_view_shot` —— 带实时仪表的座舱渲染截图，用来验证
+- `cargo run --features shots --example panel_view_shot` —— 带实时仪表的座舱渲染截图，用来验证
   7 个表是否正好贴在模型画好的表盘上（`COCKPIT=0` 则回到屏幕底角布局对照，
   `LOOK=<角度>` 让座舱视角转过去，检查转头时表是否仍跟着贴在表盘上）。
-- `cargo run --example ah64_cockpit_shot` —— 在引擎里加载 AH-64D 座舱 GLB，
+- `cargo run --features shots --example ah64_cockpit_shot` —— 在引擎里加载 AH-64D 座舱 GLB，
   用固定 1600×900 的离屏相机渲染一张主视角图（窗口只负责事件循环，画面写到
   `/tmp/opencode/ah64_cockpit_bevy.png`）。用来核对材质、透明座舱玻璃和发光 MPD
   在 Bevy 里的实际观感。
-- `cargo run --example ah64_cockpit_view` —— **实时环视** AH-64D 座舱：右键拖拽
+- `cargo run --features shots --example ah64_cockpit_view` —— **实时环视** AH-64D 座舱：右键拖拽
   转头，`WASD` 平移，`E`/`Q` 升降，`1`–`6` 预设视角，`R` 回眼点，`F5` 重新加载
   GLB，`G` 隐藏/显示座舱玻璃，`P` 截图，`Esc` 退出。
 
@@ -420,6 +420,11 @@ CARGO_MANIFEST_DIR=$PWD AUTOFLY=ah1s COCKPIT=1 ARCADE=1 AHOVER=1 \
 ```sh
 cargo test
 ```
+
+这些 `*_shot` 示例不参与日常构建：它们挂在 `shots` feature 上
+（`Cargo.toml` 里的 `required-features`），`cargo test` 会跳过它们——上面的
+命令因此都带 `--features shots`；只跑某个示例时按需编译一个，不再让
+`cargo test` 全量构建二十来个每张 2 GB 的截图程序。
 
 ## 机模与座舱视角
 
@@ -512,12 +517,12 @@ HDU/IHADSS 面板、侧控制台和 HOCAS 做了细节，地板、座椅、后�
   GLB 写到 `assets/ah64d_cockpit.glb`，Blender 预览写到
   `/tmp/opencode/ah64_cockpit_preview/`。
 
-- **引擎预览（截图）**：`cargo run --example ah64_cockpit_shot`，输出
+- **引擎预览（截图）**：`cargo run --features shots --example ah64_cockpit_shot`，输出
   `/tmp/opencode/ah64_cockpit_bevy.png`（1600×900 离屏）。
 - **引擎预览（实时环视）**：
 
   ```sh
-  cargo run --example ah64_cockpit_view
+  cargo run --features shots --example ah64_cockpit_view
   ```
 
   右键拖拽环视，`WASD` 平移，`E`/`Q` 升降，`Shift`/`Ctrl` 加速/减速，

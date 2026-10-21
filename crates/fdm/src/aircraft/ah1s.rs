@@ -57,17 +57,7 @@ const HWHAT: Factor = Factor::Prop("aero/HWhat-psft");
 const AERO_REF_AREA: f64 = 99.0;
 const REF_AREA: Factor = Factor::Value(AERO_REF_AREA);
 
-macro_rules! val {
-    ($x:expr) => {
-        Factor::Value($x)
-    };
-}
-
-macro_rules! prod {
-    ($($f:expr),* $(,)?) => {
-        Function::product(&[$($f),*])
-    };
-}
+// `val!` / `prod!` are shared from `super` (both defined in aircraft/mod.rs).
 
 // The coefficient sub-expressions and composite sub-terms the axes read, each
 // published as a file-level function in `PRE` (the framework can't nest sums or

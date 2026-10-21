@@ -1,3 +1,9 @@
+// Bevy system signatures are the shape of this crate: they routinely take many
+// query parameters, and the query types themselves are long. Both lints are
+// silenced crate-wide on purpose; hand-written helpers added here should still
+// keep their argument lists short.
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+
 mod aerodrome;
 mod aircraft_profile;
 mod app_state;

@@ -8,15 +8,14 @@
 //! numbers (a flap-scheduled Vref and a shallower rate budget). Mission
 //! flights are F-22 and have their own terrain.
 
-use bevy::picking::Pickable;
 use bevy::prelude::*;
-use bevy::text::FontSize;
 
 use crate::aerodrome::{on_runway, runway_along, runway_lateral};
 use crate::aircraft_profile;
 use crate::app_state::{unpaused, AppState};
 use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim};
+use crate::ui_theme;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -64,7 +63,7 @@ pub(crate) struct LandingState {
     vs_smooth: f64,
 }
 
-#[derive(Component)]
+#[derive(Component, Default)]
 struct LandingReport;
 
 pub struct LandingPlugin;
@@ -80,28 +79,7 @@ impl Plugin for LandingPlugin {
 }
 
 fn spawn_report(mut commands: Commands) {
-    commands.spawn((
-        LandingReport,
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.92, 0.94, 0.90)),
-        BackgroundColor(Color::srgba(0.02, 0.03, 0.04, 0.80)),
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(18.0),
-            top: Val::Px(120.0),
-            padding: UiRect::all(Val::Px(10.0)),
-            border: UiRect::all(Val::Px(1.0)),
-            display: Display::None,
-            ..default()
-        },
-        BorderColor::all(Color::srgba(0.7, 0.75, 0.7, 0.35)),
-        GlobalZIndex(14),
-        Pickable::IGNORE,
-    ));
+    ui_theme::float_report::<LandingReport>(&mut commands, ui_theme::ReportAnchor::RightTop(120.0));
 }
 
 fn reset_landing(mut state: ResMut<LandingState>) {
@@ -217,7 +195,7 @@ fn update_landing(
     if let Some(td) = state.touchdown {
         if now - td.at >= 2.0 {
             let (score, grade) = score(td, state.bounces);
-            if state.best.map_or(true, |b| score > b) {
+            if state.best.is_none_or(|b| score > b) {
                 state.best = Some(score);
             }
             state.last = Some(score);

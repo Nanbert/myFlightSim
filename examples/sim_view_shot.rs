@@ -29,6 +29,22 @@ mod sim;
 mod view;
 #[path = "../src/weather.rs"]
 mod weather;
+#[path = "../src/aerodrome.rs"]
+mod aerodrome;
+#[path = "../src/ils.rs"]
+mod ils;
+#[path = "../src/lights.rs"]
+mod lights;
+#[path = "../src/map.rs"]
+mod map;
+#[path = "../src/mission.rs"]
+mod mission;
+#[path = "../src/sky.rs"]
+mod sky;
+#[path = "../src/taxi.rs"]
+mod taxi;
+#[path = "../src/ui_theme.rs"]
+mod ui_theme;
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};

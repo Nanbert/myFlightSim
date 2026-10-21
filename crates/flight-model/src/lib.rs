@@ -117,3 +117,37 @@ pub trait FlightModel: Send + Sync {
         4.7
     }
 }
+
+/// Wrap an angle in degrees to `(-180, 180]`, the heading-error convention both
+/// autopilots use, so the difference crosses zero instead of jumping at the
+/// 0°/360° seam.
+///
+/// Shared by the app's autopilot (`src/autopilot.rs`), the JSBSim autopilot
+/// (`jsbsim-sys/src/autopilot.rs`) and the HUD; three copies that agreed on
+/// everything except the ±180° seam used to live side by side.
+pub fn wrap180(mut deg: f64) -> f64 {
+    deg = (deg + 180.0).rem_euclid(360.0) - 180.0;
+    if deg <= -180.0 {
+        deg + 360.0
+    } else {
+        deg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap180;
+
+    #[test]
+    fn wraps_to_the_semi_open_interval() {
+        assert_eq!(wrap180(0.0), 0.0);
+        assert_eq!(wrap180(90.0), 90.0);
+        assert_eq!(wrap180(-90.0), -90.0);
+        assert_eq!(wrap180(180.0), 180.0);
+        assert_eq!(wrap180(-180.0), 180.0);
+        assert_eq!(wrap180(181.0), -179.0);
+        assert_eq!(wrap180(-181.0), 179.0);
+        assert_eq!(wrap180(370.0), 10.0);
+        assert_eq!(wrap180(-370.0), -10.0);
+    }
+}

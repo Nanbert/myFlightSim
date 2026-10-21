@@ -12,6 +12,7 @@
 //! autothrottle in N1, handing over to SPD when the altitude is captured.
 
 use bevy::prelude::*;
+use flight_model::wrap180;
 use flight_model::FlightModel;
 
 use crate::aircraft_profile::{self, ToggleAction};
@@ -356,11 +357,7 @@ impl Autopilot {
             // APP arms both beams. A second press while armed disengages APP
             // without touching anything captured.
             ToggleAction::Approach if self.engaged => {
-                if self.app_armed {
-                    self.app_armed = false;
-                } else {
-                    self.app_armed = true;
-                }
+                self.app_armed = !self.app_armed;
             }
             ToggleAction::AutoThrottle => {
                 self.at = match self.at {
@@ -662,16 +659,6 @@ fn n1_throttle(alt_sel: f64, alt: f64) -> f64 {
         0.0
     } else {
         0.5
-    }
-}
-
-/// Wrap an angle in degrees to (-180, 180].
-fn wrap180(mut d: f64) -> f64 {
-    d = (d + 180.0).rem_euclid(360.0) - 180.0;
-    if d <= -180.0 {
-        d + 360.0
-    } else {
-        d
     }
 }
 

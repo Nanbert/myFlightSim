@@ -42,11 +42,6 @@ pub(super) struct SlipBall;
 
 // --- Face rasterisation ---------------------------------------------------
 
-const FACE: [u8; 4] = [16, 16, 18, 255];
-const BEZEL: [u8; 4] = [14, 14, 16, 255];
-const BEZEL_HI: [u8; 4] = [46, 48, 54, 255];
-const BEZEL_RIM: [u8; 4] = [104, 108, 116, 255];
-const TICK: [u8; 4] = [228, 228, 228, 255];
 /// The light glass tube the ball rolls in, and the shadow along its lower rim.
 const TUBE: [u8; 4] = [176, 178, 184, 255];
 const TUBE_EDGE: [u8; 4] = [86, 88, 94, 255];
@@ -55,17 +50,8 @@ const TUBE_EDGE: [u8; 4] = [86, 88, 94, 255];
 /// the slip tube.
 fn face_sample(x: f32, y: f32) -> [u8; 4] {
     let u = (x * x + y * y).sqrt() / DIAL_R;
-    if u > 1.0 {
-        return [0, 0, 0, 0];
-    }
-    if u >= 0.90 {
-        return if u > 0.985 {
-            BEZEL_RIM
-        } else if u > 0.95 {
-            BEZEL_HI
-        } else {
-            BEZEL
-        };
+    if let Some(c) = bezel_grade(u, 0.90) {
+        return c;
     }
     let (nx, ny) = (x / DIAL_R, y / DIAL_R);
 

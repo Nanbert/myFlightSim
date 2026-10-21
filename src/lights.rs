@@ -259,7 +259,7 @@ fn sync_flashing_lights(
                 // Two quick pops: [0, A] and [GAP, GAP + B].
                 Flasher::Strobe => {
                     let second = phase - STROBE_GAP;
-                    if phase < STROBE_A || (second >= 0.0 && second < STROBE_B) {
+                    if phase < STROBE_A || (0.0..STROBE_B).contains(&second) {
                         Visibility::Visible
                     } else {
                         Visibility::Hidden

@@ -34,6 +34,20 @@ mod vapor;
 mod view;
 #[path = "../src/weather.rs"]
 mod weather;
+#[path = "../src/aerodrome.rs"]
+mod aerodrome;
+#[path = "../src/ils.rs"]
+mod ils;
+#[path = "../src/lens.rs"]
+mod lens;
+#[path = "../src/lights.rs"]
+mod lights;
+#[path = "../src/mission.rs"]
+mod mission;
+#[path = "../src/taxi.rs"]
+mod taxi;
+#[path = "../src/ui_theme.rs"]
+mod ui_theme;
 
 use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::Tonemapping;

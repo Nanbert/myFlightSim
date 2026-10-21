@@ -31,6 +31,7 @@ use bevy::ui_render::prelude::UiMaterialPlugin;
 
 use crate::app_state::{unpaused, AppState};
 use crate::sim::Sim;
+use crate::ui_theme;
 
 /// On-screen size of one round instrument, logical px.
 pub(crate) const NODE: f32 = 196.0;
@@ -38,6 +39,67 @@ pub(crate) const NODE: f32 = 196.0;
 pub(crate) const TEX: usize = 512;
 /// Dial outer (bezel) radius, in texture px. The rest is transparent margin.
 pub(crate) const DIAL_R: f32 = 248.0;
+
+// --- shared dial rasteriser vocabulary -------------------------------------
+//
+// The round gauges (airspeed, altimeter, fuel, tach, vsi) and the two card
+// gauges (cdi, heading) all sample a radial dial: transparent past the rim,
+// then the same three-band metal bezel, then a face with tick marks / arcs in
+// the middle. These constants and two helpers are that shared vocabulary;
+// each instrument file keeps only its own layout and colours.
+
+/// Dial face colour.
+pub(crate) const FACE: [u8; 4] = [16, 16, 18, 255];
+/// Bezel base band.
+pub(crate) const BEZEL: [u8; 4] = [14, 14, 16, 255];
+/// Bezel bright band.
+pub(crate) const BEZEL_HI: [u8; 4] = [46, 48, 54, 255];
+/// Bezel outer rim (the metal edge).
+pub(crate) const BEZEL_RIM: [u8; 4] = [104, 108, 116, 255];
+/// Tick/arc colour used by the round dial face.
+pub(crate) const TICK: [u8; 4] = [228, 228, 228, 255];
+
+/// 4 buckets per degree: the quantised angle space the rasteriser paints into.
+pub(crate) const BUCKETS: usize = 1440;
+
+/// Map an angle in degrees to its bucket index (`0..BUCKETS`).
+pub(crate) fn ang_bucket(ang_deg: f32) -> usize {
+    (ang_deg.rem_euclid(360.0) / 360.0 * BUCKETS as f32) as usize % BUCKETS
+}
+
+/// The shared outer ring of a dial sample at radial offset `u` (normalised by
+/// [`DIAL_R`]): fully transparent past `u > 1.0`, the bezel bands from `start`
+/// inward. `None` means the caller is on the dial face and continues with its
+/// own face logic (`start` is 0.90 for the round gauges, 0.88 for the cards).
+pub(crate) fn bezel_grade(u: f32, start: f32) -> Option<[u8; 4]> {
+    if u > 1.0 {
+        Some([0, 0, 0, 0])
+    } else if u >= start {
+        Some(if u > 0.985 {
+            BEZEL_RIM
+        } else if u > 0.95 {
+            BEZEL_HI
+        } else {
+            BEZEL
+        })
+    } else {
+        None
+    }
+}
+
+/// Stamp one tick (length class 2 = long/heavy, 1 = short/short) across a
+/// `tick` bucket array, centred on angle `center` with half-width `half_w`
+/// degrees and the same 0.06° step every instrument uses.
+pub(crate) fn paint_tick(tick: &mut [u8], center: f32, class: u8, half_w: f32) {
+    let mut d = -half_w;
+    while d <= half_w {
+        let b = ang_bucket(center + d);
+        if tick[b] < class {
+            tick[b] = class;
+        }
+        d += 0.06;
+    }
+}
 /// Dial radius in on-screen px.
 pub(crate) const DIAL_PX: f32 = NODE * 0.5 * (DIAL_R / (TEX as f32 * 0.5));
 
@@ -250,18 +312,16 @@ impl Plugin for GaugePlugin {
 fn sync_visibility(
     state: Res<State<AppState>>,
     sim: Res<Sim>,
-    mut q: Query<&mut Node, With<Instrument>>,
+    q: Query<&mut Node, With<Instrument>>,
 ) {
-    let want = if *state.get() == AppState::Flying && sim.name == "c172p" {
-        Display::Flex
-    } else {
-        Display::None
-    };
-    for mut node in &mut q {
-        if node.display != want {
-            node.display = want;
-        }
-    }
+    ui_theme::set_display(
+        q,
+        if *state.get() == AppState::Flying && sim.name == "c172p" {
+            Display::Flex
+        } else {
+            Display::None
+        },
+    );
 }
 
 /// Seat the live instruments onto the model's painted panel while the cockpit

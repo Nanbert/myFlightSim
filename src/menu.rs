@@ -181,6 +181,20 @@ fn assist_row_count(id: &str) -> usize {
     }
 }
 
+/// Wrap the selected row of a paged list: clamp to the row count, then wrap
+/// around the top/bottom on ArrowUp/ArrowDown (`n` is expected >= 1 by the
+/// callers, which all `.max(1)` their row sources).
+fn cursor_nav(cur: usize, n: usize, up: bool, down: bool) -> usize {
+    let cur = cur.min(n - 1);
+    if up {
+        (cur + n - 1) % n
+    } else if down {
+        (cur + 1) % n
+    } else {
+        cur
+    }
+}
+
 /// Rows on the per-aircraft settings page. Zero for aircraft whose settings are
 /// entirely fixed (the F-22 and the 737 hide the SETTINGS entry).
 fn settings_row_count(id: &str) -> usize {
@@ -856,13 +870,9 @@ fn menu_input(
                 } else {
                     1
                 };
-                play.row = play.row.min(n - 1);
-                if keys.just_pressed(KeyCode::ArrowUp) {
-                    play.row = (play.row + n - 1) % n;
-                }
-                if keys.just_pressed(KeyCode::ArrowDown) {
-                    play.row = (play.row + 1) % n;
-                }
+                let up = keys.just_pressed(KeyCode::ArrowUp);
+                let down = keys.just_pressed(KeyCode::ArrowDown);
+                play.row = cursor_nav(play.row, n, up, down);
                 if enter {
                     let lesson = if cessna {
                         crate::mission::PLAY_MENU[play.row].lesson
@@ -880,13 +890,9 @@ fn menu_input(
             // The F-22 mission list: pick an arcade combat map.
             Page::Missions => {
                 let n = map::MAP_LABELS.len();
-                mission_state.row = mission_state.row.min(n - 1);
-                if keys.just_pressed(KeyCode::ArrowUp) {
-                    mission_state.row = (mission_state.row + n - 1) % n;
-                }
-                if keys.just_pressed(KeyCode::ArrowDown) {
-                    mission_state.row = (mission_state.row + 1) % n;
-                }
+                let up = keys.just_pressed(KeyCode::ArrowUp);
+                let down = keys.just_pressed(KeyCode::ArrowDown);
+                mission_state.row = cursor_nav(mission_state.row, n, up, down);
                 if enter {
                     if let Some(map) = MapId::from_label(map::MAP_LABELS[mission_state.row]) {
                         pending.0 = Some(map);
@@ -936,14 +942,10 @@ fn menu_input(
             Page::Settings => {
                 let id = sel.aircraft_id();
                 let n = settings_row_count(id).max(1);
-                aircraft_settings.row = aircraft_settings.row.min(n - 1);
+                let up = keys.just_pressed(KeyCode::ArrowUp);
+                let down = keys.just_pressed(KeyCode::ArrowDown);
+                aircraft_settings.row = cursor_nav(aircraft_settings.row, n, up, down);
 
-                if keys.just_pressed(KeyCode::ArrowUp) {
-                    aircraft_settings.row = (aircraft_settings.row + n - 1) % n;
-                }
-                if keys.just_pressed(KeyCode::ArrowDown) {
-                    aircraft_settings.row = (aircraft_settings.row + 1) % n;
-                }
                 let dir = keys.just_pressed(KeyCode::ArrowRight) as isize
                     - keys.just_pressed(KeyCode::ArrowLeft) as isize;
                 if dir != 0 {
@@ -1126,7 +1128,7 @@ fn start_flight(
     // The cold-start plan is the mission's, not a global setting: M1/M4 start
     // cold and dark, everything else runs. A fresh FDM starts with the flag
     // unset, so only the cold lessons need this.
-    sim.set_engine_cold(active.0.map_or(false, |l| l.cold_start()));
+    sim.set_engine_cold(active.0.is_some_and(|l| l.cold_start()));
     // Arcade is the mission's baseline; `config.arcade` only reports aircraft
     // that still offer the switch, so the F-22's FREE FLY is always realistic.
     let arcade =

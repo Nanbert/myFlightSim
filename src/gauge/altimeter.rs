@@ -44,20 +44,12 @@ pub(super) struct AltNeedle {
 
 // --- Face rasterisation ---------------------------------------------------
 
-const FACE: [u8; 4] = [16, 16, 18, 255];
-const BEZEL: [u8; 4] = [14, 14, 16, 255];
-const BEZEL_HI: [u8; 4] = [46, 48, 54, 255];
-const BEZEL_RIM: [u8; 4] = [104, 108, 116, 255];
-const TICK: [u8; 4] = [228, 228, 228, 255];
-
 /// The pressure-window card in the *texture* is skipped — it is drawn as a UI
 /// node instead, so the card and its readout text share one coordinate frame.
 /// Per-angle tick class (0 none, 1 minor, 2 major), one entry a spoke.
 struct Tables {
     tick: Vec<u8>,
 }
-
-const BUCKETS: usize = 1440; // 4 buckets per degree
 
 fn build_tables() -> Tables {
     let mut t = Tables {
@@ -71,7 +63,7 @@ fn build_tables() -> Tables {
         let center = 270.0 + ft_to_cw(ft); // screen angle (up = 270°)
         let mut d = -half_w;
         while d <= half_w {
-            let b = ((center + d).rem_euclid(360.0) / 360.0 * BUCKETS as f32) as usize % BUCKETS;
+            let b = ang_bucket(center + d);
             if t.tick[b] < class {
                 t.tick[b] = class;
             }
@@ -100,7 +92,7 @@ fn face_sample(t: &Tables, x: f32, y: f32) -> [u8; 4] {
     }
 
     let ang = y.atan2(x).to_degrees();
-    let b = (ang.rem_euclid(360.0) / 360.0 * BUCKETS as f32) as usize % BUCKETS;
+    let b = ang_bucket(ang);
 
     let mut c = FACE;
     let inner = match t.tick[b] {

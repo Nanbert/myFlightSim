@@ -48,9 +48,6 @@ pub(super) enum CdiFlag {
 
 const CARD: [u8; 4] = [20, 20, 24, 255];
 const CARD_RING: [u8; 4] = [218, 218, 222, 255];
-const BEZEL: [u8; 4] = [14, 14, 16, 255];
-const BEZEL_HI: [u8; 4] = [46, 48, 54, 255];
-const BEZEL_RIM: [u8; 4] = [104, 108, 116, 255];
 const DOT: [u8; 4] = [226, 226, 230, 255];
 const BAR: [u8; 4] = [60, 62, 66, 255];
 
@@ -76,18 +73,10 @@ fn card_sample(x: f32, y: f32) -> [u8; 4] {
 /// column. Centre transparent — the card shows through behind the needle.
 fn face_sample(x: f32, y: f32) -> [u8; 4] {
     let u = (x * x + y * y).sqrt() / DIAL_R;
-    if u > 1.0 {
-        return [0, 0, 0, 0];
+    if let Some(c) = bezel_grade(u, 0.88) {
+        return c;
     }
-    if u >= 0.88 {
-        return if u > 0.985 {
-            BEZEL_RIM
-        } else if u > 0.95 {
-            BEZEL_HI
-        } else {
-            BEZEL
-        };
-    }
+
     let (nx, ny) = (x / DIAL_R, y / DIAL_R);
 
     // Course index: a small white wedge at the top of the bezel.

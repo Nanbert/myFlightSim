@@ -18,14 +18,13 @@
 //! The gate arms again above 1500 ft, so a go-around gets re-graded on the
 //! next crossing instead of carrying the old verdict forever.
 
-use bevy::picking::Pickable;
 use bevy::prelude::*;
-use bevy::text::FontSize;
 
 use crate::aircraft_profile;
 use crate::app_state::{unpaused, AppState};
 use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim};
+use crate::ui_theme;
 
 /// Altitude AAL the gate grades at.
 const GATE_ALT: f64 = 1000.0;
@@ -77,7 +76,7 @@ pub(crate) struct ApproachState {
     banner_until: f32,
 }
 
-#[derive(Component)]
+#[derive(Component, Default)]
 struct ApproachBanner;
 
 pub struct ApproachPlugin;
@@ -92,28 +91,7 @@ impl Plugin for ApproachPlugin {
 }
 
 fn spawn_banner(mut commands: Commands) {
-    commands.spawn((
-        ApproachBanner,
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.92, 0.94, 0.90)),
-        BackgroundColor(Color::srgba(0.02, 0.03, 0.04, 0.80)),
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(18.0),
-            top: Val::Px(120.0),
-            padding: UiRect::all(Val::Px(10.0)),
-            border: UiRect::all(Val::Px(1.0)),
-            display: Display::None,
-            ..default()
-        },
-        BorderColor::all(Color::srgba(0.7, 0.75, 0.7, 0.35)),
-        GlobalZIndex(14),
-        Pickable::IGNORE,
-    ));
+    ui_theme::float_report::<ApproachBanner>(&mut commands, ui_theme::ReportAnchor::LeftTop(120.0));
 }
 
 fn reset_approach(mut state: ResMut<ApproachState>) {

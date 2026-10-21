@@ -30,11 +30,11 @@
 //! landing-roll deceleration this sim models.
 //! Values are imperial: areas ft², arms ft, moments slug·ft², positions inches.
 
-use super::{Aircraft, MassSpec, PointMass};
+use super::{bogey, Aircraft, MassSpec, PointMass};
 use crate::aero::{Aerodynamics, Axis, Factor, Function, NamedFn};
 use crate::engine::{PowerplantSpec, TurbineSpec};
 use crate::fcs::{ControlSystem, DirectFcs};
-use crate::gear::{BrakeGroup, ContactType, Gear};
+use crate::gear::{BrakeGroup, Gear};
 use crate::table::{Table1, Table2};
 
 const R2D: f64 = 180.0 / std::f64::consts::PI;
@@ -68,19 +68,7 @@ const GEARN: Factor = Factor::Prop("gear/gear-pos-norm");
 /// clean wing.
 const SB_POS: Factor = Factor::Prop("fcs/speedbrake-pos-norm");
 
-/// A literal factor.
-macro_rules! val {
-    ($x:expr) => {
-        Factor::Value($x)
-    };
-}
-
-/// A `<product>` function from a factor list.
-macro_rules! prod {
-    ($($f:expr),* $(,)?) => {
-        Function::product(&[$($f),*])
-    };
-}
+// `val!` / `prod!` are shared from `super` (both defined in aircraft/mod.rs).
 
 // --- ground-effect functions (<function name="aero/function/...">) ---------
 
@@ -244,22 +232,9 @@ const YAW: Axis = Axis::new(&[
 ]);
 
 /// File-level functions computed before the axes.
-const PRE: &[NamedFn] = &[
-    NamedFn {
-        name: "aero/function/kCDge",
-        func: Function::product(&[Factor::Table1 {
-            var: "aero/h_b-mac-ft",
-            table: T_KCDGE,
-        }]),
-    },
-    NamedFn {
-        name: "aero/function/kCLge",
-        func: Function::product(&[Factor::Table1 {
-            var: "aero/h_b-mac-ft",
-            table: T_KCLGE,
-        }]),
-    },
-];
+const GE_CD: NamedFn = ground_effect!("aero/function/kCDge", T_KCDGE);
+const GE_CL: NamedFn = ground_effect!("aero/function/kCLge", T_KCLGE);
+const PRE: &[NamedFn] = &[GE_CD, GE_CL];
 
 // --- mass & balance -------------------------------------------------------
 
@@ -367,28 +342,8 @@ const FCS: DirectFcs = DirectFcs {
 };
 
 // --- landing gear (<ground_reactions>) ------------------------------------
-
-const fn bogey(
-    pos_in: [f64; 3],
-    spring: f64,
-    damp: f64,
-    damp_rebound: f64,
-    steer_max_deg: f64,
-    brake: BrakeGroup,
-) -> Gear {
-    Gear {
-        pos_in,
-        spring,
-        damp,
-        damp_rebound,
-        static_f: 0.8,
-        dyn_f: 0.5,
-        roll_f: 0.02,
-        contact: ContactType::Bogey,
-        steer_max_deg,
-        brake,
-    }
-}
+// `bogey` is the shared tyre constructor in `super`; this airframe is the one
+// that overrides the rebound damping (its XML sets 8 kips against 4 kips).
 
 /// Nosewheel steers (max 35 deg); the mains carry the brakes.
 const GEAR: &[Gear] = &[

@@ -6,7 +6,7 @@
 //!
 //! Values are imperial: areas ft², arms ft, moments slug·ft², positions inches.
 
-use super::{Aircraft, FuelSpec, MassSpec, PointMass};
+use super::{bogey, Aircraft, FuelSpec, MassSpec, PointMass};
 use crate::aero::{Aerodynamics, Axis, Factor, Function, NamedFn};
 use crate::engine::{PistonSpec, PowerplantSpec, PropSpec};
 use crate::fcs::{ControlSystem, DirectFcs};
@@ -35,19 +35,7 @@ const ELEV_MAG: Factor = Factor::Prop("fcs/mag-elevator-pos-rad");
 const AIL: Factor = Factor::Prop("fcs/left-aileron-pos-rad");
 const RUD: Factor = Factor::Prop("fcs/rudder-pos-rad");
 
-/// A literal factor.
-macro_rules! val {
-    ($x:expr) => {
-        Factor::Value($x)
-    };
-}
-
-/// A `<product>` function from a factor list.
-macro_rules! prod {
-    ($($f:expr),* $(,)?) => {
-        Function::product(&[$($f),*])
-    };
-}
+// `val!` / `prod!` are shared from `super` (both defined in aircraft/mod.rs).
 
 // --- 1-D tables -----------------------------------------------------------
 
@@ -357,21 +345,11 @@ const YAW: Axis = Axis::new(&[
 ]);
 
 /// File-level functions computed before the axes.
+const GE_CD: NamedFn = ground_effect!("aero/function/kCDge", T_KCDGE);
+const GE_CL: NamedFn = ground_effect!("aero/function/kCLge", T_KCLGE);
 const PRE: &[NamedFn] = &[
-    NamedFn {
-        name: "aero/function/kCDge",
-        func: Function::product(&[Factor::Table1 {
-            var: "aero/h_b-mac-ft",
-            table: T_KCDGE,
-        }]),
-    },
-    NamedFn {
-        name: "aero/function/kCLge",
-        func: Function::product(&[Factor::Table1 {
-            var: "aero/h_b-mac-ft",
-            table: T_KCLGE,
-        }]),
-    },
+    GE_CD,
+    GE_CL,
     NamedFn {
         // velocity-induced = u_aero + 2 * prop-induced
         name: "aero/function/velocity-induced-fps",
@@ -485,28 +463,9 @@ const FCS: DirectFcs = DirectFcs {
 };
 
 // --- landing gear (<ground_reactions>) ------------------------------------
-
-/// A tyre on a strut: the c172p's static/dynamic/rolling friction.
-const fn bogey(
-    pos_in: [f64; 3],
-    spring: f64,
-    damp: f64,
-    steer_max_deg: f64,
-    brake: BrakeGroup,
-) -> Gear {
-    Gear {
-        pos_in,
-        spring,
-        damp,
-        damp_rebound: damp,
-        static_f: 0.8,
-        dyn_f: 0.5,
-        roll_f: 0.02,
-        contact: ContactType::Bogey,
-        steer_max_deg,
-        brake,
-    }
-}
+// `bogey` is the shared tyre constructor in `super` (JSBSim's default
+// 0.8/0.5/0.02 friction, rebound damping equal to the compress damping, which
+// is what the c172p file implies).
 
 /// A rigid skid / tip: isotropic friction, only touches on a crash.
 const fn skid(pos_in: [f64; 3]) -> Gear {
@@ -526,9 +485,30 @@ const fn skid(pos_in: [f64; 3]) -> Gear {
 
 /// Nosewheel steers with the rudder (max 10 deg); the mains carry the brakes.
 const GEAR: &[Gear] = &[
-    bogey([-6.8, 0.0, -19.5], 1800.0, 600.0, 10.0, BrakeGroup::None),
-    bogey([58.2, -43.0, -15.5], 5400.0, 1600.0, 0.0, BrakeGroup::Left),
-    bogey([58.2, 43.0, -15.5], 5400.0, 1600.0, 0.0, BrakeGroup::Right),
+    bogey(
+        [-6.8, 0.0, -19.5],
+        1800.0,
+        600.0,
+        600.0,
+        10.0,
+        BrakeGroup::None,
+    ),
+    bogey(
+        [58.2, -43.0, -15.5],
+        5400.0,
+        1600.0,
+        1600.0,
+        0.0,
+        BrakeGroup::Left,
+    ),
+    bogey(
+        [58.2, 43.0, -15.5],
+        5400.0,
+        1600.0,
+        1600.0,
+        0.0,
+        BrakeGroup::Right,
+    ),
     skid([-37.7, 0.0, 26.6]),
     skid([188.0, 0.0, 8.0]),
     skid([43.2, -214.8, 59.4]),

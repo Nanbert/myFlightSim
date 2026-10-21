@@ -25,9 +25,6 @@ pub(super) struct HeadingCard;
 
 const CARD: [u8; 4] = [20, 20, 24, 255];
 const TICK: [u8; 4] = [226, 226, 230, 255];
-const BEZEL: [u8; 4] = [14, 14, 16, 255];
-const BEZEL_HI: [u8; 4] = [46, 48, 54, 255];
-const BEZEL_RIM: [u8; 4] = [104, 108, 116, 255];
 const HUB: [u8; 4] = [210, 210, 214, 255];
 
 /// The card: rose ticks on a dark disc, transparent outside.
@@ -62,17 +59,8 @@ fn card_sample(x: f32, y: f32) -> [u8; 4] {
 /// aircraft symbol in the centre.
 fn frame_sample(x: f32, y: f32) -> [u8; 4] {
     let u = (x * x + y * y).sqrt() / DIAL_R;
-    if u > 1.0 {
-        return [0, 0, 0, 0];
-    }
-    if u >= 0.88 {
-        return if u > 0.985 {
-            BEZEL_RIM
-        } else if u > 0.95 {
-            BEZEL_HI
-        } else {
-            BEZEL
-        };
+    if let Some(c) = bezel_grade(u, 0.88) {
+        return c;
     }
 
     // Index: a triangle pointing down at the top of the dial.

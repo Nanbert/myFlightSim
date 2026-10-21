@@ -1860,6 +1860,7 @@ fn air_angles(u: f64, v: f64, w: f64) -> (f64, f64) {
 /// Fill the named-property scratch map the aero evaluator reads. The gear
 /// position (`gear/gear-pos-norm`, driving the CDgear drag term) is set by the
 /// caller, since it's a whole-aircraft state rather than a resolved surface.
+#[allow(clippy::too_many_arguments)] // the full per-airframe aero inputs, each used independently
 fn fill_props(
     props: &mut PropMap,
     ac: &Aircraft,
@@ -2013,7 +2014,7 @@ fn solve_n<const N: usize>(mut a: [[f64; N]; N], mut b: [f64; N]) -> Option<[f64
 }
 
 /// Body->NED quaternion `[w, x, y, z]` from ZYX Euler angles (rad).
-fn euler_to_quat(phi: f64, theta: f64, psi: f64) -> [f64; 4] {
+pub(crate) fn euler_to_quat(phi: f64, theta: f64, psi: f64) -> [f64; 4] {
     let (cp, sp) = ((phi / 2.0).cos(), (phi / 2.0).sin());
     let (ct, st) = ((theta / 2.0).cos(), (theta / 2.0).sin());
     let (cy, sy) = ((psi / 2.0).cos(), (psi / 2.0).sin());

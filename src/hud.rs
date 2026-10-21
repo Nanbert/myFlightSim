@@ -22,9 +22,11 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 use bevy::ui_render::prelude::{MaterialNode, UiMaterial, UiMaterialPlugin};
+use flight_model::wrap180;
 
 use crate::app_state::{unpaused, AppState};
 use crate::sim::{AircraftState, Sim};
+use crate::ui_theme;
 use crate::view::{CockpitModel, Ui};
 
 /// One knot in feet per second.
@@ -483,12 +485,6 @@ fn sync_visibility(
     }
 }
 
-/// Wrap an angle difference into `[-180, 180)`, so the flight path marker takes
-/// the short way across the 0°/360° seam.
-fn wrap180(deg: f64) -> f64 {
-    (deg + 180.0).rem_euclid(360.0) - 180.0
-}
-
 /// Wind direction the air comes *from* (deg true) and its speed (kt), from the
 /// FDM's north/east wind velocity components.
 fn wind(north_fps: f64, east_fps: f64) -> (f32, f32) {
@@ -567,18 +563,16 @@ fn sync_visibility_ah64(
     state: Res<State<AppState>>,
     sim: Res<Sim>,
     shown: Res<HudShown>,
-    mut overlay: Query<&mut Node, With<Ah64Overlay>>,
+    overlay: Query<&mut Node, With<Ah64Overlay>>,
 ) {
-    let want = if *state.get() == AppState::Flying && sim.name == "ah1s" && shown.0 {
-        Display::Flex
-    } else {
-        Display::None
-    };
-    for mut node in &mut overlay {
-        if node.display != want {
-            node.display = want;
-        }
-    }
+    ui_theme::set_display(
+        overlay,
+        if *state.get() == AppState::Flying && sim.name == "ah1s" && shown.0 {
+            Display::Flex
+        } else {
+            Display::None
+        },
+    );
 }
 
 #[cfg(test)]
@@ -590,7 +584,9 @@ mod tests {
         assert!((wrap180(10.0) - 10.0).abs() < 1e-9);
         assert!((wrap180(350.0) - -10.0).abs() < 1e-9);
         assert!((wrap180(-350.0) - 10.0).abs() < 1e-9);
-        assert!(wrap180(180.0) >= -180.0 && wrap180(180.0) < 180.0);
+        // Shared convention is (-180, 180]: both half-turns collapse onto +180.
+        assert_eq!(wrap180(180.0), 180.0);
+        assert_eq!(wrap180(-180.0), 180.0);
     }
 
     #[test]

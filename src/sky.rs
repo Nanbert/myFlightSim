@@ -268,12 +268,12 @@ fn reverse_winding(mesh: &mut Mesh) {
     if let Some(indices) = mesh.indices_mut() {
         match indices {
             Indices::U16(v) => {
-                for tri in v.chunks_exact_mut(3) {
+                for tri in v.as_chunks_mut::<3>().0 {
                     tri.swap(1, 2);
                 }
             }
             Indices::U32(v) => {
-                for tri in v.chunks_exact_mut(3) {
+                for tri in v.as_chunks_mut::<3>().0 {
                     tri.swap(1, 2);
                 }
             }

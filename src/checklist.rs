@@ -32,6 +32,7 @@ use bevy::prelude::*;
 
 use crate::app_state::{unpaused, AppState};
 use crate::sim::{AircraftState, Sim};
+use crate::ui_theme;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Phase {
@@ -243,7 +244,7 @@ fn evaluate_jet(phase: Phase, r: &Readouts) -> (Phase, Vec<Item>) {
 pub struct ChecklistPlugin;
 
 /// Panel entity marker.
-#[derive(Component)]
+#[derive(Component, Default)]
 struct ChecklistPanel;
 
 #[derive(Resource, Default)]
@@ -268,28 +269,10 @@ fn reset_checklist(mut state: ResMut<ChecklistState>) {
 }
 
 fn spawn_panel(mut commands: Commands) {
-    commands.spawn((
-        ChecklistPanel,
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.92, 0.94, 0.90)),
-        BackgroundColor(Color::srgba(0.02, 0.03, 0.04, 0.80)),
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(18.0),
-            bottom: Val::Px(370.0),
-            padding: UiRect::all(Val::Px(10.0)),
-            border: UiRect::all(Val::Px(1.0)),
-            display: Display::None,
-            ..default()
-        },
-        BorderColor::all(Color::srgba(0.7, 0.75, 0.7, 0.35)),
-        GlobalZIndex(14),
-        Pickable::IGNORE,
-    ));
+    ui_theme::float_report::<ChecklistPanel>(
+        &mut commands,
+        ui_theme::ReportAnchor::LeftBottom(370.0),
+    );
 }
 
 fn update(

@@ -21,15 +21,14 @@
 //! The card shows for twelve seconds, same as the landing report, and keeps
 //! a best score for the session (persistence arrives with the hop ledger).
 
-use bevy::picking::Pickable;
 use bevy::prelude::*;
-use bevy::text::FontSize;
 
 use crate::aerodrome::on_runway;
 use crate::aircraft_profile;
 use crate::app_state::{unpaused, AppState};
 use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim};
+use crate::ui_theme;
 
 /// Minutes of sidewind and metars aside, the roll has started above this
 /// ground speed (kt). Below it a false wow read is the parked aircraft
@@ -98,7 +97,7 @@ pub(crate) struct TakeoffState {
     pub(crate) last: Option<u32>,
 }
 
-#[derive(Component)]
+#[derive(Component, Default)]
 struct TakeoffReport;
 
 pub struct TakeoffPlugin;
@@ -114,28 +113,7 @@ impl Plugin for TakeoffPlugin {
 }
 
 fn spawn_report(mut commands: Commands) {
-    commands.spawn((
-        TakeoffReport,
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.92, 0.94, 0.90)),
-        BackgroundColor(Color::srgba(0.02, 0.03, 0.04, 0.80)),
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(18.0),
-            top: Val::Px(430.0),
-            padding: UiRect::all(Val::Px(10.0)),
-            border: UiRect::all(Val::Px(1.0)),
-            display: Display::None,
-            ..default()
-        },
-        BorderColor::all(Color::srgba(0.7, 0.75, 0.7, 0.35)),
-        GlobalZIndex(14),
-        Pickable::IGNORE,
-    ));
+    ui_theme::float_report::<TakeoffReport>(&mut commands, ui_theme::ReportAnchor::RightTop(430.0));
 }
 
 fn reset_takeoff(mut state: ResMut<TakeoffState>) {
@@ -215,7 +193,7 @@ fn update_takeoff(
         // then free the state for the next takeoff (touch-and-go included).
         if state.since_lift >= GEAR_WINDOW {
             let (score, grade) = score(lift);
-            if state.best.map_or(true, |b| score > b) {
+            if state.best.is_none_or(|b| score > b) {
                 state.best = Some(score);
             }
             state.last = Some(score);
