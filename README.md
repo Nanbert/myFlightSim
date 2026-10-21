@@ -329,7 +329,8 @@ ah1s = 1
 ```
 .
 ├── src/
-│   ├── main.rs        # Bevy App 组装
+│   ├── main.rs        # 可执行入口：调用库里的 run()
+│   ├── lib.rs         # Bevy App 组装（截图示例也以库形式复用它）
 │   ├── app_state.rs   # Menu / Flying 状态
 │   ├── sim.rs         # 飞行模型 <-> Bevy 世界桥接、定步长与插值
 │   ├── view.rs        # 场景/相机/HUD、操纵面驱动（骨骼旋转 / 绕铰链线旋转）
@@ -424,7 +425,8 @@ cargo test
 这些 `*_shot` 示例不参与日常构建：它们挂在 `shots` feature 上
 （`Cargo.toml` 里的 `required-features`），`cargo test` 会跳过它们——上面的
 命令因此都带 `--features shots`；只跑某个示例时按需编译一个，不再让
-`cargo test` 全量构建二十来个每张 2 GB 的截图程序。
+`cargo test` 全量构建二十来个每张 2 GB 的截图程序。示例直接依赖
+`my_flight_sim` 库（`src/lib.rs`），不再各自用 `#[path]` 复制一份 `src` 模块树。
 
 ## 机模与座舱视角
 

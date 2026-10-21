@@ -24,7 +24,7 @@ use crate::aerodrome::{RUNWAY_END_Z, THRESHOLD_Z};
 use crate::sim::Sim;
 
 /// Glideslope angle shared by both runways.
-pub(crate) const GS_ANGLE_DEG: f64 = 3.0;
+pub const GS_ANGLE_DEG: f64 = 3.0;
 /// Up to this far out the beams are radiated; 9300 m ≈ 5 NM.
 const GATE_M: f64 = 9300.0;
 /// And the beams start at this distance from the threshold (the grass just
@@ -33,8 +33,8 @@ const GATE_M: f64 = 9300.0;
 const GATE_IN_M: f64 = 150.0;
 
 /// Half-scale (one dot): the receiver's standard 1.25° deviation width.
-pub(crate) const LOC_DOT_DEG: f64 = 1.25;
-pub(crate) const GS_DOT_DEG: f64 = 0.35;
+pub const LOC_DOT_DEG: f64 = 1.25;
+pub const GS_DOT_DEG: f64 = 0.35;
 
 /// The MYFS ILS beams, recomputed each FDM step inside `advance_fdm` and
 /// consumed by the autopilot's LOC/GS capture laws.
@@ -58,7 +58,7 @@ pub struct Ils {
 
 /// GLIDESLOPE annunciator: this far *below* the flown beam lights the amber
 /// word (the real warning band starts around 0.7 dot).
-pub(crate) const GS_WARN_DEG: f64 = 0.55;
+pub const GS_WARN_DEG: f64 = 0.55;
 
 impl Ils {
     pub fn none() -> Self {

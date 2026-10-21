@@ -59,15 +59,15 @@ struct HudParams {
 /// Arcade combat stores shown in the HUD's weapon block. `combat.rs` fills
 /// this each frame; a negative missile count hides the block (no fight).
 #[derive(Resource)]
-pub(crate) struct HudWeapons {
+pub struct HudWeapons {
     /// Sidewinder-class rounds; negative hides the whole stores block.
-    pub(crate) ir: i32,
-    pub(crate) bvr: i32,
+    pub ir: i32,
+    pub bvr: i32,
     /// 0 = IR selected, 1 = BVR.
-    pub(crate) selected: u32,
-    pub(crate) rounds: i32,
-    pub(crate) flares: i32,
-    pub(crate) kills: u32,
+    pub selected: u32,
+    pub rounds: i32,
+    pub flares: i32,
+    pub kills: u32,
 }
 
 impl Default for HudWeapons {

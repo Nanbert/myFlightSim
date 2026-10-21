@@ -3,18 +3,11 @@
 //!
 //! Run: `cargo run --example cloud_shot` (set `RAIN=1` for the storm deck).
 
-#[path = "../src/cloud_camera.rs"]
-mod cloud_camera;
-
-#[path = "../src/sky.rs"]
-mod sky;
-#[path = "../src/weather.rs"]
-mod weather;
-
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 use bevy::winit::WinitSettings;
+use my_flight_sim::{cloud_camera, sky, weather};
 
 #[derive(Resource, Default)]
 struct Frame(u32);
@@ -64,7 +57,10 @@ fn main() {
             ..default()
         }))
         .insert_resource(WinitSettings::continuous())
-        .insert_resource(weather::Weather { rain, ..Default::default() })
+        .insert_resource(weather::Weather {
+            rain,
+            ..Default::default()
+        })
         .add_plugins(sky::SkyPlugin)
         .insert_resource(Poses(poses))
         .add_systems(Startup, setup)

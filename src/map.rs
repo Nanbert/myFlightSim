@@ -62,8 +62,8 @@ const DEFAULT_SUN: (f32, f32) = (-0.5, -0.6);
 /// as a resource. `dim_lights` rewards this every frame from the current
 /// time-of-day preset.
 #[derive(Resource, Clone, Copy)]
-pub(crate) struct SunPose {
-    pub(crate) rot: (f32, f32),
+pub struct SunPose {
+    pub rot: (f32, f32),
 }
 
 impl Default for SunPose {

@@ -4,53 +4,13 @@
 //!
 //! Run: `cargo run --example menu_shot`
 
-#[path = "../src/aircraft_profile.rs"]
-mod aircraft_profile;
-#[path = "../src/app_state.rs"]
-mod app_state;
-#[path = "../src/autopilot.rs"]
-mod autopilot;
-#[path = "../src/cloud_camera.rs"]
-mod cloud_camera;
-#[path = "../src/config.rs"]
-mod config;
-#[path = "../src/input.rs"]
-mod input;
-#[path = "../src/menu.rs"]
-mod menu;
-#[path = "../src/sim.rs"]
-mod sim;
-#[path = "../src/tutorial.rs"]
-mod tutorial;
-#[path = "../src/view.rs"]
-mod view;
-#[path = "../src/weather.rs"]
-mod weather;
-#[path = "../src/aerodrome.rs"]
-mod aerodrome;
-#[path = "../src/ils.rs"]
-mod ils;
-#[path = "../src/lights.rs"]
-mod lights;
-#[path = "../src/map.rs"]
-mod map;
-#[path = "../src/menu_page.rs"]
-mod menu_page;
-#[path = "../src/mission.rs"]
-mod mission;
-#[path = "../src/sky.rs"]
-mod sky;
-#[path = "../src/taxi.rs"]
-mod taxi;
-#[path = "../src/ui_theme.rs"]
-mod ui_theme;
-
 use bevy::input::keyboard::{Key, KeyboardInput, NativeKey};
 use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 use bevy::window::PrimaryWindow;
 use bevy::winit::WinitSettings;
+use my_flight_sim::{autopilot, config, input, menu, sim, view, weather};
 
 #[derive(Resource, Default)]
 struct Frame(u32);

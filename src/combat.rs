@@ -148,19 +148,19 @@ enum Weapon {
 }
 
 #[derive(Resource)]
-pub(crate) struct Combat {
+pub struct Combat {
     /// Set once the first wave and the HUD have been spawned in this flight.
-    pub(crate) spawned: bool,
+    pub spawned: bool,
     lock: Option<Entity>,
     weapon: Weapon,
     /// Sidewinder-class rounds left (side bays).
-    pub(crate) missiles: i32,
+    pub missiles: i32,
     /// AIM-120-class rounds left (belly stations; the model has no main bay).
-    pub(crate) bvr: i32,
-    pub(crate) rounds: i32,
-    pub(crate) flares: i32,
-    pub(crate) kills: u32,
-    pub(crate) wave: u32,
+    pub bvr: i32,
+    pub rounds: i32,
+    pub flares: i32,
+    pub kills: u32,
+    pub wave: u32,
     /// Selected TSD range, one of [`RADAR_RANGES_M`].
     radar_range_m: f32,
     gun_cd: f32,

@@ -17,13 +17,13 @@ use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim, StartFlight};
 
 /// Runway 36/18, metres.
-pub(crate) const RUNWAY_LENGTH: f32 = 1200.0;
-pub(crate) const RUNWAY_WIDTH: f32 = 30.0;
+pub const RUNWAY_LENGTH: f32 = 1200.0;
+pub const RUNWAY_WIDTH: f32 = 30.0;
 /// Threshold 36 sits well ahead of the aircraft's reset point (z = 0), so the
 /// starting view is not dominated by the threshold bars.
-pub(crate) const THRESHOLD_Z: f32 = 140.0;
+pub const THRESHOLD_Z: f32 = 140.0;
 const RUNWAY_CENTER_Z: f32 = THRESHOLD_Z - RUNWAY_LENGTH * 0.5;
-pub(crate) const RUNWAY_END_Z: f32 = THRESHOLD_Z - RUNWAY_LENGTH;
+pub const RUNWAY_END_Z: f32 = THRESHOLD_Z - RUNWAY_LENGTH;
 
 /// Taxiway and apron, east of the runway.
 const TAXI_X: f32 = 45.0;
@@ -34,9 +34,9 @@ const APRON_Z: f32 = -150.0;
 /// The C172 ramp stand on the lead-in line: the `P` spawn parks at (75, -150)
 /// facing the taxiway. Far enough from the pump that spawning cold doesn't
 /// auto-fill the tanks, aligned with the connector at the apron's own level.
-pub(crate) const STAND_X: f32 = 75.0;
+pub const STAND_X: f32 = 75.0;
 /// The lead-in line runs along the apron's connector (the z = -150 stub).
-pub(crate) const STAND_Z: f32 = APRON_Z;
+pub const STAND_Z: f32 = APRON_Z;
 /// Where the refuelling lane leaves the lead-in line for the pump.
 const PUMP_LANE_X: f32 = PUMP_POS.x;
 
@@ -792,7 +792,7 @@ fn update_windsock(
 /// Distance from the selected threshold, along the runway, in metres. `heading`
 /// is the aircraft's true heading: northbound uses the 36 threshold, southbound
 /// uses the 18 threshold.
-pub(crate) fn runway_along(heading_deg: f32, z: f32) -> f32 {
+pub fn runway_along(heading_deg: f32, z: f32) -> f32 {
     if heading_deg.to_radians().cos() >= 0.0 {
         THRESHOLD_Z - z
     } else {
@@ -801,12 +801,12 @@ pub(crate) fn runway_along(heading_deg: f32, z: f32) -> f32 {
 }
 
 /// Lateral distance from the centreline, metres.
-pub(crate) fn runway_lateral(x: f32) -> f32 {
+pub fn runway_lateral(x: f32) -> f32 {
     x.abs()
 }
 
 /// Whether a world point is on the paved surface (with a small tolerance).
-pub(crate) fn on_runway(x: f32, z: f32) -> bool {
+pub fn on_runway(x: f32, z: f32) -> bool {
     runway_lateral(x) <= RUNWAY_WIDTH * 0.5 + 1.0
         && (RUNWAY_END_Z - 1.0..=THRESHOLD_Z + 1.0).contains(&z)
 }

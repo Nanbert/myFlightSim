@@ -6,48 +6,13 @@
 //!
 //! Run: `MAP=GLACIAL cargo run --example map_shot`
 
-#[path = "../src/aircraft_profile.rs"]
-mod aircraft_profile;
-#[path = "../src/aerodrome.rs"]
-mod aerodrome;
-#[path = "../src/app_state.rs"]
-mod app_state;
-#[path = "../src/autopilot.rs"]
-mod autopilot;
-#[path = "../src/cloud_camera.rs"]
-mod cloud_camera;
-#[path = "../src/config.rs"]
-mod config;
-#[path = "../src/ils.rs"]
-mod ils;
-#[path = "../src/hud.rs"]
-mod hud;
-#[path = "../src/input.rs"]
-mod input;
-#[path = "../src/lights.rs"]
-mod lights;
-#[path = "../src/map.rs"]
-mod map;
-#[path = "../src/mission.rs"]
-mod mission;
-#[path = "../src/sim.rs"]
-mod sim;
-#[path = "../src/sky.rs"]
-mod sky;
-#[path = "../src/statue.rs"]
-mod statue;
-#[path = "../src/taxi.rs"]
-mod taxi;
-#[path = "../src/view.rs"]
-mod view;
-#[path = "../src/weather.rs"]
-mod weather;
-#[path = "../src/ui_theme.rs"]
-mod ui_theme;
-
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 use bevy::winit::WinitSettings;
+use my_flight_sim::{
+    app_state, autopilot, cloud_camera, config, hud, input, lights, map, mission, sim, sky, statue,
+    taxi, view, weather,
+};
 
 #[derive(Resource, Default)]
 struct Frame(u32);
@@ -102,7 +67,12 @@ fn main() {
         .add_systems(Startup, enter_flight)
         .add_systems(
             OnEnter(app_state::AppState::Flying),
-            (mission_boot, view::spawn_flight_aircraft, view::reset_control_rig).chain(),
+            (
+                mission_boot,
+                view::spawn_flight_aircraft,
+                view::reset_control_rig,
+            )
+                .chain(),
         )
         .init_resource::<Frame>()
         .init_resource::<StatueView>()
@@ -124,7 +94,11 @@ fn read_statue_env(mut view: ResMut<StatueView>) {
 
 /// `MAP=GLACIAL` (default), `MAP=ALPINE`, `MAP=ARCHIPELAGO`.
 fn read_map_env() -> map::MapId {
-    match std::env::var("MAP").unwrap_or_default().to_ascii_uppercase().as_str() {
+    match std::env::var("MAP")
+        .unwrap_or_default()
+        .to_ascii_uppercase()
+        .as_str()
+    {
         "ARCHIPELAGO" => map::MapId::Archipelago,
         "ALPINE" => map::MapId::Alpine,
         _ => map::MapId::Glacial,
@@ -163,7 +137,10 @@ fn hold_alt(mut bindings: ResMut<input::Bindings>) {
 
 /// Face the bust from the southern approach: the summit disc is level, so the
 /// camera floats 480 m above it (mid-bust) and 1.6 km out.
-fn statue_camera(view: Res<StatueView>, mut q: Query<&mut Transform, (With<Camera3d>, Without<cloud_camera::CloudCamera>)>) {
+fn statue_camera(
+    view: Res<StatueView>,
+    mut q: Query<&mut Transform, (With<Camera3d>, Without<cloud_camera::CloudCamera>)>,
+) {
     if !view.0 {
         return;
     }

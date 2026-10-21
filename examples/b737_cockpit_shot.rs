@@ -5,50 +5,12 @@
 //!
 //! Run: `cargo run --example b737_cockpit_shot` and open `/tmp/b737_cockpit_shot.png`.
 
-#[path = "../src/aircraft_profile.rs"]
-mod aircraft_profile;
-#[path = "../src/app_state.rs"]
-mod app_state;
-#[path = "../src/autopilot.rs"]
-mod autopilot;
-#[path = "../src/cloud_camera.rs"]
-mod cloud_camera;
-#[path = "../src/cockpit.rs"]
-mod cockpit;
-#[path = "../src/config.rs"]
-mod config;
-#[path = "../src/input.rs"]
-mod input;
-#[path = "../src/mcp_ui.rs"]
-mod mcp_ui;
-#[path = "../src/pfd.rs"]
-mod pfd;
-#[path = "../src/sim.rs"]
-mod sim;
-#[path = "../src/view.rs"]
-mod view;
-#[path = "../src/weather.rs"]
-mod weather;
-#[path = "../src/aerodrome.rs"]
-mod aerodrome;
-#[path = "../src/ils.rs"]
-mod ils;
-#[path = "../src/lights.rs"]
-mod lights;
-#[path = "../src/map.rs"]
-mod map;
-#[path = "../src/mission.rs"]
-mod mission;
-#[path = "../src/sky.rs"]
-mod sky;
-#[path = "../src/taxi.rs"]
-mod taxi;
-#[path = "../src/ui_theme.rs"]
-mod ui_theme;
-
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 use bevy::winit::WinitSettings;
+use my_flight_sim::{
+    app_state, autopilot, cockpit, config, input, mcp_ui, pfd, sim, view, weather,
+};
 
 #[derive(Resource, Default)]
 struct Frame(u32);

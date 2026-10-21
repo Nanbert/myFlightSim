@@ -312,7 +312,7 @@ impl Sim {
     }
 
     /// World-space position (meters) and orientation for the aircraft mesh.
-    pub(crate) fn pose(&self) -> (Vec3, Quat, f32) {
+    pub fn pose(&self) -> (Vec3, Quat, f32) {
         let lat = self.model.get("position/lat-gc-deg");
         let lon = self.model.get("position/long-gc-deg");
         let alt_m = self.model.get("position/h-sl-ft") * FT_TO_M;

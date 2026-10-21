@@ -55,7 +55,7 @@ struct ModelSpec {
 
 /// Does `name`'s model carry a pilot-eye cockpit view? Mirrors the check
 /// `follow_camera` makes, so callers can line up with the camera actually used.
-pub(crate) fn has_cockpit(name: &str) -> bool {
+pub fn has_cockpit(name: &str) -> bool {
     cockpit_spec(name).is_some()
 }
 
@@ -63,7 +63,7 @@ pub(crate) fn has_cockpit(name: &str) -> bool {
 /// `AircraftRoot` body frame, applying the same scale/yaw/drop `spawn_model_child`
 /// uses on the mesh. Lets effect code (see `fx.rs`) place emitters on the
 /// airframe using model-space coordinates measured from the glTF.
-pub(crate) fn model_to_body(name: &str, p: Vec3) -> Vec3 {
+pub fn model_to_body(name: &str, p: Vec3) -> Vec3 {
     let spec = model_spec(name);
     Quat::from_rotation_y(spec.yaw) * (p * spec.scale) + Vec3::new(0.0, -spec.drop, 0.0)
 }
@@ -476,7 +476,7 @@ const F22_GEAR: &[GearPart] = &[
 ];
 
 #[derive(Component)]
-pub(crate) struct AircraftRoot;
+pub struct AircraftRoot;
 
 /// Marks a model whose glTF materials should be matted once its scene spawns.
 /// The F-22 ships glossy, partly metallic paint that glares under the sun; see
@@ -491,7 +491,7 @@ struct ExteriorModel;
 
 /// Separate interior-equipped model, shown only in the cockpit view.
 #[derive(Component)]
-pub(crate) struct CockpitModel;
+pub struct CockpitModel;
 
 /// The 737 cockpit's captain-side yoke sits at eye level and covers most of
 /// the panel from the modelled eye. The sim doesn't draw or animate it (there
@@ -506,30 +506,30 @@ struct Hud;
 /// camera between the chase view and (for models that have an interior) the
 /// pilot-eye cockpit view.
 #[derive(Resource, Default)]
-pub(crate) struct Ui {
-    pub(crate) show_inputs: bool,
-    pub(crate) cockpit: bool,
+pub struct Ui {
+    pub show_inputs: bool,
+    pub cockpit: bool,
     /// Cockpit head-look, relative to the airframe: yaw about the body's up
     /// axis and pitch about its lateral axis. Zero looks straight ahead. Only
     /// the camera's *orientation* follows it — the pilot's eye stays put.
-    pub(crate) look_yaw: f32,
-    pub(crate) look_pitch: f32,
+    pub look_yaw: f32,
+    pub look_pitch: f32,
     /// Seconds left to ignore mouse motion after entering the cockpit. Locking
     /// the cursor can warp it once, which otherwise snaps the view to the roof.
-    pub(crate) look_settle: f32,
+    pub look_settle: f32,
     /// Drop the first non-zero mouse delta after the lock, too; some compositors
     /// deliver the warp a little later than the grab.
-    pub(crate) look_ignore: bool,
+    pub look_ignore: bool,
     /// Cockpit only: the 2D MCP panel is floating over a dimmed scene, with
     /// the mouse released for direct clicks. Free-look and the crosshair are
     /// suspended while this is set.
-    pub(crate) mcp_focus: bool,
+    pub mcp_focus: bool,
     /// Cockpit only, C172: the head-look is held still while an instrument is
     /// zoomed in, so the close-up stays exactly on the dial.
-    pub(crate) freeze_look: bool,
+    pub freeze_look: bool,
     /// Cockpit only: vertical FOV override while the instrument close-up is
     /// eased in. `None` uses the rest lens.
-    pub(crate) zoom_fov: Option<f32>,
+    pub zoom_fov: Option<f32>,
 }
 
 /// Live overrides for dialling in the cockpit view, driven by
@@ -548,7 +548,7 @@ pub struct CockpitTune {
 /// has loaded. Each frame we re-apply a hinge delta on top of these (a bone
 /// rotation for the rigged models, a rotate-about-a-line for the baked ones).
 #[derive(Resource, Default)]
-pub(crate) struct ControlRig {
+pub struct ControlRig {
     rest: HashMap<Entity, Transform>,
     /// Accumulated visual prop rotation (radians), integrated from rpm so the
     /// spin rate tracks the *instantaneous* rpm.
@@ -563,7 +563,7 @@ pub(crate) struct ControlRig {
 /// first frame the pose exists, then eased toward the desired offset so a
 /// heading change swings the view round instead of snapping.
 #[derive(Resource, Default)]
-pub(crate) struct Chase {
+pub struct Chase {
     offset: Option<Vec3>,
 }
 
@@ -615,7 +615,7 @@ impl Plugin for ViewPlugin {
 
 /// Spawn the model's glTF scene as a child of `parent`, scaled/yawed/dropped per
 /// `model_spec`. Shared by the flown aircraft and the menu's showcase row.
-pub(crate) fn spawn_model_child(
+pub fn spawn_model_child(
     commands: &mut Commands,
     assets: &AssetServer,
     parent: Entity,
@@ -707,7 +707,7 @@ fn tame_airframe_materials(
 /// Spawn the flown aircraft: one `AircraftRoot` (driven by `RenderPose`) with
 /// the sim's current model under it. Runs on entering `Flying`; torn down on
 /// exit so it never coexists with the menu's showcase row.
-pub(crate) fn spawn_flight_aircraft(
+pub fn spawn_flight_aircraft(
     mut commands: Commands,
     assets: Res<AssetServer>,
     sim: Res<Sim>,
@@ -822,7 +822,7 @@ fn hide_737_yoke(
 
 /// Drop the captured bind poses so the next aircraft's control bones are captured
 /// fresh (the glTF scene loads async, so `capture_rig` can't run on spawn).
-pub(crate) fn reset_control_rig(mut rig: ResMut<ControlRig>) {
+pub fn reset_control_rig(mut rig: ResMut<ControlRig>) {
     *rig = ControlRig::default();
 }
 
@@ -917,7 +917,7 @@ fn sync_hud_visibility(state: Res<State<AppState>>, q: Query<&mut Node, With<Hud
 
 /// Place the aircraft between the two latest FDM steps so its motion is smooth
 /// regardless of how the render rate divides into the 120 Hz sim.
-pub(crate) fn sync_aircraft(
+pub fn sync_aircraft(
     fixed: Res<Time<Fixed>>,
     rp: Res<RenderPose>,
     mut q: Query<&mut Transform, With<AircraftRoot>>,
@@ -1131,7 +1131,7 @@ const LOOK_PITCH_LIMIT: f32 = 80.0_f32.to_radians();
 /// body's up axis, then pitch about its lateral axis. Zero = straight ahead.
 /// Composed *after* the airframe attitude (see `follow_camera`), so a head-turn
 /// reads relative to the cockpit and rolls with the plane.
-pub(crate) fn look_rotation(ui: &Ui) -> Quat {
+pub fn look_rotation(ui: &Ui) -> Quat {
     Quat::from_rotation_y(ui.look_yaw) * Quat::from_rotation_x(ui.look_pitch)
 }
 
@@ -1223,17 +1223,17 @@ fn rest_look(name: &str) -> (f32, f32) {
 
 /// Pilot eye in the cockpit model's own frame, honouring the calibration
 /// override. Used by cockpit picking code that works in model space.
-pub(crate) fn cockpit_eye_model(name: &str, tune: &CockpitTune) -> Option<[f32; 3]> {
+pub fn cockpit_eye_model(name: &str, tune: &CockpitTune) -> Option<[f32; 3]> {
     cockpit_spec(name).and_then(|spec| tune.eye.or(spec.eye))
 }
 
 /// The cockpit model's mounted yaw (model frame -> body frame). Picking code
 /// needs it to express the camera's body-frame look in model space.
-pub(crate) fn cockpit_model_yaw(name: &str) -> Option<f32> {
+pub fn cockpit_model_yaw(name: &str) -> Option<f32> {
     cockpit_spec(name).map(|spec| spec.yaw)
 }
 
-pub(crate) fn follow_camera(
+pub fn follow_camera(
     time: Res<Time>,
     fixed: Res<Time<Fixed>>,
     rp: Res<RenderPose>,

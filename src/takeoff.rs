@@ -85,7 +85,7 @@ fn vr_of(kind: Kind, flap_norm: f64) -> f64 {
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct TakeoffState {
+pub struct TakeoffState {
     was_ground: bool,
     lift: Option<Liftoff>,
     /// Seconds accumulated airborne since the liftoff frame, for the gear
@@ -94,7 +94,7 @@ pub(crate) struct TakeoffState {
     report_until: f32,
     best: Option<u32>,
     /// The last graded takeoff score, for the hop ledger to read.
-    pub(crate) last: Option<u32>,
+    pub last: Option<u32>,
 }
 
 #[derive(Component, Default)]

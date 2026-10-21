@@ -17,7 +17,7 @@ mod airspeed;
 mod altimeter;
 mod attitude;
 mod cdi;
-pub(crate) mod focus;
+pub mod focus;
 mod fuel;
 mod heading;
 mod tach;
@@ -34,11 +34,11 @@ use crate::sim::Sim;
 use crate::ui_theme;
 
 /// On-screen size of one round instrument, logical px.
-pub(crate) const NODE: f32 = 196.0;
+pub const NODE: f32 = 196.0;
 /// Texture edge length, px. Supersampled, then minified to `NODE`.
-pub(crate) const TEX: usize = 512;
+pub const TEX: usize = 512;
 /// Dial outer (bezel) radius, in texture px. The rest is transparent margin.
-pub(crate) const DIAL_R: f32 = 248.0;
+pub const DIAL_R: f32 = 248.0;
 
 // --- shared dial rasteriser vocabulary -------------------------------------
 //
@@ -49,21 +49,21 @@ pub(crate) const DIAL_R: f32 = 248.0;
 // each instrument file keeps only its own layout and colours.
 
 /// Dial face colour.
-pub(crate) const FACE: [u8; 4] = [16, 16, 18, 255];
+pub const FACE: [u8; 4] = [16, 16, 18, 255];
 /// Bezel base band.
-pub(crate) const BEZEL: [u8; 4] = [14, 14, 16, 255];
+pub const BEZEL: [u8; 4] = [14, 14, 16, 255];
 /// Bezel bright band.
-pub(crate) const BEZEL_HI: [u8; 4] = [46, 48, 54, 255];
+pub const BEZEL_HI: [u8; 4] = [46, 48, 54, 255];
 /// Bezel outer rim (the metal edge).
-pub(crate) const BEZEL_RIM: [u8; 4] = [104, 108, 116, 255];
+pub const BEZEL_RIM: [u8; 4] = [104, 108, 116, 255];
 /// Tick/arc colour used by the round dial face.
-pub(crate) const TICK: [u8; 4] = [228, 228, 228, 255];
+pub const TICK: [u8; 4] = [228, 228, 228, 255];
 
 /// 4 buckets per degree: the quantised angle space the rasteriser paints into.
-pub(crate) const BUCKETS: usize = 1440;
+pub const BUCKETS: usize = 1440;
 
 /// Map an angle in degrees to its bucket index (`0..BUCKETS`).
-pub(crate) fn ang_bucket(ang_deg: f32) -> usize {
+pub fn ang_bucket(ang_deg: f32) -> usize {
     (ang_deg.rem_euclid(360.0) / 360.0 * BUCKETS as f32) as usize % BUCKETS
 }
 
@@ -71,7 +71,7 @@ pub(crate) fn ang_bucket(ang_deg: f32) -> usize {
 /// [`DIAL_R`]): fully transparent past `u > 1.0`, the bezel bands from `start`
 /// inward. `None` means the caller is on the dial face and continues with its
 /// own face logic (`start` is 0.90 for the round gauges, 0.88 for the cards).
-pub(crate) fn bezel_grade(u: f32, start: f32) -> Option<[u8; 4]> {
+pub fn bezel_grade(u: f32, start: f32) -> Option<[u8; 4]> {
     if u > 1.0 {
         Some([0, 0, 0, 0])
     } else if u >= start {
@@ -90,7 +90,7 @@ pub(crate) fn bezel_grade(u: f32, start: f32) -> Option<[u8; 4]> {
 /// Stamp one tick (length class 2 = long/heavy, 1 = short/short) across a
 /// `tick` bucket array, centred on angle `center` with half-width `half_w`
 /// degrees and the same 0.06° step every instrument uses.
-pub(crate) fn paint_tick(tick: &mut [u8], center: f32, class: u8, half_w: f32) {
+pub fn paint_tick(tick: &mut [u8], center: f32, class: u8, half_w: f32) {
     let mut d = -half_w;
     while d <= half_w {
         let b = ang_bucket(center + d);
@@ -101,18 +101,18 @@ pub(crate) fn paint_tick(tick: &mut [u8], center: f32, class: u8, half_w: f32) {
     }
 }
 /// Dial radius in on-screen px.
-pub(crate) const DIAL_PX: f32 = NODE * 0.5 * (DIAL_R / (TEX as f32 * 0.5));
+pub const DIAL_PX: f32 = NODE * 0.5 * (DIAL_R / (TEX as f32 * 0.5));
 
 /// Instruments in each bottom trio.
-pub(crate) const COLS: usize = 3;
+pub const COLS: usize = 3;
 /// Margin from the screen edges, and the gap between instruments, px.
-pub(crate) const MARGIN: f32 = 37.0;
-pub(crate) const GAP: f32 = 6.0;
+pub const MARGIN: f32 = 37.0;
+pub const GAP: f32 = 6.0;
 
 /// Total width of one screen-corner trio, including its outer margin. The
 /// control-position discs use this to sit in the gaps either side of the
 /// centred attitude indicator.
-pub(crate) const CLUSTER_W: f32 = MARGIN + COLS as f32 * NODE + (COLS as f32 - 1.0) * GAP;
+pub const CLUSTER_W: f32 = MARGIN + COLS as f32 * NODE + (COLS as f32 - 1.0) * GAP;
 
 /// Text was tuned at a 300 px gauge; scale label sizes with the current `NODE`.
 const FS: f32 = NODE / 300.0;
@@ -120,7 +120,7 @@ const FS: f32 = NODE / 300.0;
 /// Marks an instrument's root node, so one system can show/hide the cluster and
 /// another can move it onto the model's painted panel in the cockpit view.
 #[derive(Component)]
-pub(crate) struct Instrument {
+pub struct Instrument {
     /// Which painted dial this instrument replaces in the cockpit view.
     key: PanelKey,
     /// The screen-corner layout used outside the cockpit view, restored on exit.
@@ -133,7 +133,7 @@ pub(crate) struct Instrument {
 /// instrument. `Airspeed`…`Attitude` name our widgets; the dials they cover are
 /// the ones the model paints at those spots.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum PanelKey {
+pub enum PanelKey {
     Airspeed,
     Vsi,
     Altimeter,
@@ -151,7 +151,7 @@ pub(crate) enum PanelKey {
 /// the gauges stay glued to the panel through free look, roll and window resizes.
 /// Measured with `examples/panel_calib`, which ray-casts the on-screen dial
 /// centres onto the panel plane.
-pub(crate) struct PanelDial {
+pub struct PanelDial {
     anchor: Vec3,
     u: Vec3,
     v: Vec3,
@@ -218,7 +218,7 @@ impl PanelKey {
     /// The instrument a lowercase id selects: the same names `examples/
     /// panel_view_shot` uses. `None` for anything else.
     #[allow(dead_code)] // Only the screenshot examples name a dial.
-    pub(crate) fn from_name(name: &str) -> Option<Self> {
+    pub fn from_name(name: &str) -> Option<Self> {
         Some(match name.trim().to_ascii_lowercase().as_str() {
             "airspeed" => PanelKey::Airspeed,
             "vsi" => PanelKey::Vsi,
@@ -236,16 +236,16 @@ impl PanelKey {
 
 /// A dial's placement on screen for the current camera: the centre in logical
 /// px, plus the screen vectors spanning one dial radius right and up.
-pub(crate) struct ProjectedDial {
-    pub(crate) centre: Vec2,
-    pub(crate) right: Vec2,
-    pub(crate) up: Vec2,
+pub struct ProjectedDial {
+    pub centre: Vec2,
+    pub right: Vec2,
+    pub up: Vec2,
 }
 
 /// Project `dial` through `camera` (positioned by `cam_gt`) into screen space.
 /// `None` when any of the three points is behind the lens. Shared by the live
 /// instrument seating and the focus-ring overlay so the two stay in lockstep.
-pub(crate) fn project_dial(
+pub fn project_dial(
     camera: &Camera,
     cam_gt: &GlobalTransform,
     root_tf: &Transform,
@@ -404,14 +404,14 @@ fn seat_panel(
 /// with the window instead of huddling in the middle; the attitude indicator
 /// sits centred between the two trios.
 #[derive(Clone, Copy)]
-pub(crate) enum Side {
+pub enum Side {
     Left,
     Right,
 }
 
 /// Spawn an instrument's root node. `col` is its place within its `side`'s trio
 /// and `row` its place above the cluster's bottom, both counted up/right.
-pub(crate) fn spawn_root(
+pub fn spawn_root(
     commands: &mut Commands,
     key: PanelKey,
     side: Side,
@@ -456,7 +456,7 @@ pub(crate) fn spawn_root(
 /// window's lower edge — the attitude indicator, in the bottom row's middle.
 /// `left: 50%` puts the node's left edge at the middle and the negative margin
 /// pulls it back by half its width, so it stays centred however wide the window.
-pub(crate) fn spawn_root_centered(commands: &mut Commands, key: PanelKey, bottom: f32) -> Entity {
+pub fn spawn_root_centered(commands: &mut Commands, key: PanelKey, bottom: f32) -> Entity {
     let home = Node {
         position_type: PositionType::Absolute,
         left: Val::Percent(50.0),
@@ -483,7 +483,7 @@ pub(crate) fn spawn_root_centered(commands: &mut Commands, key: PanelKey, bottom
 
 /// A square image node filling the instrument, with `extra` components attached
 /// (markers, needle rotation).
-pub(crate) fn spawn_image<B: Bundle>(p: &mut ChildSpawnerCommands, image: Handle<Image>, extra: B) {
+pub fn spawn_image<B: Bundle>(p: &mut ChildSpawnerCommands, image: Handle<Image>, extra: B) {
     p.spawn((
         ImageNode::new(image),
         Node {
@@ -500,7 +500,7 @@ pub(crate) fn spawn_image<B: Bundle>(p: &mut ChildSpawnerCommands, image: Handle
 }
 
 /// A centred text label at on-screen offset `(x, y)` from the dial centre.
-pub(crate) fn spawn_label(
+pub fn spawn_label(
     p: &mut ChildSpawnerCommands,
     text: &str,
     x: f32,
@@ -530,7 +530,7 @@ pub(crate) fn spawn_label(
 }
 
 /// True if `a` lies in the clockwise arc from `lo` to `hi` (degrees, any wrap).
-pub(crate) fn cw_between(a: f32, lo: f32, hi: f32) -> bool {
+pub fn cw_between(a: f32, lo: f32, hi: f32) -> bool {
     let (a, lo, hi) = (
         a.rem_euclid(360.0),
         lo.rem_euclid(360.0),
@@ -545,7 +545,7 @@ pub(crate) fn cw_between(a: f32, lo: f32, hi: f32) -> bool {
 
 /// Rasterise a dial face by sampling `sample(x, y)` — offsets from the dial
 /// centre in texture px — 3×3 times per pixel for smooth edges.
-pub(crate) fn raster_face(mut sample: impl FnMut(f32, f32) -> [u8; 4]) -> Vec<u8> {
+pub fn raster_face(mut sample: impl FnMut(f32, f32) -> [u8; 4]) -> Vec<u8> {
     const SS: i32 = 3;
     let c = TEX as f32 * 0.5;
     let mut data = vec![0u8; TEX * TEX * 4];
@@ -573,7 +573,7 @@ pub(crate) fn raster_face(mut sample: impl FnMut(f32, f32) -> [u8; 4]) -> Vec<u8
 }
 
 /// The shape of one needle, in units of the dial radius.
-pub(crate) struct NeedleShape {
+pub struct NeedleShape {
     /// Blade length from the centre.
     pub len: f32,
     /// Blade half-width at the hub and at the tip.
@@ -588,7 +588,7 @@ pub(crate) struct NeedleShape {
 
 /// Rasterise a needle pointing straight up from the centre, with a
 /// counterweight tail and a hub. Rotated per frame by the node's `UiTransform`.
-pub(crate) fn needle_pixels(shape: &NeedleShape, color: [u8; 4], hub_color: [u8; 4]) -> Vec<u8> {
+pub fn needle_pixels(shape: &NeedleShape, color: [u8; 4], hub_color: [u8; 4]) -> Vec<u8> {
     let c = TEX as f32 * 0.5;
     let (blade, tail) = (shape.len * DIAL_R, shape.tail * DIAL_R);
     let hub_r = shape.hub * DIAL_R;
@@ -635,7 +635,7 @@ pub(crate) fn needle_pixels(shape: &NeedleShape, color: [u8; 4], hub_color: [u8;
 }
 
 /// Wrap raw RGBA pixels in a Bevy image.
-pub(crate) fn make_image(data: Vec<u8>) -> Image {
+pub fn make_image(data: Vec<u8>) -> Image {
     Image::new(
         Extent3d {
             width: TEX as u32,

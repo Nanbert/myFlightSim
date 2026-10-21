@@ -98,7 +98,7 @@ fn ledger_path() -> std::path::PathBuf {
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct HopState {
+pub struct HopState {
     ledger: Ledger,
     /// Whether a graded landing has already cashed in this flight: a
     /// touch-and-go second landing re-counts, which is the point.

@@ -45,11 +45,11 @@ const ALL: [PanelKey; 9] = [
 
 /// Which instrument the crosshair is on, and which one the lens is zoomed to.
 #[derive(Resource, Default)]
-pub(crate) struct InstrumentFocus {
-    pub(crate) hovered: Option<PanelKey>,
-    pub(crate) active: Option<PanelKey>,
+pub struct InstrumentFocus {
+    pub hovered: Option<PanelKey>,
+    pub active: Option<PanelKey>,
     /// Eased 0 (rest lens) … 1 (close-up).
-    pub(crate) blend: f32,
+    pub blend: f32,
     /// Head-look (yaw, pitch) when the close-up was entered. The lens pans
     /// from here to the dial's centre and back on exit.
     entry: (f32, f32),

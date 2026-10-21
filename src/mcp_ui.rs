@@ -22,7 +22,7 @@ use crate::ui_theme;
 use crate::view::Ui;
 
 /// Panel size on screen. The texture is 2470×449, i.e. the same 5.5:1 ratio.
-pub(crate) const PANEL_W: f32 = 1100.0;
+pub const PANEL_W: f32 = 1100.0;
 const PANEL_H: f32 = 200.0;
 
 /// The chase-view strip sits this far off the bottom edge, and is the FMA bar
