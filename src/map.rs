@@ -20,6 +20,7 @@ use bevy::shader::ShaderRef;
 use crate::app_state::{unpaused, AppState};
 use crate::sim::StartFlight;
 use crate::sky::{coverage_for, CloudField};
+use std::sync::OnceLock;
 
 /// Half-width of the square arena, metres. The terrain spans ±48 km.
 pub const ARENA_HALF: f32 = 48_000.0;
@@ -74,19 +75,21 @@ impl Default for SunPose {
 pub enum MapId {
     Archipelago,
     Alpine,
+    Glacial,
 }
 
-pub const MAPS: [MapId; 2] = [MapId::Archipelago, MapId::Alpine];
+pub const MAPS: [MapId; 3] = [MapId::Archipelago, MapId::Alpine, MapId::Glacial];
 
 /// Menu labels, in `MAPS` order. The F-22's MISSIONS page renders these
 /// strings, so they are the stable interface between the two modules.
-pub const MAP_LABELS: [&str; MAPS.len()] = ["ARCHIPELAGO", "ALPINE"];
+pub const MAP_LABELS: [&str; MAPS.len()] = ["ARCHIPELAGO", "ALPINE", "GLACIAL"];
 
 impl MapId {
     pub fn label(self) -> &'static str {
         MAP_LABELS[match self {
             MapId::Archipelago => 0,
             MapId::Alpine => 1,
+            MapId::Glacial => 2,
         }]
     }
 
@@ -99,6 +102,9 @@ impl MapId {
         match self {
             MapId::Archipelago => (0.62, -0.65),
             MapId::Alpine => (0.40, -1.15),
+            // Low, cold north-west light, as in the terrain lab: it rakes the
+            // valleys so the arêtes throw long shadows over the ice.
+            MapId::Glacial => (0.22, -1.00),
         }
     }
 
@@ -120,6 +126,17 @@ impl MapId {
                 line: 2_400.0,
                 mode: 1.0,
             },
+            // Glacial: pale ice in the valley floors, dark rock on the arêtes
+            // and slopes, snowfields above ~1450 m wherever a slope can hold
+            // it. Colours from the terrain lab's glacial preset.
+            MapId::Glacial => Palette {
+                low: [0.50, 0.64, 0.80],
+                mid: [0.22, 0.24, 0.28],
+                high: [0.92, 0.95, 1.0],
+                deep: [0.28, 0.42, 0.58],
+                line: 1_450.0,
+                mode: 1.0,
+            },
         }
     }
 
@@ -134,6 +151,9 @@ impl MapId {
             MapId::Archipelago => 1_200.0,
             // Above the cloud top so the opening shot looks down on the peaks.
             MapId::Alpine => (ground + 900.0).max(7_200.0),
+            // Same rule as the alpine: spawn seated above the valley ice and
+            // clear of the cloud deck.
+            MapId::Glacial => (ground + 900.0).max(7_200.0),
         };
         m / 0.3048
     }
@@ -447,7 +467,80 @@ pub fn ground_height(map: MapId, x: f32, z: f32) -> f32 {
     match map {
         MapId::Archipelago => archipelago_height(x, z),
         MapId::Alpine => alpine_height(x, z),
+        MapId::Glacial => {
+            let base = glacial_height(x, z);
+            base + glacial_peak(x, z, base)
+        }
     }
+}
+
+// --- glacial central summit --------------------------------------------------
+
+/// Mean radius of the glacial massif's flanks, metres. The footprint wobbles
+/// between roughly 0.8x and 1.2x this value so it does not read as a cone.
+const PEAK_RADIUS: f32 = 8_200.0;
+/// Flat summit disc, metres. The landmark bust stands inside this radius.
+pub const PEAK_PLATEAU: f32 = 720.0;
+/// The summit disc is held level out to `plateau`, then the true terrain is
+/// mixed back in over this many metres of skirt.
+const PEAK_SKIRT: f32 = 2_200.0;
+/// Rise of the summit above the underlying glacial field, metres.
+const PEAK_RISE: f32 = 2_700.0;
+
+/// Absolute altitude of the glacial summit: the field at world origin plus the
+/// rise. Computed lazily and cached; the mesh bake calls this per vertex, all
+/// of which need the same value.
+fn glacial_summit() -> f32 {
+    static SUMMIT: OnceLock<f32> = OnceLock::new();
+    *SUMMIT.get_or_init(|| glacial_height(0.0, 0.0) + PEAK_RISE)
+}
+
+/// Additive central summit, ported from the terrain lab: a level disc holds
+/// the statue, steep smooth-shouldered flanks fall away for ~8 km, and ridged
+/// noise carves crags and gullies into those flanks without disturbing the
+/// summit disc. `base` is the terrain the summit is fused into; it is blended
+/// back in over the skirt so the massif grows out of the map instead of
+/// floating on it.
+fn glacial_peak(x: f32, z: f32, base: f32) -> f32 {
+    let r = (x * x + z * z).sqrt();
+    if r > PEAK_RADIUS * 1.3 {
+        return 0.0;
+    }
+
+    // Angle-periodic wobble gives the massif an irregular, natural footprint.
+    let angle = z.atan2(x);
+    let wobble = fbm(angle.cos() * 1.8 + 3.0, angle.sin() * 1.8 - 5.0, 3, 7103);
+    let reach = PEAK_RADIUS * (0.78 + 0.44 * wobble);
+
+    let cone = if r >= reach {
+        0.0
+    } else {
+        let t = ((r - PEAK_PLATEAU) / (reach - PEAK_PLATEAU)).clamp(0.0, 1.0);
+        1.0 - smoothstep(0.0, 1.0, t)
+    };
+
+    // Keep the relief off the summit disc (statue base), ramp it in on the flanks.
+    let flank = smoothstep(PEAK_PLATEAU * 0.8, PEAK_PLATEAU * 5.0, r);
+    let crags = ridged(x * 0.00125, z * 0.00125, 4, 7207) - 0.52;
+    let grain = fbm(x * 0.0045, z * 0.0045, 3, 7309) - 0.5;
+    let mut peak_only = cone * (PEAK_RISE + cone * flank * (crags * 0.30 + grain * 0.10));
+    // Where the underlying terrain is already high, the crags must never
+    // out-crown the central summit: cap the shoulder just below it.
+    let headroom = glacial_summit() - base - 60.0;
+    if headroom < peak_only {
+        peak_only = headroom;
+    }
+
+    // Hold the summit disc level for the statue, then mix the natural
+    // (base + envelope) terrain back in across the skirt.
+    if r < PEAK_PLATEAU {
+        return glacial_summit() - base;
+    }
+    let skirt = smoothstep(PEAK_PLATEAU, PEAK_PLATEAU + PEAK_SKIRT, r);
+    if skirt >= 1.0 {
+        return peak_only;
+    }
+    (glacial_summit() - base) * (1.0 - skirt) + peak_only * skirt
 }
 
 /// Scattered islands over open sea: a domain-warped continent field decides
@@ -485,6 +578,58 @@ fn alpine_height(x: f32, z: f32) -> f32 {
     let base = 500.0 + 900.0 * mass;
     let peaks = ridge.powf(1.7) * (1_500.0 + 1_100.0 * mass) + crags.powf(2.0) * 220.0;
     (base + peaks + valleys + (detail - 0.5) * 180.0).max(20.0)
+}
+
+/// Glacial terrain height in metres above sea level: a domain-warped sweep
+/// where each octave runs a small swirl over the previous domain, then
+/// subtracts the absolute ridge value. The result is a network of deep,
+/// winding glacial valleys with sharp aretes between them, rather than the
+/// rounded cones of the other arenas. Port of jarble's Shadertoy
+/// [`NscGWl`](https://www.shadertoy.com/view/NscGWl) (based on zchajax's
+/// "simple terrain"), taken from the terrain lab's `glacial.rs`.
+///
+/// The original is a raymarched 20-unit terrain. This port samples the same
+/// function over the 96 km arena and maps the 0..~0.48 output to
+/// 300..3150 m, so the arena floor stays well above the sea plane.
+const GLACIAL_UNIT: f32 = 6_000.0;
+const GLACIAL_OCTAVES: usize = 8;
+
+fn glacial_height(x: f32, z: f32) -> f32 {
+    let uv = Vec2::new(x / GLACIAL_UNIT, z / GLACIAL_UNIT);
+    let t = ((glacial_fbm0(uv) - 0.02) / 0.46).clamp(0.0, 1.0);
+    300.0 + t * 2_800.0
+}
+
+/// `(uv - result).yx` swirl used by the original `fluid()`.
+fn glacial_fluid(mut uv: Vec2) -> Vec2 {
+    let result = uv;
+    for i in 1..=2 {
+        let i = i as f32;
+        uv.y += (uv.x * i).sin() / 5.0;
+        uv.x += (uv.y * i).cos() / 5.0;
+        uv = Vec2::new(uv.y, uv.x);
+    }
+    Vec2::new(uv.y - result.y, uv.x - result.x)
+}
+
+/// The original `fbm0`, returning only the scalar height.
+fn glacial_fbm0(mut uv: Vec2) -> f32 {
+    let mut value = 0.0;
+    let mut amplitude = 0.75;
+    uv *= 2.0;
+
+    for _ in 0..GLACIAL_OCTAVES {
+        let f = glacial_fluid(uv);
+        let f1 = Vec2::new(f.y, f.x);
+        uv += f1;
+        let n2 = f1.x + f1.y;
+        value -= n2.abs() * amplitude;
+        // Erosion: soft absolute value keeps the creases from going negative.
+        value = (value * value + 0.0001).sqrt();
+        amplitude *= 0.37;
+        uv *= 2.0;
+    }
+    value
 }
 
 fn terrain_mesh(map: MapId) -> Mesh {
@@ -775,7 +920,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn heights_are_finite_across_both_arenas() {
+    fn heights_are_finite_across_every_arena() {
         for map in MAPS {
             for iz in 0..20 {
                 for ix in 0..20 {
@@ -825,6 +970,60 @@ mod tests {
         }
         assert!(max > 2_700.0, "snow line needs peaks, max {max}");
         assert!(min < 1_800.0, "needs valleys, min {min}");
+    }
+
+    #[test]
+    fn glacial_valleys_and_snow_plateaus() {
+        let mut min = f32::INFINITY;
+        let mut max = f32::NEG_INFINITY;
+        for iz in 0..40 {
+            for ix in 0..40 {
+                let x = -ARENA_HALF + ix as f32 * ARENA_HALF / 20.0;
+                let z = -ARENA_HALF + iz as f32 * ARENA_HALF / 20.0;
+                let h = ground_height(MapId::Glacial, x, z);
+                min = min.min(h);
+                max = max.max(h);
+            }
+        }
+        assert!(min < 600.0, "needs glacier floors, min {min}");
+        assert!(max > 2_500.0, "needs snow peaks, max {max}");
+    }
+
+    #[test]
+    fn glacial_summit_is_the_dominant_landmark() {
+        let summit = ground_height(MapId::Glacial, 0.0, 0.0);
+
+        // The summit stands on a flat disc: nearby samples stay level.
+        for angle in 0..8 {
+            let a = angle as f32 * std::f32::consts::FRAC_PI_4;
+            let r = PEAK_PLATEAU * 0.8;
+            let h = ground_height(MapId::Glacial, r * a.cos(), r * a.sin());
+            assert!(
+                (h - summit).abs() < 1.0,
+                "summit plateau not level ({h} vs {summit})"
+            );
+        }
+
+        // It is the dominant feature: nothing within 20 km is taller.
+        let mut tallest = f32::NEG_INFINITY;
+        let mut spot = (0.0f32, 0.0f32);
+        for iz in 0..81 {
+            for ix in 0..81 {
+                let x = -20_000.0 + ix as f32 * 500.0;
+                let z = -20_000.0 + iz as f32 * 500.0;
+                let h = ground_height(MapId::Glacial, x, z);
+                if h > tallest {
+                    tallest = h;
+                    spot = (x, z);
+                }
+            }
+        }
+        assert!(
+            tallest <= summit + 1.0,
+            "({},{}) is taller than the central summit: {tallest} vs {summit}",
+            spot.0,
+            spot.1
+        );
     }
 
     #[test]
