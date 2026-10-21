@@ -30,6 +30,7 @@ mod sky;
 mod takeoff;
 mod taxi;
 mod tutorial;
+mod ui_theme;
 mod vapor;
 mod view;
 mod weather;
@@ -62,6 +63,7 @@ fn main() {
             ..default()
         }))
         .insert_resource(Time::<Fixed>::from_hz(1.0 / sim::DT))
+        .add_plugins(ui_theme::UiThemePlugin)
         .add_plugins((
             sim::SimPlugin,
             autopilot::AutopilotPlugin,
