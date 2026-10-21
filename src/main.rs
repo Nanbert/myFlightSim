@@ -23,6 +23,7 @@ mod lights;
 mod map;
 mod mcp_ui;
 mod menu;
+mod menu_page;
 mod mission;
 mod pfd;
 mod sim;

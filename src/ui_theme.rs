@@ -22,8 +22,7 @@ pub fn accent_soft() -> Color {
     Color::srgba(0.36, 0.94, 0.52, 0.30)
 }
 
-/// Amber — reserved for values and warnings, never for structure.
-#[allow(dead_code)] // palette completeness; the flight-UI phases will use it
+/// Amber — the value/secondary copy across menus and MFD-like UI.
 pub fn amber() -> Color {
     Color::srgb(1.00, 0.72, 0.10)
 }

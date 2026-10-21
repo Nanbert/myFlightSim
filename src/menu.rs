@@ -19,6 +19,7 @@ use crate::config::{self, ConfigSink, GameConfig};
 use crate::input::Bindings;
 use crate::map::{self, MapId, PendingMission};
 use crate::mission::{Lesson, PendingLesson};
+use crate::menu_page::{self, PageLine};
 use crate::sim::{RenderPose, Sim};
 use crate::tutorial;
 use crate::ui_theme;
@@ -99,8 +100,9 @@ struct TopUnderline(usize);
 struct SubLabel(usize);
 #[derive(Component)]
 struct PanelRoot;
-#[derive(Component)]
-struct PanelText;
+/// The footer text cell's query filter, factored out to keep the signature
+/// readable.
+type FooterTextFilter = (With<FooterText>, Without<TopLabel>, Without<SubLabel>);
 /// The one-line key hints at the bottom of the hangar; text follows the state
 /// (browsing vs. an open page).
 #[derive(Component)]
@@ -276,6 +278,7 @@ impl Plugin for MenuPlugin {
             .init_resource::<TutorialState>()
             .init_resource::<PlayState>()
             .init_resource::<MissionState>()
+            .init_resource::<menu_page::PageLines>()
             .add_systems(Startup, auto_start_mission)
             .add_systems(
                 OnEnter(AppState::Menu),
@@ -298,7 +301,11 @@ impl Plugin for MenuPlugin {
                 Update,
                 (
                     menu_input.run_if(in_state(AppState::Menu)),
-                    update_menu_ui.run_if(in_state(AppState::Menu)),
+                    // `update_menu_ui` writes the row model, `render_page_lines`
+                    // paints it — chained so one frame's state reaches both.
+                    (update_menu_ui, menu_page::render_page_lines)
+                        .chain()
+                        .run_if(in_state(AppState::Menu)),
                     auto_open_page.run_if(in_state(AppState::Menu)),
                     menu_camera.run_if(in_state(AppState::Menu)),
                     exit_to_menu.run_if(in_state(AppState::Flying)),
@@ -547,16 +554,8 @@ fn setup_menu_ui(mut commands: Commands) {
             ChildOf(panel),
         ))
         .id();
-    commands.spawn((
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(20.0),
-            ..default()
-        },
-        TextColor(ui_theme::text()),
-        PanelText,
-        ChildOf(card),
-    ));
+    // The pooled page rows paint the card's contents (menu_page module).
+    menu_page::spawn_rows(&mut commands, card);
 
     // Bottom key-hint bar; `update_menu_ui` swaps the text to match the state.
     // The bar is a full-width row whose only child (the text) is centred.
@@ -608,21 +607,12 @@ fn update_menu_ui(
     config: Res<GameConfig>,
     aircraft_settings: Res<AircraftSettings>,
     tutorial_state: Res<TutorialState>,
-    mut tops: Query<
-        (&TopLabel, &mut Text, &mut TextColor),
-        (Without<SubLabel>, Without<PanelText>),
-    >,
+    mut tops: Query<(&TopLabel, &mut Text, &mut TextColor), Without<SubLabel>>,
     mut bars: Query<(&TopUnderline, &mut BackgroundColor), Without<TopLabel>>,
-    mut subs: Query<
-        (&SubLabel, &mut Text, &mut TextColor),
-        (Without<TopLabel>, Without<PanelText>),
-    >,
+    mut subs: Query<(&SubLabel, &mut Text, &mut TextColor), Without<TopLabel>>,
     mut panel: Query<&mut Node, With<PanelRoot>>,
-    mut ptext: Query<&mut Text, (With<PanelText>, Without<TopLabel>, Without<SubLabel>)>,
-    mut footer: Query<
-        &mut Text,
-        (With<FooterText>, Without<TopLabel>, Without<SubLabel>, Without<PanelText>),
-    >,
+    mut footer: Query<&mut Text, FooterTextFilter>,
+    mut pages: ResMut<menu_page::PageLines>,
 ) {
     let labels = top_labels();
     for (TopLabel(i), mut text, mut color) in &mut tops {
@@ -673,19 +663,22 @@ fn update_menu_ui(
             Display::None
         };
     }
-    if let Ok(mut text) = ptext.single_mut() {
-        text.0 = match sel.page {
-            Some(Page::Global) => global_settings_text(&weather, &settings),
-            Some(Page::Play) => play_text(sel.aircraft_id(), &play),
-            Some(Page::Missions) => missions_text(&missions),
-            Some(Page::Settings) => {
-                aircraft_settings_text(sel.aircraft_id(), &config, &aircraft_settings)
-            }
-            Some(Page::Tutorial) => tutorial::render(sel.aircraft_id(), tutorial_state.scroll),
-            Some(p) => page_text(p, &sel),
-            None => String::new(),
-        };
-    }
+    // The page renders as structured rows (menu_page module); freeform pages
+    // fold their prose through `freeform`, which keeps the old text look.
+    pages.0 = match sel.page {
+        Some(Page::Global) => global_settings_lines(&weather, &settings),
+        Some(Page::Play) => play_lines(sel.aircraft_id(), &play),
+        Some(Page::Missions) => missions_lines(&missions),
+        Some(Page::Settings) => {
+            aircraft_settings_lines(sel.aircraft_id(), &config, &aircraft_settings)
+        }
+        Some(Page::Tutorial) => menu_page::freeform(&tutorial::render(
+            sel.aircraft_id(),
+            tutorial_state.scroll,
+        )),
+        Some(p) => menu_page::freeform(&page_text(p, &sel)),
+        None => Vec::new(),
+    };
 
     // The hint bar follows the focus level, so the player always sees what the
     // next keypress does.
@@ -702,35 +695,37 @@ fn update_menu_ui(
     }
 }
 
-/// The aircraft's settings page: the Realistic/Arcade switch (AH-64D only) or
-/// the C172's keyboard assists. Bindings themselves are fixed.
-fn aircraft_settings_text(id: &str, config: &GameConfig, settings: &AircraftSettings) -> String {
+/// The aircraft's settings page rows: the Realistic/Arcade switch (AH-64D
+/// only) or the C172's keyboard assists. Bindings themselves are fixed.
+fn aircraft_settings_lines(id: &str, config: &GameConfig, settings: &AircraftSettings) -> Vec<PageLine> {
     let n = settings_row_count(id).max(1);
-    let sel = settings.row.min(n - 1);
+    let cursor = settings.row.min(n - 1);
 
-    let mut out = format!("{} - SETTINGS\n\n", aircraft_label(id));
+    let mut out = vec![
+        PageLine::heading(format!("{} - SETTINGS", aircraft_label(id))),
+        PageLine::blank(),
+    ];
     let mut row = 0;
     if has_flight_model_row(id) {
-        let cursor = if row == sel { ">" } else { " " };
         let model = if config.arcade(id) {
             "Arcade"
         } else {
             "Realistic"
         };
-        out.push_str(&format!("{cursor} {:<10} < {model} >\n", "flight model"));
+        out.push(PageLine::option("FLIGHT MODEL", model, row == cursor));
         row += 1;
     }
     if assist_row_count(id) > 0 {
         let a = config.assists(id);
         for (label, on) in [("BANK HOLD", a.bank_hold), ("TURN COORD", a.turn_coord)] {
-            let cursor = if row == sel { ">" } else { " " };
             let value = if on { "ON" } else { "OFF" };
-            out.push_str(&format!("{cursor} {label:<12} < {value} >\n"));
+            out.push(PageLine::option(label, value, row == cursor));
             row += 1;
         }
     }
 
-    out.push_str("\n[Up/Down] select   [Left/Right] change   [Esc] close");
+    out.push(PageLine::blank());
+    out.push(PageLine::hint("[Up/Down] select   [Left/Right] change   [Esc] close"));
     out
 }
 
@@ -743,63 +738,66 @@ fn aircraft_label(id: &str) -> &'static str {
         .map_or("AIRCRAFT", |a| a.label)
 }
 
-/// The global settings page: one row per setting, the selected one marked and
-/// its value in `< >` brackets.
-fn global_settings_text(weather: &Weather, settings: &SettingsState) -> String {
-    let mut out = String::from("GLOBAL SETTINGS\n\n");
-    for i in 0..SETTINGS_ROWS {
-        let cursor = if i == settings.row { ">" } else { " " };
-        match i {
-            0 => out.push_str(&format!(
-                "{cursor} WEATHER        < {} >\n",
-                weather.label()
-            )),
-            1 => out.push_str(&format!(
-                "{cursor} WIND 300DEG    < {} >\n",
-                weather.wind_label()
-            )),
-            2 => out.push_str(&format!(
-                "{cursor} TIME OF DAY    < {} >\n",
-                weather.time_label()
-            )),
-            _ => {}
-        }
+/// The global settings page rows: one option row per setting, the cursor row
+/// lit and its value in the amber cell.
+fn global_settings_lines(weather: &Weather, settings: &SettingsState) -> Vec<PageLine> {
+    let rows: [(&str, String); SETTINGS_ROWS] = [
+        ("WEATHER", weather.label().to_string()),
+        ("WIND 300DEG", weather.wind_label().to_string()),
+        ("TIME OF DAY", weather.time_label().to_string()),
+    ];
+    let mut out = vec![PageLine::heading("GLOBAL SETTINGS"), PageLine::blank()];
+    for (i, (label, value)) in rows.iter().enumerate() {
+        out.push(PageLine::option(*label, value.clone(), i == settings.row));
     }
-    out.push_str("\n\n[Up/Down] select   [Left/Right] change\n[Enter] or [Esc] to close");
+    out.push(PageLine::blank());
+    out.push(PageLine::hint(
+        "[Up/Down] select   [Left/Right] change   [Enter] or [Esc] to close",
+    ));
     out
 }
 
-/// The PLAY page: the start-state list. Free flight for every aircraft; the
-/// graded lesson missions are the C172's, so other aircraft see only the free
-/// row (and a note).
-fn play_text(id: &str, play: &PlayState) -> String {
+/// The PLAY page rows: the start-state list. Free flight for every aircraft;
+/// the graded lesson missions are the C172's, so other aircraft see only the
+/// free row (and a note).
+fn play_lines(id: &str, play: &PlayState) -> Vec<PageLine> {
     let cessna = aircraft_profile::normalized(id) == "c172p";
     let rows: &[crate::mission::PlayRow] = if cessna {
         &crate::mission::PLAY_MENU
     } else {
         &crate::mission::PLAY_MENU[..1]
     };
-    let mut out = format!("{} - SELECT START\n\n", aircraft_label(id));
+    let mut out = vec![
+        PageLine::heading(format!("{} - SELECT START", aircraft_label(id))),
+        PageLine::blank(),
+    ];
     for (i, row) in rows.iter().enumerate() {
-        let cursor = if i == play.row { ">" } else { " " };
-        out.push_str(&format!("{cursor} {}\n     {}\n", row.label, row.hint));
+        out.push(PageLine::option(row.label, "", i == play.row));
+        out.push(PageLine::note(format!("      {}", row.hint)));
+        out.push(PageLine::blank());
     }
     if !cessna {
-        out.push_str("\nThe graded lessons fly the Cessna 172 only.\n");
+        out.push(PageLine::note(
+            "The graded lessons fly the Cessna 172 only.",
+        ));
+        out.push(PageLine::blank());
     }
-    out.push_str("\n[Up/Down] select   [Enter] fly   [Esc] close");
+    out.push(PageLine::hint("[Up/Down] select   [Enter] fly   [Esc] close"));
     out
 }
 
-/// The F-22's MISSIONS page: the arcade combat maps.
-fn missions_text(missions: &MissionState) -> String {
-    let mut out = String::from("F-22 - MISSIONS\n\n");
+/// The F-22's MISSIONS page rows: the arcade combat maps.
+fn missions_lines(missions: &MissionState) -> Vec<PageLine> {
+    let mut out = vec![PageLine::heading("F-22 - MISSIONS"), PageLine::blank()];
     for (i, label) in map::MAP_LABELS.iter().enumerate() {
-        let cursor = if i == missions.row { ">" } else { " " };
-        out.push_str(&format!("{cursor} {label}\n"));
+        out.push(PageLine::option(*label, "", i == missions.row));
     }
-    out.push_str("\nArcade air combat over a bounded arena: drones and an escort.\n");
-    out.push_str("\n[Up/Down] select   [Enter] fly   [Esc] close");
+    out.push(PageLine::blank());
+    out.push(PageLine::note(
+        "Arcade air combat over a bounded arena: drones and an escort.",
+    ));
+    out.push(PageLine::blank());
+    out.push(PageLine::hint("[Up/Down] select   [Enter] fly   [Esc] close"));
     out
 }
 
@@ -817,9 +815,9 @@ fn page_text(page: Page, sel: &MenuSelection) -> String {
         // The built-in font is ASCII-only, so no em dashes here (they render as
         // missing-glyph boxes).
         Page::Info => format!("{label} - INFO\n\nAircraft info coming soon.{close}"),
-        // Rendered by `tutorial::render`, `editor_text`, `global_settings_text`,
-        // `play_text` and `missions_text`, which need live state; `page_text`
-        // never sees these.
+        // Folded through `menu_page::freeform`. Rendered by `tutorial::render`
+        // and the `*_lines` builders, which need live state; `page_text` never
+        // sees these.
         Page::Tutorial | Page::Settings | Page::Global | Page::Play | Page::Missions => {
             String::new()
         }
@@ -1114,7 +1112,7 @@ fn start_flight(
     let lesson = lesson_pending
         .0
         .take()
-        .or_else(|| dev_lesson())
+        .or_else(dev_lesson)
         .filter(|_| mission.is_none());
     *active = crate::mission::ActiveLesson(lesson);
     // Map missions fly the arcade F-22, airborne; every other entry uses the
@@ -1263,14 +1261,23 @@ mod tests {
         assert!(sub_items(ABOUT_TOP).is_empty());
     }
 
+    /// The lit `Option` row of a page model, for the given label.
+    fn option_row<'a>(lines: &'a [PageLine], label: &str) -> &'a PageLine {
+        lines
+            .iter()
+            .find(
+                |l| l.kind == menu_page::LineKind::Option && l.left == label,
+            )
+            .unwrap_or_else(|| panic!("no option row {label}"))
+    }
+
     #[test]
     fn the_missions_page_lists_every_map_in_order() {
-        let text = missions_text(&MissionState { row: 1 });
-        assert!(text.contains("F-22 - MISSIONS"), "{text}");
-        assert!(text.contains("> ALPINE"), "{text}");
+        let lines = missions_lines(&MissionState { row: 1 });
+        assert_eq!(lines[0].left, "F-22 - MISSIONS");
         for (i, label) in map::MAP_LABELS.iter().enumerate() {
-            let line = format!("{} {label}", if i == 1 { ">" } else { " " });
-            assert!(text.contains(&line), "missing row {label}: {text}");
+            let row = option_row(&lines, label);
+            assert_eq!(row.active, i == 1, "row {label}");
         }
     }
 
@@ -1286,15 +1293,20 @@ mod tests {
 
     #[test]
     fn the_play_page_text_marks_the_cursor_and_hides_lessons_off_cessna() {
-        let out = play_text("c172p", &PlayState { row: 2 });
-        assert!(out.contains("SELECT START"), "{out}");
-        assert!(out.contains("M1 TAXI"), "{out}");
-        assert!(out.contains("M4 FINAL"), "{out}");
-        assert!(out.contains("> M2 TAKEOFF"), "cursor on row 2: {out}");
-        let other = play_text("ah1s", &PlayState::default());
-        assert!(other.contains("FREE FLIGHT"), "{other}");
-        assert!(!other.contains("M1 TAXI"), "{other}");
-        assert!(other.contains("Cessna 172 only"), "{other}");
+        let out = play_lines("c172p", &PlayState { row: 2 });
+        assert!(out.iter().any(|l| l.kind == menu_page::LineKind::Heading
+            && l.left.contains("SELECT START")),
+            "{out:?}");
+        assert!(option_row(&out, "M1 TAXI").right.is_empty());
+        assert!(option_row(&out, "M4 FINAL").right.is_empty());
+        assert!(option_row(&out, "M2 TAKEOFF").active, "cursor on row 2");
+        let other = play_lines("ah1s", &PlayState::default());
+        assert!(option_row(&other, "FREE FLIGHT").active);
+        assert!(other.iter().all(|l| !l.left.starts_with('M')), "{other:?}");
+        assert!(
+            other.iter().any(|l| l.left.contains("Cessna 172 only")),
+            "{other:?}"
+        );
     }
 
     #[test]
@@ -1312,22 +1324,29 @@ mod tests {
     #[test]
     fn the_apache_page_renders_the_flight_model_switch() {
         let mut config = GameConfig::default();
-        let text = aircraft_settings_text("ah1s", &config, &AircraftSettings::default());
-        assert!(text.contains("flight model"), "{text}");
-        assert!(text.contains("< Realistic >"), "{text}");
+        let lines = aircraft_settings_lines("ah1s", &config, &AircraftSettings::default());
+        assert_eq!(option_row(&lines, "FLIGHT MODEL").right, "Realistic");
 
         config.set_arcade("ah1s", true);
-        let text = aircraft_settings_text("ah1s", &config, &AircraftSettings::default());
-        assert!(text.contains("< Arcade >"), "{text}");
+        let lines = aircraft_settings_lines("ah1s", &config, &AircraftSettings::default());
+        assert_eq!(option_row(&lines, "FLIGHT MODEL").right, "Arcade");
     }
 
     #[test]
     fn the_c172_page_has_the_two_assist_rows() {
         let config = GameConfig::default();
-        let text = aircraft_settings_text("c172p", &config, &AircraftSettings::default());
-        assert!(text.contains("BANK HOLD"), "{text}");
-        assert!(text.contains("TURN COORD"), "{text}");
-        assert!(text.contains("< OFF >"), "{text}");
-        assert!(!text.contains("flight model"), "{text}");
+        let lines = aircraft_settings_lines("c172p", &config, &AircraftSettings::default());
+        assert_eq!(option_row(&lines, "BANK HOLD").right, "OFF");
+        assert_eq!(option_row(&lines, "TURN COORD").right, "OFF");
+        assert!(lines.iter().all(|l| l.left != "FLIGHT MODEL"));
+    }
+
+    #[test]
+    fn the_global_settings_row_tracks_the_cursor() {
+        use crate::weather::Weather;
+        let lines = global_settings_lines(&Weather::default(), &SettingsState { row: 2 });
+        assert_eq!(lines[0].left, "GLOBAL SETTINGS");
+        assert!(option_row(&lines, "TIME OF DAY").active);
+        assert!(!option_row(&lines, "WEATHER").active);
     }
 }
