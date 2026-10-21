@@ -20,6 +20,7 @@ use bevy::shader::ShaderRef;
 use crate::app_state::AppState;
 use crate::sim::StartFlight;
 use crate::sky::{coverage_for, CloudField};
+use std::sync::OnceLock;
 
 /// Half-width of the square arena, metres. The terrain spans ±48 km.
 pub const ARENA_HALF: f32 = 48_000.0;
@@ -466,8 +467,80 @@ pub fn ground_height(map: MapId, x: f32, z: f32) -> f32 {
     match map {
         MapId::Archipelago => archipelago_height(x, z),
         MapId::Alpine => alpine_height(x, z),
-        MapId::Glacial => glacial_height(x, z),
+        MapId::Glacial => {
+            let base = glacial_height(x, z);
+            base + glacial_peak(x, z, base)
+        }
     }
+}
+
+// --- glacial central summit --------------------------------------------------
+
+/// Mean radius of the glacial massif's flanks, metres. The footprint wobbles
+/// between roughly 0.8x and 1.2x this value so it does not read as a cone.
+const PEAK_RADIUS: f32 = 8_200.0;
+/// Flat summit disc, metres. The landmark bust stands inside this radius.
+pub const PEAK_PLATEAU: f32 = 720.0;
+/// The summit disc is held level out to `plateau`, then the true terrain is
+/// mixed back in over this many metres of skirt.
+const PEAK_SKIRT: f32 = 2_200.0;
+/// Rise of the summit above the underlying glacial field, metres.
+const PEAK_RISE: f32 = 2_700.0;
+
+/// Absolute altitude of the glacial summit: the field at world origin plus the
+/// rise. Computed lazily and cached; the mesh bake calls this per vertex, all
+/// of which need the same value.
+fn glacial_summit() -> f32 {
+    static SUMMIT: OnceLock<f32> = OnceLock::new();
+    *SUMMIT.get_or_init(|| glacial_height(0.0, 0.0) + PEAK_RISE)
+}
+
+/// Additive central summit, ported from the terrain lab: a level disc holds
+/// the statue, steep smooth-shouldered flanks fall away for ~8 km, and ridged
+/// noise carves crags and gullies into those flanks without disturbing the
+/// summit disc. `base` is the terrain the summit is fused into; it is blended
+/// back in over the skirt so the massif grows out of the map instead of
+/// floating on it.
+fn glacial_peak(x: f32, z: f32, base: f32) -> f32 {
+    let r = (x * x + z * z).sqrt();
+    if r > PEAK_RADIUS * 1.3 {
+        return 0.0;
+    }
+
+    // Angle-periodic wobble gives the massif an irregular, natural footprint.
+    let angle = z.atan2(x);
+    let wobble = fbm(angle.cos() * 1.8 + 3.0, angle.sin() * 1.8 - 5.0, 3, 7103);
+    let reach = PEAK_RADIUS * (0.78 + 0.44 * wobble);
+
+    let cone = if r >= reach {
+        0.0
+    } else {
+        let t = ((r - PEAK_PLATEAU) / (reach - PEAK_PLATEAU)).clamp(0.0, 1.0);
+        1.0 - smoothstep(0.0, 1.0, t)
+    };
+
+    // Keep the relief off the summit disc (statue base), ramp it in on the flanks.
+    let flank = smoothstep(PEAK_PLATEAU * 0.8, PEAK_PLATEAU * 5.0, r);
+    let crags = ridged(x * 0.00125, z * 0.00125, 4, 7207) - 0.52;
+    let grain = fbm(x * 0.0045, z * 0.0045, 3, 7309) - 0.5;
+    let mut peak_only = cone * (PEAK_RISE + cone * flank * (crags * 0.30 + grain * 0.10));
+    // Where the underlying terrain is already high, the crags must never
+    // out-crown the central summit: cap the shoulder just below it.
+    let headroom = glacial_summit() - base - 60.0;
+    if headroom < peak_only {
+        peak_only = headroom;
+    }
+
+    // Hold the summit disc level for the statue, then mix the natural
+    // (base + envelope) terrain back in across the skirt.
+    if r < PEAK_PLATEAU {
+        return glacial_summit() - base;
+    }
+    let skirt = smoothstep(PEAK_PLATEAU, PEAK_PLATEAU + PEAK_SKIRT, r);
+    if skirt >= 1.0 {
+        return peak_only;
+    }
+    (glacial_summit() - base) * (1.0 - skirt) + peak_only * skirt
 }
 
 /// Scattered islands over open sea: a domain-warped continent field decides
@@ -914,6 +987,43 @@ mod tests {
         }
         assert!(min < 600.0, "needs glacier floors, min {min}");
         assert!(max > 2_500.0, "needs snow peaks, max {max}");
+    }
+
+    #[test]
+    fn glacial_summit_is_the_dominant_landmark() {
+        let summit = ground_height(MapId::Glacial, 0.0, 0.0);
+
+        // The summit stands on a flat disc: nearby samples stay level.
+        for angle in 0..8 {
+            let a = angle as f32 * std::f32::consts::FRAC_PI_4;
+            let r = PEAK_PLATEAU * 0.8;
+            let h = ground_height(MapId::Glacial, r * a.cos(), r * a.sin());
+            assert!(
+                (h - summit).abs() < 1.0,
+                "summit plateau not level ({h} vs {summit})"
+            );
+        }
+
+        // It is the dominant feature: nothing within 20 km is taller.
+        let mut tallest = f32::NEG_INFINITY;
+        let mut spot = (0.0f32, 0.0f32);
+        for iz in 0..81 {
+            for ix in 0..81 {
+                let x = -20_000.0 + ix as f32 * 500.0;
+                let z = -20_000.0 + iz as f32 * 500.0;
+                let h = ground_height(MapId::Glacial, x, z);
+                if h > tallest {
+                    tallest = h;
+                    spot = (x, z);
+                }
+            }
+        }
+        assert!(
+            tallest <= summit + 1.0,
+            "({},{}) is taller than the central summit: {tallest} vs {summit}",
+            spot.0,
+            spot.1
+        );
     }
 
     #[test]

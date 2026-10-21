@@ -28,6 +28,7 @@ mod mission;
 mod pfd;
 mod sim;
 mod sky;
+mod statue;
 mod takeoff;
 mod taxi;
 mod tutorial;
@@ -89,6 +90,7 @@ fn main() {
         // `start_flight` just launched. (A separate call: Bevy's plugin tuples
         // top out at 15.)
         .add_plugins(map::MapPlugin)
+        .add_plugins(statue::StatuePlugin)
         .add_plugins(cockpit::CockpitPlugin)
         .add_plugins(controls::ControlPlugin)
         .add_plugins(assist::AssistPlugin)

@@ -34,6 +34,8 @@ mod mission;
 mod sim;
 #[path = "../src/sky.rs"]
 mod sky;
+#[path = "../src/statue.rs"]
+mod statue;
 #[path = "../src/taxi.rs"]
 mod taxi;
 #[path = "../src/view.rs"]
@@ -83,6 +85,7 @@ fn main() {
             sky::SkyPlugin,
             mission::MissionPlugin,
             map::MapPlugin,
+            statue::StatuePlugin,
         ))
         .insert_resource(config::GameConfig::default())
         .insert_resource(config::ConfigSink(Box::new(NullStore)))
@@ -100,8 +103,21 @@ fn main() {
             (mission_boot, view::spawn_flight_aircraft, view::reset_control_rig).chain(),
         )
         .init_resource::<Frame>()
+        .init_resource::<StatueView>()
+        .add_systems(Startup, read_statue_env)
         .add_systems(Update, (hold_alt, shot))
+        // After the follow camera wrote this frame's pose.
+        .add_systems(PostUpdate, statue_camera)
         .run();
+}
+
+// `STATUE=1` pins the camera in front of the glacial bust for a close look.
+#[derive(Resource, Default)]
+struct StatueView(bool);
+
+/// `STATUE=1` frames the summit landmark instead of the chase view.
+fn read_statue_env(mut view: ResMut<StatueView>) {
+    view.0 = std::env::var("STATUE").is_ok_and(|v| v == "1");
 }
 
 /// `MAP=GLACIAL` (default), `MAP=ALPINE`, `MAP=ARCHIPELAGO`.
@@ -143,6 +159,19 @@ fn hold_alt(mut bindings: ResMut<input::Bindings>) {
     }
 }
 
+/// Face the bust from the southern approach: the summit disc is level, so the
+/// camera floats 480 m above it (mid-bust) and 1.6 km out.
+fn statue_camera(view: Res<StatueView>, mut q: Query<&mut Transform, (With<Camera3d>, Without<cloud_camera::CloudCamera>)>) {
+    if !view.0 {
+        return;
+    }
+    let summit = map::ground_height(map::MapId::Glacial, 0.0, 0.0);
+    if let Ok(mut t) = q.single_mut() {
+        *t = Transform::from_xyz(0.0, summit + 480.0, 1_600.0)
+            .looking_at(Vec3::new(0.0, summit + 400.0, 0.0), Vec3::Y);
+    }
+}
+
 fn shot(mut commands: Commands, mut f: ResMut<Frame>, mut exit: MessageWriter<AppExit>) {
     let out: &'static str = Box::leak(
         std::env::var("OUT")
@@ -150,13 +179,13 @@ fn shot(mut commands: Commands, mut f: ResMut<Frame>, mut exit: MessageWriter<Ap
             .into_boxed_str(),
     );
     f.0 += 1;
-    if f.0 == 300 {
+    if f.0 == 900 {
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(out));
         info!("screenshot");
     }
-    if f.0 == 360 {
+    if f.0 == 960 {
         exit.write(AppExit::Success);
     }
 }
