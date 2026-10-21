@@ -21,6 +21,7 @@ use crate::map::{self, MapId, PendingMission};
 use crate::mission::{Lesson, PendingLesson};
 use crate::sim::{RenderPose, Sim};
 use crate::tutorial;
+use crate::ui_theme;
 use crate::view::spawn_model_child;
 use crate::weather::Weather;
 
@@ -91,12 +92,19 @@ const WIDE_TARGET: Vec3 = Vec3::new(0.0, 6.0, 0.0);
 struct ShowcaseAircraft;
 #[derive(Component)]
 struct TopLabel(usize);
+/// The selection rail under a top-row entry: lit for the pointed-at entry.
+#[derive(Component)]
+struct TopUnderline(usize);
 #[derive(Component)]
 struct SubLabel(usize);
 #[derive(Component)]
 struct PanelRoot;
 #[derive(Component)]
 struct PanelText;
+/// The one-line key hints at the bottom of the hangar; text follows the state
+/// (browsing vs. an open page).
+#[derive(Component)]
+struct FooterText;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -291,6 +299,7 @@ impl Plugin for MenuPlugin {
                 (
                     menu_input.run_if(in_state(AppState::Menu)),
                     update_menu_ui.run_if(in_state(AppState::Menu)),
+                    auto_open_page.run_if(in_state(AppState::Menu)),
                     menu_camera.run_if(in_state(AppState::Menu)),
                     exit_to_menu.run_if(in_state(AppState::Flying)),
                 ),
@@ -325,6 +334,26 @@ fn auto_start_aircraft(mut sel: ResMut<MenuSelection>, mut next: ResMut<NextStat
         sel.page = None;
         next.set(AppState::Flying);
     }
+}
+
+/// Development hook: `PAGE=GLOBAL` (also ABOUT/TUTORIAL/INFO/SETTINGS/PLAY/
+/// MISSIONS) opens that menu page, so a screenshot pass can capture the panel
+/// card without driving the menu. Idempotent, and gated to the menu state.
+fn auto_open_page(mut sel: ResMut<MenuSelection>) {
+    let Ok(page) = std::env::var("PAGE") else {
+        return;
+    };
+    let opened = match page.to_ascii_uppercase().as_str() {
+        "ABOUT" => Page::About,
+        "TUTORIAL" => Page::Tutorial,
+        "INFO" => Page::Info,
+        "SETTINGS" => Page::Settings,
+        "PLAY" => Page::Play,
+        "MISSIONS" => Page::Missions,
+        "GLOBAL" => Page::Global,
+        _ => return,
+    };
+    sel.page = Some(opened);
 }
 
 /// Select the aircraft matching the loaded sim (startup default or the one we
@@ -378,6 +407,23 @@ fn setup_menu_ui(mut commands: Commands) {
         ))
         .id();
 
+    // Corner branding: a quiet wordmark over the hangar floor.
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(32.0),
+            top: Val::Px(24.0),
+            ..default()
+        },
+        ChildOf(root),
+        Text::new("MYFLIGHTSIM"),
+        TextFont {
+            font_size: FontSize::Px(18.0),
+            ..default()
+        },
+        TextColor(ui_theme::dim()),
+    ));
+
     let top_row = commands
         .spawn((
             Node {
@@ -390,6 +436,19 @@ fn setup_menu_ui(mut commands: Commands) {
         ))
         .id();
     for i in 0..TOP_COUNT {
+        // Each entry is a column of [label, rail]; the rail's width tracks the
+        // label above it, so every entry gets its own underline.
+        let entry = commands
+            .spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(7.0),
+                    ..default()
+                },
+                ChildOf(top_row),
+            ))
+            .id();
         commands.spawn((
             Text::new(""),
             TextFont {
@@ -398,7 +457,18 @@ fn setup_menu_ui(mut commands: Commands) {
             },
             TextColor(Color::WHITE),
             TopLabel(i),
-            ChildOf(top_row),
+            ChildOf(entry),
+        ));
+        commands.spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Px(3.0),
+                ..default()
+            },
+            // Invisible until `update_menu_ui` lights the pointed-at entry.
+            BackgroundColor(Color::NONE),
+            TopUnderline(i),
+            ChildOf(entry),
         ));
     }
 
@@ -426,6 +496,8 @@ fn setup_menu_ui(mut commands: Commands) {
     }
 
     // Full-page overlay, spawned after the rows so it draws on top of them.
+    // A scene-darkening backdrop plus a centred card keeps the hangar frame
+    // visible while the page reads; the rows dim out under it.
     let panel = commands
         .spawn((
             PanelRoot,
@@ -438,12 +510,41 @@ fn setup_menu_ui(mut commands: Commands) {
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                padding: UiRect::all(Val::Px(48.0)),
                 display: Display::None,
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.82)),
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.62)),
             DespawnOnExit(AppState::Menu),
+        ))
+        .id();
+    // The card: rounded, hairline green border, backlit-glass glow.
+    let card = commands
+        .spawn((
+            Node {
+                flex_direction: FlexDirection::Column,
+                width: Val::Percent(92.0),
+                max_width: Val::Px(1180.0),
+                max_height: Val::Percent(86.0),
+                padding: UiRect {
+                    left: Val::Px(48.0),
+                    right: Val::Px(48.0),
+                    top: Val::Px(30.0),
+                    bottom: Val::Px(26.0),
+                },
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(10.0)),
+                ..default()
+            },
+            BorderColor::all(ui_theme::accent_soft()),
+            BackgroundColor(ui_theme::panel_bg()),
+            BoxShadow::new(
+                ui_theme::panel_glow(),
+                Val::ZERO,
+                Val::ZERO,
+                Val::Px(18.0),
+                Val::Px(56.0),
+            ),
+            ChildOf(panel),
         ))
         .id();
     commands.spawn((
@@ -452,17 +553,44 @@ fn setup_menu_ui(mut commands: Commands) {
             font_size: FontSize::Px(20.0),
             ..default()
         },
-        TextColor(Color::WHITE),
+        TextColor(ui_theme::text()),
         PanelText,
-        ChildOf(panel),
+        ChildOf(card),
+    ));
+
+    // Bottom key-hint bar; `update_menu_ui` swaps the text to match the state.
+    // The bar is a full-width row whose only child (the text) is centred.
+    let footer_bar = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(22.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            ChildOf(root),
+        ))
+        .id();
+    commands.spawn((
+        Text::new(""),
+        TextFont {
+            font_size: FontSize::Px(16.0),
+            ..default()
+        },
+        TextColor(ui_theme::dim()),
+        FooterText,
+        ChildOf(footer_bar),
     ));
 }
 
 fn color_active() -> Color {
-    Color::WHITE
+    ui_theme::accent()
 }
 fn color_selected() -> Color {
-    Color::srgb(0.70, 0.78, 0.92)
+    ui_theme::selected()
 }
 fn color_dim() -> Color {
     Color::srgb(0.42, 0.47, 0.58)
@@ -484,12 +612,17 @@ fn update_menu_ui(
         (&TopLabel, &mut Text, &mut TextColor),
         (Without<SubLabel>, Without<PanelText>),
     >,
+    mut bars: Query<(&TopUnderline, &mut BackgroundColor), Without<TopLabel>>,
     mut subs: Query<
         (&SubLabel, &mut Text, &mut TextColor),
         (Without<TopLabel>, Without<PanelText>),
     >,
     mut panel: Query<&mut Node, With<PanelRoot>>,
     mut ptext: Query<&mut Text, (With<PanelText>, Without<TopLabel>, Without<SubLabel>)>,
+    mut footer: Query<
+        &mut Text,
+        (With<FooterText>, Without<TopLabel>, Without<SubLabel>, Without<PanelText>),
+    >,
 ) {
     let labels = top_labels();
     for (TopLabel(i), mut text, mut color) in &mut tops {
@@ -503,6 +636,15 @@ fn update_menu_ui(
             }
         } else {
             color_dim()
+        };
+    }
+    // The rail under the pointed-at entry lights; the rest stay dark so the
+    // column reads as a tab strip rather than a row of links.
+    for (TopUnderline(i), mut bg) in &mut bars {
+        bg.0 = if *i == sel.top {
+            color_active()
+        } else {
+            Color::NONE
         };
     }
 
@@ -542,6 +684,20 @@ fn update_menu_ui(
             Some(Page::Tutorial) => tutorial::render(sel.aircraft_id(), tutorial_state.scroll),
             Some(p) => page_text(p, &sel),
             None => String::new(),
+        };
+    }
+
+    // The hint bar follows the focus level, so the player always sees what the
+    // next keypress does.
+    if let Ok(mut text) = footer.single_mut() {
+        text.0 = if sel.page.is_some() {
+            "[LEFT/RIGHT] ADJUST   [ENTER] / [ESC] CLOSE".to_string()
+        } else {
+            match sel.focus {
+                Focus::Top => "[LEFT/RIGHT] BROWSE   [DOWN] MENU   [ENTER] SELECT"
+                    .to_string(),
+                Focus::Sub => "[LEFT/RIGHT] MOVE   [ENTER] OPEN   [ESC] BACK".to_string(),
+            }
         };
     }
 }
