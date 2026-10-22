@@ -33,6 +33,7 @@ pub mod menu_page;
 pub mod mission;
 pub mod pause;
 pub mod pfd;
+pub mod scoring;
 pub mod sim;
 pub mod sky;
 pub mod statue;

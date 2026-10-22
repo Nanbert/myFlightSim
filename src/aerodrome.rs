@@ -25,10 +25,12 @@ pub const THRESHOLD_Z: f32 = 140.0;
 const RUNWAY_CENTER_Z: f32 = THRESHOLD_Z - RUNWAY_LENGTH * 0.5;
 pub const RUNWAY_END_Z: f32 = THRESHOLD_Z - RUNWAY_LENGTH;
 
-/// Taxiway and apron, east of the runway.
-const TAXI_X: f32 = 45.0;
-const TAXI_Z0: f32 = THRESHOLD_Z - 6.0;
-const TAXI_Z1: f32 = RUNWAY_END_Z + 36.0;
+/// Taxiway centre-line, apron, east of the runway.
+pub const TAXI_X: f32 = 45.0;
+/// The connector stubs leave the runway's east edge for the parallel taxiway:
+/// one just south of each threshold, one mid-field at the apron's own level.
+pub const TAXI_Z0: f32 = THRESHOLD_Z - 6.0;
+pub const TAXI_Z1: f32 = RUNWAY_END_Z + 36.0;
 const APRON_X: f32 = 111.0;
 const APRON_Z: f32 = -150.0;
 /// The C172 ramp stand on the lead-in line: the `P` spawn parks at (75, -150)
@@ -37,6 +39,33 @@ const APRON_Z: f32 = -150.0;
 pub const STAND_X: f32 = 75.0;
 /// The lead-in line runs along the apron's connector (the z = -150 stub).
 pub const STAND_Z: f32 = APRON_Z;
+
+/// The three connector stubs, each 12 m deep about its centre-line z.
+pub const CONNECTOR_ZS: [f32; 3] = [TAXI_Z0, TAXI_Z1, APRON_Z];
+/// Quadruple runway-holding position lines on every connector, FAA-ordered
+/// (AIM 2-3-5: the solid lines are always on the side where the aircraft is
+/// to hold): double solid on the holding side, double dashed across the
+/// runway's edge.
+pub const HOLD_DASHED_XS: [f32; 2] = [18.0, 19.5];
+pub const HOLD_SOLID_XS: [f32; 2] = [22.0, 23.5];
+/// The solid pair's taxiway-side line, where a held position stops: the
+/// hold-short grade's zero-mark. It measures the belly's centre to this
+/// line; the nose wheel rides ~1.5 m ahead of it, so a fully clear nose
+/// wants ~2 m of margin.
+pub const HOLD_LINE_X: f32 = HOLD_SOLID_XS[1];
+
+/// Signed offset from the nearest connector band's centre-line, `None` off
+/// the connector pavement. The band runs x from the runway's edge out to the
+/// parallel taxiway's west edge, so traffic taxiing the parallel way never
+/// counts as holding short.
+pub fn connector_offset(x: f32, z: f32) -> Option<f32> {
+    let half = 6.0_f32; // stub depth / 2
+    let band_x = RUNWAY_WIDTH * 0.5..=(TAXI_X - half);
+    CONNECTOR_ZS
+        .iter()
+        .copied()
+        .find_map(|cz| ((z - cz).abs() < half && band_x.contains(&x)).then_some(z - cz))
+}
 /// Where the refuelling lane leaves the lead-in line for the pump.
 const PUMP_LANE_X: f32 = PUMP_POS.x;
 
@@ -468,7 +497,7 @@ fn spawn_aerodrome(
         STAND_Z,
         PAINT_Y + 0.002,
     );
-    for z in [TAXI_Z0, TAXI_Z1, APRON_Z] {
+    for z in CONNECTOR_ZS {
         slab(
             &mut commands,
             &yellow,
@@ -478,11 +507,12 @@ fn spawn_aerodrome(
             z,
             PAINT_Y + 0.002,
         );
-        // Runway holding position: two solid lines, then two dashed lines.
-        for x in [18.0, 19.5] {
+        // Runway holding position, FAA-ordered (see `HOLD_SOLID_XS`): double
+        // solid on the holding side, double dashed over the runway's edge.
+        for x in HOLD_SOLID_XS {
             slab(&mut commands, &yellow, 0.3, 12.0, x, z, PAINT_Y + 0.004);
         }
-        for x in [22.0, 23.5] {
+        for x in HOLD_DASHED_XS {
             for dz in [-4.0, 0.0, 4.0] {
                 slab(&mut commands, &yellow, 0.3, 3.0, x, z + dz, PAINT_Y + 0.004);
             }
@@ -811,6 +841,20 @@ pub fn on_runway(x: f32, z: f32) -> bool {
         && (RUNWAY_END_Z - 1.0..=THRESHOLD_Z + 1.0).contains(&z)
 }
 
+/// Whether a world point is on any of the home field's paved slabs: the
+/// runway, the parallel taxiway, the connector stubs and the apron. The
+/// ground-lesson FAIL check uses it — wheels in the grass end the run.
+pub fn on_pavement(x: f32, z: f32) -> bool {
+    let on_taxiway =
+        (TAXI_X - 6.0..=TAXI_X + 6.0).contains(&x) && (TAXI_Z1..=TAXI_Z0).contains(&z);
+    let on_apron = (APRON_X - 60.0..=APRON_X + 60.0).contains(&x)
+        && (APRON_Z - 80.0..=APRON_Z + 80.0).contains(&z);
+    let on_connector = CONNECTOR_ZS
+        .iter()
+        .any(|cz| (RUNWAY_WIDTH * 0.5..=TAXI_X).contains(&x) && (z - cz).abs() <= 6.0);
+    on_runway(x, z) || on_taxiway || on_apron || on_connector
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -858,5 +902,27 @@ mod tests {
         assert!(approach_distance(PapiSide::South, -160.0, 1000.0) > 0.0);
         // Runway 18: aircraft north of the 18 PAPI.
         assert!(approach_distance(PapiSide::North, -760.0, -2000.0) > 0.0);
+    }
+
+    #[test]
+    fn pavement_covers_every_slab_the_field_spawns() {
+        use super::{APRON_Z, on_pavement, RUNWAY_END_Z};
+
+        // Runway and its tolerance.
+        assert!(on_pavement(0.0, 0.0));
+        assert!(on_pavement(15.5, -300.0));
+        // Parallel taxiway along its full length.
+        assert!(on_pavement(45.0, 130.0));
+        assert!(on_pavement(41.0, RUNWAY_END_Z + 30.0));
+        // Connectors, including the one the stand's lead-in line crosses.
+        assert!(on_pavement(25.0, APRON_Z));
+        assert!(on_pavement(20.0, 134.0));
+        // Apron slab around the stand and the pump lane.
+        assert!(on_pavement(75.0, APRON_Z + 1.0));
+        assert!(on_pavement(90.0, APRON_Z - 40.0));
+        // ...and the grass beyond them all fails the run.
+        assert!(!on_pavement(20.0, 0.0));
+        assert!(!on_pavement(46.0, 500.0));
+        assert!(!on_pavement(75.0, APRON_Z - 85.0));
     }
 }

@@ -7,8 +7,8 @@
 //! sit the aircraft and whether the engine is cold or running:
 //!
 //! - **M1 TAXI** — apron stand, cold and dark: the full taxi drill (master,
-//!   starter, taxi out, hold short). Graded by the COLD START checklist and
-//!   the taximeter's stop grade.
+//!   starter, taxi out, hold short). Graded by the COLD START checklist, the
+//!   taximeter's stop grade and the hold-short finals card.
 //! - **M2 TAKEOFF** — runway threshold, warm and running: a clean roll and
 //!   rotation, graded by the takeoff report.
 //! - **M3 LANDING** — 2 NM final for runway 36, flaps 20: the landing card's

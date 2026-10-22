@@ -95,6 +95,10 @@ pub enum ReportAnchor {
     RightTop(f32),
     LeftTop(f32),
     LeftBottom(f32),
+    /// Dead centre of the window: the panel becomes the child of a full-screen
+    /// flex wrapper (an absolute panel keeps its own insets, so it can't be
+    /// flex-centred from the inside).
+    Center,
 }
 
 /// One of the five floating flight-report panels (takeoff grade, landing
@@ -105,10 +109,44 @@ pub enum ReportAnchor {
 /// mean five near-identical 23-line spawn blocks. Call sites pass their unit
 /// marker via `M::default()`.
 pub fn float_report<M: Component + Default>(commands: &mut Commands, anchor: ReportAnchor) {
+    if matches!(anchor, ReportAnchor::Center) {
+        let wrapper = commands
+            .spawn((Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            }, Pickable::IGNORE))
+            .id();
+        commands.spawn((
+            M::default(),
+            Text::new(""),
+            TextFont {
+                font_size: FontSize::Px(14.0),
+                ..default()
+            },
+            TextColor(Color::srgb(0.92, 0.94, 0.90)),
+            BackgroundColor(Color::srgba(0.02, 0.03, 0.04, 0.80)),
+            Node {
+                padding: UiRect::all(Val::Px(10.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                display: Display::None,
+                ..default()
+            },
+            BorderColor::all(Color::srgba(0.7, 0.75, 0.7, 0.35)),
+            GlobalZIndex(14),
+            Pickable::IGNORE,
+            ChildOf(wrapper),
+        ));
+        return;
+    }
     let (left, right, top, bottom) = match anchor {
         ReportAnchor::RightTop(y) => (Val::Auto, Val::Px(18.0), Val::Px(y), Val::Auto),
         ReportAnchor::LeftTop(y) => (Val::Px(18.0), Val::Auto, Val::Px(y), Val::Auto),
         ReportAnchor::LeftBottom(y) => (Val::Px(18.0), Val::Auto, Val::Auto, Val::Px(y)),
+        ReportAnchor::Center => unreachable!("handled above"),
     };
     let node = Node {
         position_type: PositionType::Absolute,
@@ -209,6 +247,54 @@ pub fn centered(w: f32, h: f32, dx: f32, dy: f32) -> Node {
 /// read-then-write keeps Bevy change detection from replaying the render sync
 /// each frame). All the "hide this overlay unless state X" systems converge
 /// here; their bodies shrink to computing `want`.
+/// A dim one-row footer of key hints, styled the same everywhere it appears
+/// (lesson popups, the pause plate): actions spread across the row, each
+/// cell's key in the accent colour and its label dimmed. Keys keep whatever
+/// bracket/spelling the caller passes (`"[R]"` or `"Enter"`). The row lands
+/// under `parent` (the card it summarizes).
+pub fn key_footer(
+    commands: &mut Commands,
+    parent: Entity,
+    gap_above: f32,
+    items: &[(&str, &str)],
+) {
+    let footer = commands
+        .spawn((
+            Node {
+                margin: UiRect::top(Val::Px(gap_above)),
+                justify_content: JustifyContent::SpaceBetween,
+                column_gap: Val::Px(24.0),
+                ..default()
+            },
+            ChildOf(parent),
+        ))
+        .id();
+    for (key, label) in items {
+        let cell = commands
+            .spawn((
+                // Base text stays empty: the spans below are the whole cell
+                // (a base text would double-render the row).
+                Text::new(""),
+            ))
+            .id();
+        for (text, color) in [
+            (format!("{key} "), accent()),
+            ((*label).to_string(), dim()),
+        ] {
+            commands.spawn((
+                TextSpan::new(text),
+                TextFont {
+                    font_size: FontSize::Px(14.0),
+                    ..default()
+                },
+                TextColor(color),
+                ChildOf(cell),
+            ));
+        }
+        commands.entity(footer).add_child(cell);
+    }
+}
+
 pub fn set_display<M: Component>(mut q: Query<&mut Node, With<M>>, want: Display) {
     for mut node in q.iter_mut() {
         if node.display != want {
