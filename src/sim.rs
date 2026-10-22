@@ -122,7 +122,7 @@ impl Sim {
     }
 
     /// Parked on the apron stand, at rest, nose west along the lead-in line.
-    /// The M1 TAXI (and M4 FINAL) ramp spawn: taxi school starts here, with
+    /// The M1 TAXI ramp spawn: taxi school starts here, with
     /// the yellow paint (and at night the blue edge lights) leading out to the
     /// runway. Engine state follows the lesson: cold for the taxi drill, warm
     /// for any other spawn.
@@ -293,7 +293,7 @@ impl Sim {
 
     /// Set the cold-and-dark state of this flight. Only the piston C172
     /// carries the cold-start flow; other aircraft ignore the switch. The
-    /// plan comes from the lesson (M1/M4 start cold), not a persisted setting.
+    /// plan comes from the lesson (M1 starts cold), not a persisted setting.
     /// Turning COLD on while the engine is already running shuts it down now —
     /// the switch is an instruction to start flying from the checklist.
     pub fn set_engine_cold(&mut self, cold: bool) {

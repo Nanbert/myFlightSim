@@ -144,7 +144,7 @@ struct MissionState {
 }
 
 /// Rows on the global settings page: weather, wind and time of day. The engine
-/// start state used to be here too; it now belongs to the lesson (M1/M4 start
+/// start state used to be here too; it now belongs to the lesson (M1 starts
 /// cold, everything else runs), so the row is gone.
 const SETTINGS_ROWS: usize = 3;
 
@@ -1147,7 +1147,7 @@ fn start_flight(
     } else if sim.name != id {
         *sim = Sim::new(id);
     }
-    // The cold-start plan is the mission's, not a global setting: M1/M4 start
+    // The cold-start plan is the mission's, not a global setting: M1 starts
     // cold and dark, everything else runs. A fresh FDM starts with the flag
     // unset, so only the cold lessons need this.
     sim.set_engine_cold(active.0.is_some_and(|l| l.cold_start()));
@@ -1162,7 +1162,7 @@ fn start_flight(
         sim.reset_air(map.spawn_alt_ft(), map.spawn_kts());
     } else {
         match active.0 {
-            Some(Lesson::Taxi | Lesson::FullFlight) => sim.reset_stand(),
+            Some(Lesson::Taxi) => sim.reset_stand(),
             Some(Lesson::Takeoff) => sim.reset_ground(),
             Some(Lesson::Landing) => sim.reset_final_c172(),
             None => sim.reset_ground(),
@@ -1215,7 +1215,6 @@ fn dev_lesson() -> Option<Lesson> {
         "TAXI" | "M1" => Some(Lesson::Taxi),
         "TAKEOFF" | "M2" => Some(Lesson::Takeoff),
         "LANDING" | "M3" => Some(Lesson::Landing),
-        "FINAL" | "FULL" | "M4" => Some(Lesson::FullFlight),
         _ => None,
     }
 }
@@ -1315,7 +1314,7 @@ mod tests {
             && l.left.contains("SELECT START")),
             "{out:?}");
         assert!(option_row(&out, "M1 TAXI").right.is_empty());
-        assert!(option_row(&out, "M4 FINAL").right.is_empty());
+        assert!(option_row(&out, "M3 LANDING").right.is_empty());
         assert!(option_row(&out, "M2 TAKEOFF").active, "cursor on row 2");
         let other = play_lines("ah1s", &PlayState::default());
         assert!(option_row(&other, "FREE FLIGHT").active);

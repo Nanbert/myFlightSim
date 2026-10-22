@@ -1,4 +1,4 @@
-//! Lesson flow: the graded C172 lessons (M1..M4) get actionable overlays
+//! Lesson flow: the graded C172 lessons (M1..M3) get actionable overlays
 //! instead of passive meters. Free flight keeps the meters' passive displays;
 //! in a lesson this module owns the hold-short prompt and pins two modals
 //! over the frozen sim:
@@ -7,7 +7,7 @@
 //!   own rule trips: the M1 holding-pair incursion, the M2 climb failures,
 //!   the M3 unstable approach at the 500 ft gate: paused, with
 //!   RID/back-to-menu rows.
-//! - **The finals cards** — a graded stop (M1/M4), the M2 climb gate or the
+//! - **The finals cards** — a graded stop (M1), the M2 climb gate or the
 //!   M3 stopped landing pauses the flight under its lesson's numbers.
 //!
 //! Every card answers on keyboard rows in the codebase's pause-plate idiom:
@@ -171,7 +171,7 @@ pub(crate) fn watch(
         return;
     }
     // The ground-lesson FAIL list is Taxi-only, and the same lines re-cross
-    // legally once the grade (or the M4 line-up) is in.
+    // legally once the grade is in.
     if no_popup
         && matches!(lesson, crate::mission::Lesson::Taxi)
         && hs.done.is_none()
@@ -220,7 +220,8 @@ pub(crate) fn watch(
         }
         return;
     }
-    // A graded stop in a ground lesson pins the finals card.
+    // A graded stop in a ground lesson pins the finals card. M1 TAXI ends at
+    // the hold short, so the card has no Continue row.
     if no_popup && hs.settled && hs.done.is_some() {
         let body = hs.finals_text();
         flow.kind = Some(Card::Grade);
@@ -229,7 +230,7 @@ pub(crate) fn watch(
             &mut commands,
             "HOLD SHORT - GRADED",
             body,
-            matches!(lesson, crate::mission::Lesson::FullFlight),
+            false,
         );
         return;
     }

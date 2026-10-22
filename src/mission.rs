@@ -13,8 +13,10 @@
 //!   rotation, graded by the takeoff report.
 //! - **M3 LANDING** — 2 NM final for runway 36, flaps 20: the landing card's
 //!   classroom.
-//! - **M4 FINAL** — cold at the stand: one complete flight, from the battery
-//!   master switch to the touchdown card.
+//!
+//! The old M4 FINAL (a full cold-start-to-touchdown run) stayed on the
+//! drawing board: the landing lesson alone is the grind, and the full flight
+//! can come back as free flight practice the player stitches together.
 //!
 //! The keyboard's R/P/Y relocate shortcuts are gone; the menu (the PLAY page
 //! under the aircraft) is the only way to choose a spawn.
@@ -22,7 +24,7 @@
 use bevy::prelude::*;
 
 /// The lesson HUD tags, in menu order (`Lesson::label`).
-const LESSON_LABELS: [&str; 4] = ["M1 TAXI", "M2 TAKEOFF", "M3 LANDING", "M4 FINAL"];
+const LESSON_LABELS: [&str; 3] = ["M1 TAXI", "M2 TAKEOFF", "M3 LANDING"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lesson {
@@ -32,8 +34,6 @@ pub enum Lesson {
     Takeoff,
     /// 2 NM final for runway 36, flaps 20, 70 kt.
     Landing,
-    /// Cold at the stand: one complete flight, start to touchdown.
-    FullFlight,
 }
 
 impl Lesson {
@@ -46,7 +46,7 @@ impl Lesson {
     /// True when the lesson starts cold and dark and the COLD START checklist
     /// is part of the drill.
     pub fn cold_start(self) -> bool {
-        matches!(self, Lesson::Taxi | Lesson::FullFlight)
+        matches!(self, Lesson::Taxi)
     }
 }
 
@@ -63,7 +63,7 @@ pub struct PlayRow {
 /// The PLAY page's rows, in menu order, rendered by `menu.rs`'s page panel.
 /// The graded lesson rows are a C172 feature; `menu.rs` greys them out for the
 /// other aircraft (the airframes' own rule, not the page's).
-pub const PLAY_MENU: [PlayRow; 5] = [
+pub const PLAY_MENU: [PlayRow; 4] = [
     PlayRow {
         label: "FREE FLIGHT",
         lesson: None,
@@ -83,11 +83,6 @@ pub const PLAY_MENU: [PlayRow; 5] = [
         label: "M3 LANDING",
         lesson: Some(Lesson::Landing),
         hint: "on a 2 NM final, flaps 20, 70 kt",
-    },
-    PlayRow {
-        label: "M4 FINAL",
-        lesson: Some(Lesson::FullFlight),
-        hint: "cold at the stand: one complete flight",
     },
 ];
 
@@ -123,12 +118,7 @@ mod tests {
     #[test]
     fn play_menu_covers_free_flight_and_every_lesson_once() {
         assert_eq!(PLAY_MENU[0].lesson, None, "row 0 is free flight");
-        for lesson in [
-            Lesson::Taxi,
-            Lesson::Takeoff,
-            Lesson::Landing,
-            Lesson::FullFlight,
-        ] {
+        for lesson in [Lesson::Taxi, Lesson::Takeoff, Lesson::Landing] {
             let count = PLAY_MENU
                 .iter()
                 .filter(|row| row.lesson == Some(lesson))
@@ -140,7 +130,6 @@ mod tests {
     #[test]
     fn cold_start_lessons_start_dark() {
         assert!(Lesson::Taxi.cold_start());
-        assert!(Lesson::FullFlight.cold_start());
         assert!(!Lesson::Takeoff.cold_start());
         assert!(!Lesson::Landing.cold_start());
     }

@@ -171,11 +171,9 @@ fn c172() -> Vec<String> {
     p.line("  lessons: M1 TAXI starts cold on the apron stand (start, taxi");
     p.line("  out, hold short; the meter grades the stop), M2 TAKEOFF starts");
     p.line("  warm on the runway (the takeoff card grades rotation speed,");
-    p.line("  pitch and bank), M3 LANDING sits you on a 2 NM final with");
-    p.line("  flaps 20 (the landing card does the rest), and M4 FINAL starts");
-    p.line("  cold at the stand for one complete flight - the start");
-    p.line("  checklist, the taxi grade, the takeoff card and the landing");
-    p.line("  card each get their say. The HUD line shows your lesson.");
+    p.line("  pitch and bank), and M3 LANDING sits you on a 2 NM final with");
+    p.line("  flaps 20 (the landing card does the rest). The HUD line shows");
+    p.line("  your lesson.");
 
     p.heading("HOME FIELD (GAME)");
     p.line("  MYFS has runway 36/18, 1200 m. The menu's lesson row under");
@@ -205,10 +203,10 @@ fn c172() -> Vec<String> {
     p.line("  within a metre and the meter grades the stop GOOD. The pump");
     p.line("  lane branches off the lead-in line to the refueller.");
 
-    p.heading("COLD START (GAME, MENU > PLAY > M1 / M4)");
-    p.line("  M1 TAXI and M4 FINAL hand you a truly shut-down Cessna and");
-    p.line("  the start flow becomes real (PLAY and the other lessons spawn");
-    p.line("  warm and running instead):");
+    p.heading("COLD START (GAME, MENU > PLAY > M1)");
+    p.line("  M1 TAXI hands you a truly shut-down Cessna and the start flow");
+    p.line("  becomes real (PLAY and the other lessons spawn warm and");
+    p.line("  running instead):");
     p.line("  1. M turns the master on. The COLD START CHECKLIST panel in");
     p.line("     the bottom-left corner ticks the steps off as you do them.");
     p.line("  2. Hold I: the starter cranks the prop. Two seconds in, the");
