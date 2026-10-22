@@ -263,11 +263,15 @@ impl Sim {
         self.model.set("ic/vc-kts", vc_kts);
         self.model.set("ic/h-sl-ft", alt_ft);
         self.model.set("ic/psi-true-deg", 0.0);
-        // Approach config first, so apply_ic seats the flap position and the
-        // trim solver sees the gear/flap jet, not a clean airframe.
-        self.model.set("fcs/flap-cmd-norm", flap);
         self.model.set("gear/gear-cmd-norm", 1.0);
         self.model.apply_ic();
+        // IC resets forget pre-set commands, so re-command the approach
+        // config after them. The flap *position* is seated directly — the
+        // reset twin of the gear seat — so the trim below judges the flapped
+        // wing and the surface is on top from the first frame instead of
+        // slewing through the opening seconds of the approach.
+        self.model.set("fcs/flap-cmd-norm", flap);
+        self.model.set("fcs/flap-pos-norm", flap);
         self.model.set("gear/gear-pos-norm", 1.0);
         self.light_engine();
         self.model.trim(vc_kts, alt_ft);
@@ -756,13 +760,41 @@ mod tests {
             "{:?}",
             ils.dist_m
         );
-        // The lesson's approach speed, seated by the trim solver. (Flaps: the
-        // rust FDM's trim zeroes the flap position on solve, so the lesson's
-        // flaps-20 ride in the flap *binding*, which the app writes every
-        // step — see `menu::start_flight`.)
+        // The lesson's approach speed and config, both seated by the trim
+        // solver: flaps 20 lands on the wing (the seat writes the flap
+        // position directly after IC — see `reset_final_at`), and the trim
+        // point was solved with the flapped wing.
+        let flap_deg = sim.model.get("fcs/flap-pos-deg");
+        assert!((flap_deg - 20.0).abs() < 0.5, "flaps seated: {flap_deg}");
         assert!(
             (sim.model.get("velocities/vc-kts") - 70.0).abs() < 6.0,
             "final speed {}",
+            sim.model.get("velocities/vc-kts")
+        );
+        // Hands-off, the seat is a live trim point: one second of the
+        // app's per-step binding writes holds speed and flap position.
+        let mut bindings = crate::input::Bindings::for_aircraft("c172p");
+        if let Some(b) = bindings
+            .list
+            .iter_mut()
+            .find(|b| b.property == "fcs/flap-cmd-norm")
+        {
+            b.value = 0.67;
+        }
+        for _ in 0..120 {
+            for b in &bindings.list {
+                sim.model.set(b.property, b.effective());
+            }
+            sim.model.step();
+        }
+        assert!(
+            (sim.model.get("fcs/flap-pos-deg") - 20.0).abs() < 0.5,
+            "flap seat holds: {}",
+            sim.model.get("fcs/flap-pos-deg")
+        );
+        assert!(
+            (sim.model.get("velocities/vc-kts") - 70.0).abs() < 3.0,
+            "hands-off drift: {}",
             sim.model.get("velocities/vc-kts")
         );
         // And a cold lesson at the stand keeps the world anchored: the runway

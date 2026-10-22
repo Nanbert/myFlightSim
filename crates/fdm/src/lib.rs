@@ -971,12 +971,22 @@ impl Fdm {
         };
         let elevator_rad = scale(trim_cmd, fcs.elevator_lim_deg) * fcs.elevator_gain;
         let aileron_rad = scale(aileron_cmd, fcs.aileron_lim_deg) * fcs.aileron_gain;
+        // The flap rides the live achieved position, the same live-config
+        // rule `trim_eval_surf` uses for the gear: a seat solved with the
+        // flaps retracted while the wing flies flapped is not a trim point.
+        let flap_norm = if fcs.flap_max_deg > 0.0 {
+            self.flap_pos_deg / fcs.flap_max_deg
+        } else {
+            0.0
+        };
         let surf = Surfaces {
             elevator_rad,
             mag_elevator_rad: elevator_rad.abs(),
             aileron_rad,
             right_aileron_rad: -aileron_rad,
             rudder_rad: scale(rudder_cmd, fcs.rudder_lim_deg) * fcs.rudder_gain,
+            flap_deg: self.flap_pos_deg,
+            flap_norm,
             ..Default::default()
         };
         self.trim_eval_surf(alpha, phi, &surf, throttle, vt, alt, cl_sq)
@@ -1503,7 +1513,6 @@ impl FlightModel for Fdm {
             omega: [0.0; 3],
         };
         self.seat_air_frame();
-        self.flap_pos_deg = 0.0;
         self.ic_vc_kts = vc_kts;
         self.ic_alt_ft = alt_ft;
 
@@ -1783,6 +1792,15 @@ impl FlightModel for Fdm {
             "fcs/roll-trim-cmd-norm" => self.roll_trim_cmd = value,
             "fcs/yaw-trim-cmd-norm" => self.yaw_trim_cmd = value,
             "fcs/flap-cmd-norm" => self.flap_cmd = value,
+            // Seat the achieved flap position, the reset twin of the gear
+            // seat below: teleporting into an approach with the flaps still
+            // travelling would leave the wing clean for seconds of approach
+            // while the actuator catches up. Not part of JSBSim's writable
+            // set; on that bench the native FCS input takes over.
+            "fcs/flap-pos-norm" => {
+                self.flap_pos_deg =
+                    value.clamp(0.0, 1.0) * self.ac.control.flap_max_deg();
+            }
             // Flight spoilers / thrust reverse. Both are 0..1 commands; the
             // positions roll toward them in `step_spoilers`. Airframes that
             // lack the channels (gear-fixed singles, the F-22) store the

@@ -21,6 +21,11 @@
 //! - `fcs/{elevator,aileron,rudder}-cmd-norm`, `fcs/throttle-cmd-norm`,
 //!   `fcs/pitch-trim-cmd-norm`, `fcs/flap-cmd-norm`,
 //!   `fcs/{left,right}-brake-cmd-norm` — pilot commands
+//! - `fcs/flap-pos-norm` — seat the achieved flap position directly (a reset
+//!   convenience, like `gear/gear-pos-norm`: a reset may teleport in with the
+//!   approach config already set). The Rust backend seats its actuator state;
+//!   on JSBSim the write lands on a native output property that the next
+//!   Run recomputes, so that bench should seat by command instead.
 //! - `gear/gear-cmd-norm` — gear selector (1 = down); `gear/gear-pos-norm` —
 //!   seat the achieved position directly (a reset convenience; a no-op on
 //!   fixed-gear models)

@@ -1186,8 +1186,9 @@ fn start_flight(
         controls.enable_arcade(id);
     }
     // The landing lesson flies flaps 20: the app writes its bindings every
-    // step, so the flap lever starts at the approach detent and holds it
-    // against the FDM's trim (which zeroes the flap position on solve).
+    // step, so the flap lever and displays hold the approach detent from the
+    // first frame (the FDM seat itself places command + position after IC —
+    // see `sim::reset_final_at`).
     if matches!(active.0, Some(Lesson::Landing)) {
         if let Some(b) = controls
             .list

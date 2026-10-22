@@ -459,7 +459,10 @@ const FCS: DirectFcs = DirectFcs {
     rudder_lim_deg: (-16.0, 16.0),
     yaw_damper: None,
     flap_max_deg: 30.0,
-    flap_time_s: 30.0,
+    // Full travel in ~6 s: a real C172's flap actuator moves the wings through
+    // their range in a handclap, not the half minute the first draft had —
+    // which made flaps 20 a 20-second wait inside the M3 approach window.
+    flap_time_s: 6.0,
 };
 
 // --- landing gear (<ground_reactions>) ------------------------------------
