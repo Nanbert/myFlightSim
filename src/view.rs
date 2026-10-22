@@ -131,9 +131,13 @@ fn model_spec(name: &str) -> ModelSpec {
             drop: 1.4326 - 0.060 * (11.0 / 12.598),
             offset: [0.0; 3],
             yaw: std::f32::consts::PI,
-            eye: Some([0.209, 1.835, -0.350]),
+            // Dialled in live with the `COCKPIT_EYE`/`COCKPIT_LOOK` overrides
+            // (raised +10 cm, seat 13 cm forward, 4° rest pitch down): parked
+            // level, the cowl keeps a runway/horizon slice above the panel
+            // instead of blanketing the whole forward view.
+            eye: Some([0.209, 2.0, -0.20]),
             eye_yaw: 0.0,
-            eye_pitch: 0.0,
+            eye_pitch: -4.0_f32.to_radians(),
         },
     }
 }
@@ -746,7 +750,17 @@ pub fn spawn_flight_aircraft(
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
         .map(f32::to_radians)
-        .or_else(|| (sim.name == "ah1s").then(|| 65.0_f32.to_radians()));
+        // FOV defaults per airframe: an in-cockpit pilot takes in far more
+        // world than Bevy's 45° telephoto default, which makes the C172's
+        // panel loom over the few degrees the eye has to spare over it.
+        .or_else(|| {
+            let fov_deg = match crate::aircraft_profile::normalized(&sim.name) {
+                "ah1s" => 65.0_f32,
+                "c172" | "c172p" => 60.0,
+                _ => return None,
+            };
+            Some(fov_deg.to_radians())
+        });
     let root = commands
         .spawn((
             AircraftRoot,
