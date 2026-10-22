@@ -66,6 +66,12 @@ struct Feel {
     fine_scale: f64,
     /// Whether the fine key does anything (C172 only for now).
     fine_enabled: bool,
+    /// The FEEL page's touch knobs as multipliers over the class baseline,
+    /// all `1.0` at the code's defaults (see `config::FeelSetting`).
+    tap_mult: f64,
+    linger_mult: f64,
+    release_mult: f64,
+    fine_mult: f64,
 }
 
 impl Feel {
@@ -76,6 +82,10 @@ impl Feel {
         release_scale: 1.0,
         fine_scale: 1.0,
         fine_enabled: false,
+        tap_mult: 1.0,
+        linger_mult: 1.0,
+        release_mult: 1.0,
+        fine_mult: 1.0,
     };
 
     const C172: Self = Self {
@@ -85,6 +95,10 @@ impl Feel {
         release_scale: 0.8,
         fine_scale: 0.25,
         fine_enabled: true,
+        tap_mult: 1.0,
+        linger_mult: 1.0,
+        release_mult: 1.0,
+        fine_mult: 1.0,
     };
 
     const JET: Self = Self {
@@ -94,27 +108,36 @@ impl Feel {
         release_scale: 0.8,
         fine_scale: 1.0,
         fine_enabled: false,
+        tap_mult: 1.0,
+        linger_mult: 1.0,
+        release_mult: 1.0,
+        fine_mult: 1.0,
     };
 
-    /// Per-axis tap sizes: rudder and trim are deliberately finer than pitch.
+    /// Per-axis tap sizes: rudder and trim are deliberately finer than pitch
+    /// on the baseline, times the FEEL page's tap multiplier.
     fn step_for(self, action: Action) -> f64 {
-        match action {
-            Action::Rudder => self.tap_step * 0.75,
-            Action::Throttle => self.tap_step * 0.5,
-            Action::PitchTrim => self.tap_step * 0.125,
-            Action::Flap | Action::BrakeLeft | Action::BrakeRight | Action::Collective => 0.0,
-            _ => self.tap_step,
-        }
+        let axis = match action {
+            Action::Rudder => 0.75,
+            Action::Throttle => 0.5,
+            Action::PitchTrim => 0.125,
+            Action::Flap | Action::BrakeLeft | Action::BrakeRight | Action::Collective => return 0.0,
+            _ => 1.0,
+        };
+        self.tap_step * axis * self.tap_mult
     }
 
     /// Rudder keeps its nudge a little longer, because it is the twitchiest.
+    /// The linger applies before the spring-back, times the FEEL page's
+    /// linger multiplier.
     fn release_for(self, action: Action) -> f64 {
-        match action {
-            Action::Rudder => self.release_hold * 1.5,
+        let axis = match action {
+            Action::Rudder => 1.5,
             // Brakes should let go as soon as the key does.
             Action::BrakeLeft | Action::BrakeRight => 0.0,
-            _ => self.release_hold,
-        }
+            _ => 1.0,
+        };
+        self.release_hold * axis * self.linger_mult
     }
 
     /// Per-axis press rates the feel owns; `None` keeps the profile's rate.
@@ -216,7 +239,11 @@ impl Binding {
     }
 
     fn update_step(&mut self, dir: f64, dt: f64, feel: Feel, fine: bool) {
-        let scale = if fine { feel.fine_scale } else { 1.0 };
+        let scale = if fine {
+            feel.fine_scale * feel.fine_mult
+        } else {
+            1.0
+        };
         match self.axis {
             Axis::Spring => {
                 if dir != 0.0 {
@@ -237,8 +264,13 @@ impl Binding {
                     if self.since_input >= feel.release_for(self.action) {
                         // The spring-back is gentler than the press — the
                         // surface has inertia, and the keyboard player needs
-                        // the same grace after a tap.
-                        ramp(&mut self.value, 0.0, self.rate * feel.release_scale * dt);
+                        // the same grace after a tap. The FEEL page's return
+                        // multiplier rides on top.
+                        ramp(
+                            &mut self.value,
+                            0.0,
+                            self.rate * feel.release_scale * feel.release_mult * dt,
+                        );
                     }
                 }
                 self.last_dir = dir;
@@ -294,6 +326,29 @@ impl Binding {
     }
 }
 
+/// The knob baselines the FEEL settings page shows and multiplexes onto the
+/// bindings — the code's defaults for one aircraft class, plus which knobs the
+/// class offers at all.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FeelBaseline {
+    /// Full-travel seconds for the four sweep axes.
+    pub travel_elevator: f64,
+    pub travel_aileron: f64,
+    pub travel_rudder: f64,
+    pub travel_throttle: f64,
+    /// Normalized tap nudge (fraction of travel).
+    pub tap_step: f64,
+    /// Release linger seconds.
+    pub release_hold: f64,
+    /// Spring-back speed as a fraction of press rate.
+    pub release_scale: f64,
+    /// Fine-mode step scale (fraction of travel).
+    pub fine_scale: f64,
+    /// Whether the class offers tap/fine knobs at all.
+    pub tap_enabled: bool,
+    pub fine_enabled: bool,
+}
+
 /// The pilot's control set for one aircraft. Iterated each frame to drive the
 /// FDM.
 #[derive(Resource)]
@@ -306,6 +361,78 @@ pub struct Bindings {
 }
 
 impl Bindings {
+    /// Build the runtime control set for `id` from its profile's fixed bindings,
+    /// then ride the persisted FEEL multipliers onto it (travel times divide
+    /// the ramp rates; the touch knobs multiply the Feel fields).
+    pub fn for_aircraft_with(id: &str, feel: &crate::config::FeelSetting) -> Self {
+        let mut b = Self::for_aircraft(id);
+        b.apply_feel(feel);
+        b
+    }
+
+    /// Scale the persisted feel onto a built set: `for_aircraft` alone stays
+    /// the pure defaults, so tests can control their inputs exactly.
+    pub fn apply_feel(&mut self, fs: &crate::config::FeelSetting) {
+        for x in &mut self.list {
+            // Travel-time multipliers: 1.2 s of travel means 1/1.2 the rate.
+            let time = match x.action {
+                Action::Elevator => fs.travel_elevator,
+                Action::Aileron => fs.travel_aileron,
+                Action::Rudder => fs.travel_rudder,
+                Action::Throttle => fs.travel_throttle,
+                _ => continue,
+            };
+            if time > 0.01 {
+                x.rate /= time;
+            }
+        }
+        let f = &mut self.feel;
+        f.tap_mult = fs.tap;
+        f.linger_mult = fs.linger;
+        f.release_mult = fs.release;
+        f.fine_mult = fs.fine;
+    }
+
+    /// The knob baselines a settings page shows (the code's defaults for this
+    /// aircraft class), plus whether the aircraft offers tap/fine rows at all.
+    pub fn feel_baseline(id: &str) -> FeelBaseline {
+        let feel = match aircraft_profile::normalized(id) {
+            "c172p" => Feel::C172,
+            "737" => Feel::JET,
+            _ => Feel::LEGACY,
+        };
+        let base = Self::for_aircraft(id);
+        // "Travel" seconds as the page shows them: neutral-to-stop on a
+        // spring axis (its ramp spans `max` units from the centre), lever
+        // sweep on a hold axis. `for_aircraft` already merges the feel-owned
+        // rates over the profile's, so the ramp rate is `x.rate`.
+        let travel = |action: Action| -> f64 {
+            let Some(x) = base.list.iter().find(|b| b.action == action) else {
+                return 0.0;
+            };
+            if x.rate <= 0.0 {
+                return 0.0;
+            }
+            let range = match x.axis {
+                Axis::Spring => x.max.abs(),
+                _ => x.max - x.min,
+            };
+            range / x.rate
+        };
+        FeelBaseline {
+            travel_elevator: travel(Action::Elevator),
+            travel_aileron: travel(Action::Aileron),
+            travel_rudder: travel(Action::Rudder),
+            travel_throttle: travel(Action::Throttle),
+            tap_step: feel.tap_step,
+            release_hold: feel.release_hold,
+            release_scale: feel.release_scale,
+            fine_scale: feel.fine_scale,
+            tap_enabled: feel.tap_step > 0.0,
+            fine_enabled: feel.fine_enabled,
+        }
+    }
+
     /// Build the runtime control set for `id` from its profile's fixed bindings.
     pub fn for_aircraft(id: &str) -> Self {
         let p = aircraft_profile::profile(id);
@@ -586,6 +713,7 @@ fn ramp(value: &mut f64, target: f64, step: f64) {
 mod tests {
     use super::{adopt_trim, arcade_throttle, manoeuvre_intensity, ramp, Binding, Bindings, Feel};
     use crate::aircraft_profile::{Action, Axis};
+    use crate::config::FeelSetting;
     use bevy::prelude::{ButtonInput, KeyCode};
 
     fn cyclic() -> Binding {
@@ -866,6 +994,167 @@ mod tests {
             .find(|b| b.action == action)
             .unwrap()
             .value
+    }
+
+    /// One held ramp, at 60 fps, telling how far the axis traveled.
+    fn hold_travel(action: Action, secs: f64) -> f64 {
+        let mut bindings = Bindings::for_aircraft("c172p");
+        let feel = bindings.feel;
+        let mut keys = ButtonInput::<KeyCode>::default();
+        let key = KeyCode::KeyW; // elevator's negative key: nose up
+        if action != Action::Elevator {
+            panic!("hold_travel sanity: only the elevator is wired here");
+        }
+        keys.press(key);
+        let steps = (secs * 60.0) as usize;
+        for _ in 0..steps {
+            for b in &mut bindings.list {
+                b.update(&keys, 1.0 / 60.0, feel, false);
+            }
+        }
+        axis_value(&bindings, action).abs()
+    }
+
+    #[test]
+    fn feel_travel_multiplier_rescales_the_ramp() {
+        // Stock: 1 s of held ramp from neutral (tap 0.04, then ~0.88 s of ramp).
+        let stock = hold_travel(Action::Elevator, 1.0);
+        assert!(stock > 0.85 && stock < 0.98, "{stock}");
+
+        // Double the travel *time*: the same held second goes half as far.
+        let slow = {
+            let mut bindings = Bindings::for_aircraft("c172p");
+            bindings.apply_feel(&FeelSetting {
+                travel_elevator: 2.0,
+                ..FeelSetting::default()
+            });
+            let feel = bindings.feel;
+            let mut keys = ButtonInput::<KeyCode>::default();
+            keys.press(KeyCode::KeyW);
+            for _ in 0..60 {
+                for b in &mut bindings.list {
+                    b.update(&keys, 1.0 / 60.0, feel, false);
+                }
+            }
+            axis_value(&bindings, Action::Elevator).abs()
+        };
+        assert!(
+            (slow - stock / 2.0).abs() < 0.12,
+            "2x travel time should halve the held ramp: {stock} vs {slow}"
+        );
+
+        // And a *faster* travel beats stock the other way.
+        let quick = {
+            let mut bindings = Bindings::for_aircraft("c172p");
+            bindings.apply_feel(&FeelSetting {
+                travel_elevator: 0.5,
+                ..FeelSetting::default()
+            });
+            let feel = bindings.feel;
+            let mut keys = ButtonInput::<KeyCode>::default();
+            keys.press(KeyCode::KeyW);
+            for _ in 0..60 {
+                for b in &mut bindings.list {
+                    b.update(&keys, 1.0 / 60.0, feel, false);
+                }
+            }
+            axis_value(&bindings, Action::Elevator).abs()
+        };
+        assert!(quick > stock, "0.5x time should beat stock: {stock} vs {quick}");
+    }
+
+    #[test]
+    fn feel_touch_knobs_scale_taps_and_release() {
+        // Tap nudge doubles.
+        let mut bindings = Bindings::for_aircraft("c172p");
+        bindings.apply_feel(&FeelSetting {
+            tap: 2.0,
+            ..FeelSetting::default()
+        });
+        let feel = bindings.feel;
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::KeyW);
+        for b in &mut bindings.list {
+            b.update(&keys, 1.0 / 60.0, feel, false);
+        }
+        keys.release(KeyCode::KeyW);
+        let nudged = axis_value(&bindings, Action::Elevator).abs();
+        assert!(
+            (nudged - 0.08).abs() < 1e-9,
+            "2x tap should nudge 8 %: {nudged}"
+        );
+
+        // Linger: stock C172 holds 0.35 s before spring-back; 2x holds 0.7 s.
+        let mut bindings = Bindings::for_aircraft("c172p");
+        bindings.apply_feel(&FeelSetting {
+            linger: 2.0,
+            ..FeelSetting::default()
+        });
+        let feel = bindings.feel;
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::KeyW); // first a fresh tap sets the surface
+        for b in &mut bindings.list {
+            b.update(&keys, 1.0 / 60.0, feel, false);
+        }
+        keys.release(KeyCode::KeyW);
+        for _ in 0..(0.5 * 60.0) as usize {
+            for b in &mut bindings.list {
+                b.update(&keys, 1.0 / 60.0, feel, false);
+            }
+        }
+        // 0.5 s of idle: with 2x linger the surface has NOT started back yet.
+        let rested = axis_value(&bindings, Action::Elevator).abs();
+        assert!(
+            (rested - 0.04).abs() < 1e-9,
+            "2x linger should still be resting at 0.5 s: {rested}"
+        );
+
+        // Return + fine: the direct knob arithmetic on the Feel profile, the
+        // same quantities update_step consumes.
+        let mut feel = Feel::C172;
+        assert_eq!(feel.release_for(Action::Elevator), 0.35);
+        feel.release_mult = 2.0;
+        // The return multiplier does NOT touch the linger.
+        assert_eq!(feel.release_for(Action::Elevator), 0.35);
+        feel.linger_mult = 2.0;
+        assert_eq!(feel.release_for(Action::Elevator), 0.70);
+        // The 737's linger scales from its own, shorter baseline.
+        let mut jet = Feel::JET;
+        jet.linger_mult = 2.0;
+        let jet_linger = jet.release_for(Action::Rudder);
+        assert!(
+            (jet_linger - 0.6).abs() < 1e-9,
+            "737 rudder linger x2: {jet_linger}"
+        );
+
+        // Fine rate: a second tap with fine held is twice the stock fine nudge
+        // (stock 4 % x 0.25 = 1 %; 2x fine = 2 %).
+        let mut stock = Bindings::for_aircraft("c172p");
+        let stock_feel = stock.feel;
+        let mut doubled = Bindings::for_aircraft("c172p");
+        doubled.apply_feel(&FeelSetting {
+            fine: 2.0,
+            ..FeelSetting::default()
+        });
+        let doubled_feel = doubled.feel;
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::KeyW);
+        for b in &mut stock.list {
+            b.update(&keys, 1.0 / 60.0, stock_feel, true);
+        }
+        for b in &mut doubled.list {
+            b.update(&keys, 1.0 / 60.0, doubled_feel, true);
+        }
+        let stock_fine = axis_value(&stock, Action::Elevator).abs();
+        let doubled_fine = axis_value(&doubled, Action::Elevator).abs();
+        assert!(
+            (stock_fine - 0.01).abs() < 1e-9,
+            "stock fine tap should be 1 %: {stock_fine}"
+        );
+        assert!(
+            (doubled_fine - 0.02).abs() < 1e-9,
+            "2x fine tap should be 2 %: {doubled_fine}"
+        );
     }
 
     #[test]

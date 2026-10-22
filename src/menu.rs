@@ -15,7 +15,8 @@ use bevy::text::FontSize;
 use crate::aircraft_profile;
 use crate::app_state::AppState;
 use crate::autopilot::{Autopilot, Mcp};
-use crate::config::{self, ConfigSink, GameConfig};
+use crate::config::{self, ConfigSink, FeelSetting, GameConfig};
+use crate::input::FeelBaseline;
 use crate::input::Bindings;
 use crate::map::{self, MapId, PendingMission};
 use crate::mission::{Lesson, PendingLesson};
@@ -78,9 +79,9 @@ const ABOUT_TOP: usize = AIRCRAFT.len() + 1;
 const TOP_COUNT: usize = AIRCRAFT.len() + EXTRA_TOP.len();
 /// The F-22's row: the only aircraft with a mission entry.
 const F22_INDEX: usize = 1;
-/// Number of pooled sub-row slots (the widest sub-row:
-/// PLAY / TUTORIAL / INFO / SETTINGS, or FREE FLY / MISSIONS / TUTORIAL / INFO).
-const SUB_SLOTS: usize = 4;
+/// Number of pooled sub-row slots (the widest sub-row list is the C172's:
+/// PLAY / TUTORIAL / INFO / SETTINGS / FEEL).
+const SUB_SLOTS: usize = 5;
 /// World spacing between parked showcase models (m).
 const SPACING: f32 = 48.0;
 
@@ -129,6 +130,9 @@ enum Page {
     Missions,
     /// The global, aircraft-independent settings page (weather, ...).
     Global,
+    /// The per-aircraft CONTROL FEEL page (C172 and 737 only): dial the
+    /// keyboard feel, persist as defaults-relative multipliers.
+    Feel,
 }
 
 /// Cursor within the PLAY start-state page.
@@ -164,6 +168,12 @@ struct TutorialState {
 /// Cursor within the per-aircraft settings page.
 #[derive(Resource, Default)]
 struct AircraftSettings {
+    row: usize,
+}
+
+/// Cursor within the per-aircraft CONTROL FEEL page.
+#[derive(Resource, Default)]
+struct FeelState {
     row: usize,
 }
 
@@ -265,9 +275,13 @@ fn sub_items(top: usize) -> &'static [&'static str] {
     match top {
         F22_INDEX => &["FREE FLY", "MISSIONS", "TUTORIAL", "INFO"],
         t if t < AIRCRAFT.len() => match AIRCRAFT[t].id {
-            // Only these two still have anything to configure: the C172's
-            // keyboard assists and the AH-64D's flight model.
-            "c172p" | "ah1s" => &["PLAY", "TUTORIAL", "INFO", "SETTINGS"],
+            // The C172 also flies its keyboard assists; both the C172 and the
+            // 737 offer the CONTROL FEEL dial page.
+            "c172p" => &["PLAY", "TUTORIAL", "INFO", "SETTINGS", "FEEL"],
+            "737" => &["PLAY", "TUTORIAL", "INFO", "FEEL"],
+            // Only the AH-64D still has anything else to configure: its
+            // flight model.
+            "ah1s" => &["PLAY", "TUTORIAL", "INFO", "SETTINGS"],
             _ => &["PLAY", "TUTORIAL", "INFO"],
         },
         _ => &[],
@@ -289,6 +303,7 @@ impl Plugin for MenuPlugin {
             .init_resource::<MenuCamLook>()
             .init_resource::<SettingsState>()
             .init_resource::<AircraftSettings>()
+            .init_resource::<FeelState>()
             .init_resource::<TutorialState>()
             .init_resource::<PlayState>()
             .init_resource::<MissionState>()
@@ -371,6 +386,7 @@ fn auto_open_page(mut sel: ResMut<MenuSelection>) {
         "PLAY" => Page::Play,
         "MISSIONS" => Page::Missions,
         "GLOBAL" => Page::Global,
+        "FEEL" => Page::Feel,
         _ => return,
     };
     sel.page = Some(opened);
@@ -619,6 +635,7 @@ fn update_menu_ui(
     missions: Res<MissionState>,
     config: Res<GameConfig>,
     aircraft_settings: Res<AircraftSettings>,
+    feel_state: Res<FeelState>,
     tutorial_state: Res<TutorialState>,
     mut tops: Query<(&TopLabel, &mut Text, &mut TextColor), Without<SubLabel>>,
     mut bars: Query<(&TopUnderline, &mut BackgroundColor), Without<TopLabel>>,
@@ -705,6 +722,7 @@ fn update_menu_ui(
         Some(Page::Settings) => {
             aircraft_settings_lines(sel.aircraft_id(), &config, &aircraft_settings)
         }
+        Some(Page::Feel) => feel_lines(sel.aircraft_id(), &config, &feel_state),
         Some(Page::Tutorial) => menu_page::freeform(&tutorial::render(
             sel.aircraft_id(),
             tutorial_state.scroll,
@@ -716,7 +734,9 @@ fn update_menu_ui(
     // The hint bar follows the focus level, so the player always sees what the
     // next keypress does.
     if let Ok(mut text) = footer.single_mut() {
-        let want = if sel.page.is_some() {
+        let want = if let Some(Page::Feel) = sel.page {
+            "[LEFT/RIGHT] ADJUST   [R] RESET ROW   [ENTER]/[ESC] CLOSE"
+        } else if sel.page.is_some() {
             "[LEFT/RIGHT] ADJUST   [ENTER] / [ESC] CLOSE"
         } else {
             match sel.focus {
@@ -761,6 +781,156 @@ fn aircraft_settings_lines(id: &str, config: &GameConfig, settings: &AircraftSet
 
     out.push(PageLine::blank());
     out.push(PageLine::hint("[Up/Down] select   [Left/Right] change   [Esc] close"));
+    out
+}
+
+/// One knob on the CONTROL FEEL page, mapped to its `FeelSetting` field
+/// (`FeelKnob` carries the axis for the travel knobs; `Restore` is the
+/// Enter-to-wipe row).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TravelAxis {
+    Elevator,
+    Aileron,
+    Rudder,
+    Throttle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FeelKnob {
+    Travel(TravelAxis),
+    Tap,
+    Linger,
+    Return,
+    Fine,
+    Restore,
+}
+
+struct FeelRow {
+    label: &'static str,
+    knob: FeelKnob,
+}
+
+/// The FEEL page's rows for an aircraft, in display order. The travel knobs
+/// exist for every aircraft that can fly at all; tap/fine ride their class
+/// baselines (the 737 has neither).
+fn feel_rows(id: &str) -> Vec<FeelRow> {
+    let b = crate::input::Bindings::feel_baseline(id);
+    let mut rows = vec![
+        FeelRow { label: "ELEVATOR TRAVEL", knob: FeelKnob::Travel(TravelAxis::Elevator) },
+        FeelRow { label: "AILERON TRAVEL", knob: FeelKnob::Travel(TravelAxis::Aileron) },
+        FeelRow { label: "RUDDER TRAVEL", knob: FeelKnob::Travel(TravelAxis::Rudder) },
+        FeelRow { label: "THROTTLE SWEEP", knob: FeelKnob::Travel(TravelAxis::Throttle) },
+    ];
+    if b.tap_enabled {
+        rows.push(FeelRow { label: "TAP NUDGE", knob: FeelKnob::Tap });
+    }
+    rows.push(FeelRow { label: "RELEASE LINGER", knob: FeelKnob::Linger });
+    rows.push(FeelRow { label: "RETURN SPEED", knob: FeelKnob::Return });
+    if b.fine_enabled {
+        rows.push(FeelRow { label: "FINE RATE", knob: FeelKnob::Fine });
+    }
+    rows.push(FeelRow { label: "RESTORE ALL", knob: FeelKnob::Restore });
+    rows
+}
+
+/// One Left/Right press on a row: the multiplier's delta. In multiplier
+/// space, tuned so the displayed value moves in round steps (ten percent of
+/// travel time, one percent of nudge, ten percent of return speed, five
+/// percent of fine rate).
+fn feel_step(knob: FeelKnob, dir: isize) -> f64 {
+    let d = dir as f64;
+    match knob {
+        FeelKnob::Travel(_) => 0.1 * d,
+        FeelKnob::Tap => 0.25 * d,
+        FeelKnob::Linger => 0.1 * d,
+        FeelKnob::Return => 0.125 * d,
+        FeelKnob::Fine => 0.2 * d,
+        FeelKnob::Restore => 0.0,
+    }
+}
+
+/// The multiplier a knob reads and writes on `FeelSetting`.
+fn knob_mult(knob: FeelKnob, f: &mut FeelSetting) -> &mut f64 {
+    match knob {
+        FeelKnob::Travel(TravelAxis::Elevator) => &mut f.travel_elevator,
+        FeelKnob::Travel(TravelAxis::Aileron) => &mut f.travel_aileron,
+        FeelKnob::Travel(TravelAxis::Rudder) => &mut f.travel_rudder,
+        FeelKnob::Travel(TravelAxis::Throttle) => &mut f.travel_throttle,
+        FeelKnob::Tap => &mut f.tap,
+        FeelKnob::Linger => &mut f.linger,
+        FeelKnob::Return => &mut f.release,
+        FeelKnob::Fine => &mut f.fine,
+        FeelKnob::Restore => &mut f.tap, // dead end: Restore never mutates (see the callers)
+    }
+}
+
+/// Nudge one knob by `dir presses`. `set_feel` clamps and erases defaults.
+fn feel_change(config: &mut GameConfig, id: &str, knob: FeelKnob, dir: isize) {
+    if knob == FeelKnob::Restore {
+        return;
+    }
+    let step = feel_step(knob, dir);
+    config.set_feel(id, |f| *knob_mult(knob, f) += step);
+}
+
+/// R on a row: one knob back to the default multiplier.
+fn feel_reset_row(config: &mut GameConfig, id: &str, knob: FeelKnob) {
+    if knob == FeelKnob::Restore {
+        return;
+    }
+    config.set_feel(id, |f| *knob_mult(knob, f) = 1.0);
+}
+
+/// The knob's stored multiplier and displayed baseline.
+fn feel_knob_state(knob: FeelKnob, fs: &FeelSetting, baseline: &FeelBaseline) -> (f64, f64) {
+    let (mult, base) = match knob {
+        FeelKnob::Travel(TravelAxis::Elevator) => (fs.travel_elevator, baseline.travel_elevator),
+        FeelKnob::Travel(TravelAxis::Aileron) => (fs.travel_aileron, baseline.travel_aileron),
+        FeelKnob::Travel(TravelAxis::Rudder) => (fs.travel_rudder, baseline.travel_rudder),
+        FeelKnob::Travel(TravelAxis::Throttle) => (fs.travel_throttle, baseline.travel_throttle),
+        FeelKnob::Tap => (fs.tap, baseline.tap_step),
+        FeelKnob::Linger => (fs.linger, baseline.release_hold),
+        FeelKnob::Return => (fs.release, baseline.release_scale),
+        FeelKnob::Fine => (fs.fine, baseline.fine_scale),
+        FeelKnob::Restore => (1.0, 1.0),
+    };
+    (mult, base)
+}
+
+/// The FEEL page rows: absolute values with the stock value in brackets.
+fn feel_lines(id: &str, config: &GameConfig, state: &FeelState) -> Vec<PageLine> {
+    let baseline = crate::input::Bindings::feel_baseline(id);
+    let fs = config.feel(id);
+    let rows = feel_rows(id);
+    let cursor = state.row.min(rows.len() - 1);
+
+    let mut out = vec![
+        PageLine::heading(format!("{} - CONTROL FEEL", aircraft_label(id))),
+        PageLine::note("  Dial the keyboard feel. [stock] lists the value R resets to."),
+        PageLine::blank(),
+    ];
+    for (i, row) in rows.iter().enumerate() {
+        let value = if row.knob == FeelKnob::Restore {
+            "WIPE EVERY KNOB".to_string()
+        } else {
+            let (mult, base) = feel_knob_state(row.knob, &fs, &baseline);
+            match row.knob {
+                FeelKnob::Travel(_) | FeelKnob::Linger => {
+                    format!("{:.2} s   [stock {:.2} s]", base * mult, base)
+                }
+                _ => format!(
+                    "{:.0} %   [stock {:.0} %]",
+                    base * mult * 100.0,
+                    base * 100.0
+                ),
+            }
+        };
+        out.push(PageLine::option(row.label, value, i == cursor));
+    }
+    out.push(PageLine::blank());
+    out.push(PageLine::hint(
+        "[Up/Down] select   [Left/Right] adjust   [R] reset row   [Enter/Esc] close",
+    ));
     out
 }
 
@@ -853,7 +1023,8 @@ fn page_text(page: Page, sel: &MenuSelection) -> String {
         // Folded through `menu_page::freeform`. Rendered by `tutorial::render`
         // and the `*_lines` builders, which need live state; `page_text` never
         // sees these.
-        Page::Tutorial | Page::Settings | Page::Global | Page::Play | Page::Missions => {
+        Page::Tutorial | Page::Settings | Page::Global | Page::Play | Page::Feel
+        | Page::Missions => {
             String::new()
         }
     }
@@ -870,6 +1041,7 @@ fn menu_input(
     mut tutorial_state: ResMut<TutorialState>,
     mut play: ResMut<PlayState>,
     mut mission_state: ResMut<MissionState>,
+    mut feel_state: ResMut<FeelState>,
     mut config: ResMut<GameConfig>,
     mut pending: ResMut<PendingMission>,
     mut lesson_pending: ResMut<PendingLesson>,
@@ -989,6 +1161,37 @@ fn menu_input(
                     sel.page = None;
                 }
             }
+            // The CONTROL FEEL page: Up/Down picks a knob, Left/Right steps
+            // its multiplier (persisted instantly), R resets the row; Enter
+            // on RESTORE ALL wipes the aircraft's feel back to stock.
+            Page::Feel => {
+                let id = sel.aircraft_id();
+                let rows = feel_rows(id);
+                let n = rows.len();
+                feel_state.row = cursor_nav(feel_state.row, n,
+                    keys.just_pressed(KeyCode::ArrowUp), keys.just_pressed(KeyCode::ArrowDown));
+                let dir = keys.just_pressed(KeyCode::ArrowRight) as isize
+                    - keys.just_pressed(KeyCode::ArrowLeft) as isize;
+                if dir != 0 {
+                    feel_change(&mut config, id, rows[feel_state.row % n].knob, dir);
+                    config::save(&config, &sink);
+                }
+                if keys.just_pressed(KeyCode::KeyR) {
+                    feel_reset_row(&mut config, id, rows[feel_state.row % n].knob);
+                    config::save(&config, &sink);
+                }
+                if enter {
+                    if rows[feel_state.row % n].knob == FeelKnob::Restore {
+                        config.reset_feel(id);
+                        config::save(&config, &sink);
+                    } else {
+                        sel.page = None;
+                    }
+                }
+                if esc {
+                    sel.page = None;
+                }
+            }
             Page::Tutorial => {
                 let id = sel.aircraft_id();
                 let max = tutorial::max_scroll(id);
@@ -1105,6 +1308,10 @@ fn menu_input(
                     sel.page = Some(Page::Settings);
                     aircraft_settings.row = 0;
                 }
+                Some("FEEL") => {
+                    sel.page = Some(Page::Feel);
+                    feel_state.row = 0;
+                }
                 _ => {}
             },
         }
@@ -1181,7 +1388,9 @@ fn start_flight(
     if std::env::var("AHOVER").is_ok() {
         sim.model.set("fcs/heli-hover-enable", 1.0);
     }
-    let mut controls = Bindings::for_aircraft(id);
+    // The FEEL page's multipliers ride on: the flight is built with the
+    // pilot's dialed keyboard feel, not the raw defaults.
+    let mut controls = Bindings::for_aircraft_with(id, &config.feel(id));
     if arcade {
         controls.enable_arcade(id);
     }
@@ -1263,12 +1472,26 @@ mod tests {
         );
         for (top, aircraft) in AIRCRAFT.iter().enumerate() {
             match aircraft.id {
-                "c172p" | "ah1s" => assert_eq!(
+                "c172p" => assert_eq!(
+                    sub_items(top),
+                    &["PLAY", "TUTORIAL", "INFO", "SETTINGS", "FEEL"],
+                    "{}",
+                    aircraft.id
+                ),
+                "737" => assert_eq!(
+                    sub_items(top),
+                    &["PLAY", "TUTORIAL", "INFO", "FEEL"],
+                    "{}",
+                    aircraft.id
+                ),
+                "ah1s" => assert_eq!(
                     sub_items(top),
                     &["PLAY", "TUTORIAL", "INFO", "SETTINGS"],
                     "{}",
                     aircraft.id
                 ),
+                // The F-22's combat maps are fixed arcade fare; no feel dial.
+                "f22" => assert!(!sub_items(top).contains(&"FEEL"), "{}", aircraft.id),
                 _ => assert!(!sub_items(top).contains(&"SETTINGS"), "{}", aircraft.id),
             }
         }
@@ -1364,5 +1587,111 @@ mod tests {
         assert_eq!(lines[0].left, "GLOBAL SETTINGS");
         assert!(option_row(&lines, "TIME OF DAY").active);
         assert!(!option_row(&lines, "WEATHER").active);
+    }
+
+    #[test]
+    fn the_c172_feel_rows_cover_every_knob() {
+        let rows = feel_rows("c172p");
+        let labels: Vec<&str> = rows.iter().map(|r| r.label).collect();
+        assert_eq!(
+            labels,
+            &[
+                "ELEVATOR TRAVEL",
+                "AILERON TRAVEL",
+                "RUDDER TRAVEL",
+                "THROTTLE SWEEP",
+                "TAP NUDGE",
+                "RELEASE LINGER",
+                "RETURN SPEED",
+                "FINE RATE",
+                "RESTORE ALL",
+            ]
+        );
+        // The 737 has no tap or fine knobs (no detent-free twitches), but does
+        // dial its travel, linger and return.
+        let jet: Vec<&str> = feel_rows("737").iter().map(|r| r.label).collect();
+        assert!(!jet.contains(&"TAP NUDGE"));
+        assert!(!jet.contains(&"FINE RATE"));
+        assert!(jet.contains(&"RELEASE LINGER"));
+        assert_eq!(jet.len(), 7);
+    }
+
+    #[test]
+    fn feel_baselines_show_the_stock_numbers() {
+        let b = Bindings::feel_baseline("c172p");
+        assert!((b.travel_elevator - 1.0).abs() < 1e-9, "{}", b.travel_elevator);
+        assert!((b.travel_aileron - 0.5).abs() < 1e-9, "{}", b.travel_aileron);
+        assert!((b.travel_rudder - 1.0 / 1.5).abs() < 1e-9, "{}", b.travel_rudder);
+        assert!((b.travel_throttle - 2.0).abs() < 1e-9, "{}", b.travel_throttle);
+        assert!((b.tap_step - 0.04).abs() < 1e-9);
+        assert!((b.release_hold - 0.35).abs() < 1e-9);
+        assert!((b.release_scale - 0.8).abs() < 1e-9);
+        assert!((b.fine_scale - 0.25).abs() < 1e-9);
+        assert!(b.tap_enabled && b.fine_enabled);
+
+        // The 737's hydraulic feel: slower surfaces, no tap/fine.
+        let j = Bindings::feel_baseline("737");
+        assert!((j.travel_elevator - 1.0 / 0.85).abs() < 1e-9, "{}", j.travel_elevator);
+        assert!((j.travel_aileron - 1.0).abs() < 1e-9);
+        assert!(!j.tap_enabled && !j.fine_enabled);
+        assert!((j.release_hold - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_feel_page_renders_absolute_values_with_stock_brackets() {
+        let mut config = GameConfig::default();
+        config.set_feel("c172p", |f| {
+            f.travel_elevator = 1.1;
+            f.tap = 2.0;
+        });
+        let lines = feel_lines("c172p", &config, &FeelState { row: 2 });
+        assert!(lines[0].left.ends_with("- CONTROL FEEL"), "{}", lines[0].left);
+        assert_eq!(
+            option_row(&lines, "ELEVATOR TRAVEL").right,
+            "1.10 s   [stock 1.00 s]"
+        );
+        assert_eq!(
+            option_row(&lines, "TAP NUDGE").right,
+            "8 %   [stock 4 %]"
+        );
+        // The untouched knobs show their defaults, and the cursor sits on row
+        // 2 (rudder travel).
+        assert_eq!(
+            option_row(&lines, "AILERON TRAVEL").right,
+            "0.50 s   [stock 0.50 s]"
+        );
+        assert!(option_row(&lines, "RUDDER TRAVEL").active);
+        assert!(!option_row(&lines, "ELEVATOR TRAVEL").active);
+        assert_eq!(option_row(&lines, "RESTORE ALL").right, "WIPE EVERY KNOB");
+    }
+
+    #[test]
+    fn feel_stepping_persists_round_values_and_r_resets_one_row() {
+        let mut config = GameConfig::default();
+
+        // Right on elevator travel: +0.1 s, straight into the persisted
+        // multiplier (1.1, i.e. display 1.10 s). The on-disk format itself is
+        // covered by the config round-trip tests.
+        feel_change(&mut config, "c172p", FeelKnob::Travel(TravelAxis::Elevator), 1);
+        assert!((config.feel("c172p").travel_elevator - 1.1).abs() < 1e-9);
+
+        // Left twice on tap: 4 % -> 2 %.
+        feel_change(&mut config, "c172p", FeelKnob::Tap, -1);
+        feel_change(&mut config, "c172p", FeelKnob::Tap, -1);
+        assert!((config.feel("c172p").tap - 0.5).abs() < 1e-9);
+
+        // R puts the tapped row back; the travel change survives.
+        feel_reset_row(&mut config, "c172p", FeelKnob::Tap);
+        assert_eq!(config.feel("c172p").tap, 1.0);
+        assert!((config.feel("c172p").travel_elevator - 1.1).abs() < 1e-9);
+
+        // Resetting the last changed knob erases the entry entirely.
+        feel_reset_row(&mut config, "c172p", FeelKnob::Travel(TravelAxis::Elevator));
+        assert_eq!(config.feel("c172p"), FeelSetting::default());
+
+        // RESTORE ALL behaves on a dialed feel the same way.
+        config.set_feel("c172p", |f| f.linger = 3.0);
+        config.reset_feel("c172p");
+        assert_eq!(config.feel("c172p"), FeelSetting::default());
     }
 }

@@ -32,6 +32,50 @@ pub struct AssistConfig {
     pub turn_coord: bool,
 }
 
+/// Per-aircraft keyboard-feel multipliers, all `1.0` at the code's defaults.
+/// The settings page shows absolute values (seconds, percent); the file keeps
+/// the ratio to default, so retuning a baseline never warps a dialed feel.
+/// Absent entry = all-defaults (the getters answer `Default`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FeelSetting {
+    /// Full-travel **time** multipliers: 1.2 means the ramp rate divides by
+    /// 1.2, i.e. the axis takes 20 % longer to sweep. (Time is the thing the
+    /// player feels and the page shows; the rate divides at use.)
+    pub travel_elevator: f64,
+    pub travel_aileron: f64,
+    pub travel_rudder: f64,
+    pub travel_throttle: f64,
+    /// Tap nudge size multiplier.
+    pub tap: f64,
+    /// Release-linger time multiplier: how long the axis rests before its
+    /// spring-back starts.
+    pub linger: f64,
+    /// Spring-back ramp speed multiplier on top of the profile's
+    /// fraction-of-press-rate.
+    pub release: f64,
+    /// Fine-mode step scale multiplier.
+    pub fine: f64,
+}
+
+impl Default for FeelSetting {
+    fn default() -> Self {
+        Self {
+            travel_elevator: 1.0,
+            travel_aileron: 1.0,
+            travel_rudder: 1.0,
+            travel_throttle: 1.0,
+            tap: 1.0,
+            linger: 1.0,
+            release: 1.0,
+            fine: 1.0,
+        }
+    }
+}
+
+/// Every feel multiplier lives in the same band; the page steps inside it.
+const FEEL_MULT_MIN: f64 = 0.25;
+const FEEL_MULT_MAX: f64 = 4.0;
+
 /// All persisted settings. Lives as a resource so the menu can read and write
 /// it; changes are flushed through [`ConfigSink`].
 #[derive(Resource, Default, Debug, PartialEq)]
@@ -43,6 +87,9 @@ pub struct GameConfig {
     /// Index into [`crate::weather::TIME_LABELS`].
     pub time_level: usize,
     assists: HashMap<String, AssistConfig>,
+    /// Per-aircraft keyboard-feel multipliers. An id is present iff its feel
+    /// differs from the defaults anywhere.
+    feel: HashMap<String, FeelSetting>,
     /// Aircraft set to fly in arcade mode, by canonical id. An id is present iff
     /// arcade is on, so the realistic default is simply absence.
     arcade: HashSet<String>,
@@ -95,6 +142,44 @@ impl GameConfig {
     pub fn set_turn_coord(&mut self, id: &str, on: bool) {
         self.set_assist(id, |a| a.turn_coord = on);
     }
+
+    /// The keyboard-feel multipliers for an aircraft (all defaults when absent).
+    pub fn feel(&self, id: &str) -> FeelSetting {
+        self.feel
+            .get(aircraft_profile::normalized(id))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Adjust one feel knob, clamped into its band. The entry is dropped once
+    /// every multiplier is back at default, keeping the file minimal.
+    pub fn set_feel(&mut self, id: &str, change: impl FnOnce(&mut FeelSetting)) {
+        let id = aircraft_profile::normalized(id).to_owned();
+        let mut f = self.feel.get(&id).copied().unwrap_or_default();
+        change(&mut f);
+        for m in [
+            &mut f.travel_elevator,
+            &mut f.travel_aileron,
+            &mut f.travel_rudder,
+            &mut f.travel_throttle,
+            &mut f.tap,
+            &mut f.linger,
+            &mut f.release,
+            &mut f.fine,
+        ] {
+            *m = m.clamp(FEEL_MULT_MIN, FEEL_MULT_MAX);
+        }
+        if f == FeelSetting::default() {
+            self.feel.remove(&id);
+        } else {
+            self.feel.insert(id, f);
+        }
+    }
+
+    /// Wipe every feel knob back to the defaults (the page's RESTORE ALL).
+    pub fn reset_feel(&mut self, id: &str) {
+        self.feel.remove(aircraft_profile::normalized(id));
+    }
 }
 
 /// The boxed store, kept so the menu can save without knowing the backend.
@@ -143,6 +228,8 @@ fn apply_weather(config: Res<GameConfig>, mut weather: ResMut<Weather>) {
 const ARCADE_SECTION: &str = "arcade";
 /// Per-aircraft assist sections are written as `[c172p.assist]`.
 const ASSIST_SUFFIX: &str = ".assist";
+/// Per-aircraft keyboard-feel sections are written as `[c172p.feel]`.
+const FEEL_SUFFIX: &str = ".feel";
 
 fn truthy(value: &str) -> bool {
     matches!(value, "1" | "true" | "on")
@@ -172,6 +259,27 @@ fn serialize(config: &GameConfig) -> String {
         }
         if a.turn_coord {
             out.push_str("turn-coord = 1\n");
+        }
+    }
+
+    let mut feel_ids: Vec<&String> = config.feel.keys().collect();
+    feel_ids.sort();
+    for id in feel_ids {
+        let f = config.feel[id];
+        out.push_str(&format!("\n[{id}.feel]\n"));
+        for (key, m) in [
+            ("elev-travel", f.travel_elevator),
+            ("aile-travel", f.travel_aileron),
+            ("rudd-travel", f.travel_rudder),
+            ("thro-travel", f.travel_throttle),
+            ("tap", f.tap),
+            ("linger", f.linger),
+            ("return", f.release),
+            ("fine", f.fine),
+        ] {
+            if m != 1.0 {
+                out.push_str(&format!("{key} = {m:.3}\n"));
+            }
         }
     }
     out
@@ -229,6 +337,24 @@ fn parse(text: &str) -> GameConfig {
                     "bank-hold" => config.set_bank_hold(id, truthy(value)),
                     "turn-coord" => config.set_turn_coord(id, truthy(value)),
                     _ => {}
+                }
+            }
+            Some(s) if s.ends_with(FEEL_SUFFIX) => {
+                let id = &s[..s.len() - FEEL_SUFFIX.len()];
+                if let Ok(v) = value.parse::<f64>() {
+                    // Clamp at ingest too: a hand-edited file can hold junk.
+                    let v = v.clamp(FEEL_MULT_MIN, FEEL_MULT_MAX);
+                    config.set_feel(id, |f| match key {
+                        "elev-travel" => f.travel_elevator = v,
+                        "aile-travel" => f.travel_aileron = v,
+                        "rudd-travel" => f.travel_rudder = v,
+                        "thro-travel" => f.travel_throttle = v,
+                        "tap" => f.tap = v,
+                        "linger" => f.linger = v,
+                        "return" => f.release = v,
+                        "fine" => f.fine = v,
+                        _ => {}
+                    });
                 }
             }
             // Any other section is a keymap from an older build; bindings are
@@ -349,6 +475,46 @@ mod tests {
     fn arcade_section_normalizes_the_aircraft_id() {
         let cfg = parse("[arcade]\nah64d = 1\n");
         assert!(cfg.arcade("ah1s") && cfg.arcade("ah-64d"));
+    }
+
+    #[test]
+    fn feel_knobs_round_trip_per_aircraft() {
+        let mut config = GameConfig::default();
+        config.set_feel("c172p", |f| f.travel_elevator = 1.2);
+        config.set_feel("737", |f| {
+            f.linger = 1.5;
+            f.release = 0.8;
+        });
+        // An aircraft left untouched stores nothing.
+        assert_eq!(config.feel("ah1s"), FeelSetting::default());
+
+        let text = serialize(&config);
+        assert_eq!(parse(&text), config);
+        assert_eq!(serialize(&parse(&text)), text);
+        let again = parse(&text);
+        assert_eq!(again.feel("c172p").travel_elevator, 1.2);
+        assert_eq!(again.feel("737").linger, 1.5);
+
+        // Individual knobs read off a rotted id default cleanly.
+        assert_eq!(again.feel("c172p").tap, 1.0);
+    }
+
+    #[test]
+    fn feel_clamps_junk_at_ingest_and_erase_is_idempotent() {
+        let cfg = parse("[c172p.feel]\nelev-travel = 99\ntap = -5\njunk = 7\n");
+        let f = cfg.feel("c172p");
+        assert_eq!(f.travel_elevator, 4.0);
+        assert_eq!(f.tap, 0.25);
+
+        // Restoring every knob drops the section, and restoring an aircraft
+        // with no section is a quiet no-op.
+        let mut config = GameConfig::default();
+        config.set_feel("c172p", |f| f.travel_aileron = 2.0);
+        assert!(serialize(&config).contains("[c172p.feel]"));
+        config.set_feel("c172p", |f| f.travel_aileron = 1.0);
+        assert_eq!(config.feel("c172p"), FeelSetting::default());
+        assert!(!serialize(&config).contains("[c172p.feel]"));
+        config.reset_feel("c172p"); // was already default: fine
     }
 
     #[test]
