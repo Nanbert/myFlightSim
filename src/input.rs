@@ -44,10 +44,13 @@ const INPUT_HZ: f64 = 120.0;
 
 /// Keyboard feel for one aircraft.
 ///
-/// `LEGACY` is the original constant-rate ramp every non-C172 aircraft still
-/// uses. `C172` adds the keyboard-friendly behaviour the position indicators
-/// were designed around: a fixed nudge on a tap, a short hold before the ramp
-/// starts, a short linger after release, and a fine mode.
+/// `LEGACY` is the original constant-rate ramp every aircraft except the
+/// C172 and the 737 still uses. `C172` adds the keyboard-friendly behaviour
+/// the position indicators were designed around: a fixed nudge on a tap, a
+/// short hold before the ramp starts, a slow, lingering spring-back, and a
+/// fine mode. `JET` is the 737's same shape at transport-class slower rates:
+/// no tap (the profile's true rates), a short linger, and a gentle
+/// spring-back — the hydraulic feel, not the cable feel.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Feel {
     /// Fixed normalized nudge when a direction key is first pressed.
@@ -56,6 +59,9 @@ struct Feel {
     hold_delay: f64,
     /// Seconds the axis lingers at its current value after release.
     release_hold: f64,
+    /// Return-to-centre ramp as a fraction of the press rate: a real airframe
+    /// doesn't snap its surface back the instant the force is gone.
+    release_scale: f64,
     /// Scale applied to steps and rates while the fine key is held.
     fine_scale: f64,
     /// Whether the fine key does anything (C172 only for now).
@@ -67,6 +73,7 @@ impl Feel {
         tap_step: 0.0,
         hold_delay: 0.0,
         release_hold: 0.0,
+        release_scale: 1.0,
         fine_scale: 1.0,
         fine_enabled: false,
     };
@@ -74,9 +81,19 @@ impl Feel {
     const C172: Self = Self {
         tap_step: 0.04,
         hold_delay: 0.12,
-        release_hold: 0.10,
+        release_hold: 0.35,
+        release_scale: 0.8,
         fine_scale: 0.25,
         fine_enabled: true,
+    };
+
+    const JET: Self = Self {
+        tap_step: 0.0,
+        hold_delay: 0.0,
+        release_hold: 0.2,
+        release_scale: 0.8,
+        fine_scale: 1.0,
+        fine_enabled: false,
     };
 
     /// Per-axis tap sizes: rudder and trim are deliberately finer than pitch.
@@ -97,6 +114,31 @@ impl Feel {
             // Brakes should let go as soon as the key does.
             Action::BrakeLeft | Action::BrakeRight => 0.0,
             _ => self.release_hold,
+        }
+    }
+
+    /// Per-axis press rates the feel owns; `None` keeps the profile's rate.
+    /// This is where the "keyboard full travel" seconds live: the C172's
+    /// elevator is deliberately the slowest stick (a rotation is a ~1 s
+    /// pull, not a twitch), the roll a touch quicker, and the 737's
+    /// hydraulic surfaces the slowest of all.
+    fn rate_for(self, action: Action) -> Option<f64> {
+        match self {
+            Self::C172 => match action {
+                Action::Elevator => Some(1.0),  // full travel ≈ 1.0 s
+                Action::Aileron => Some(2.0),   // full travel ≈ 0.6 s
+                Action::Rudder => Some(1.5),    // full travel ≈ 0.8 s
+                Action::Throttle => Some(0.5),
+                Action::PitchTrim => Some(0.15),
+                _ => None,
+            },
+            Self::JET => match action {
+                Action::Elevator => Some(0.85), // full travel ≈ 1.2 s
+                Action::Aileron => Some(1.0),   // full travel ≈ 1.0 s
+                Action::Rudder => Some(1.5),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -193,7 +235,10 @@ impl Binding {
                     self.held_for = 0.0;
                     self.since_input += dt;
                     if self.since_input >= feel.release_for(self.action) {
-                        ramp(&mut self.value, 0.0, self.rate * dt);
+                        // The spring-back is gentler than the press — the
+                        // surface has inertia, and the keyboard player needs
+                        // the same grace after a tap.
+                        ramp(&mut self.value, 0.0, self.rate * feel.release_scale * dt);
                     }
                 }
                 self.last_dir = dir;
@@ -264,35 +309,22 @@ impl Bindings {
     /// Build the runtime control set for `id` from its profile's fixed bindings.
     pub fn for_aircraft(id: &str) -> Self {
         let p = aircraft_profile::profile(id);
-        let feel = if aircraft_profile::normalized(id) == "c172p" {
-            Feel::C172
-        } else {
-            Feel::LEGACY
+        let feel = match aircraft_profile::normalized(id) {
+            "c172p" => Feel::C172,
+            "737" => Feel::JET,
+            _ => Feel::LEGACY,
         };
         let list = p
             .bindings
             .iter()
             .map(|s| {
                 let (pos, neg) = (s.pos, s.neg);
-                // The C172's keyboard feel also slows the axes down a little:
-                // the old 3/s was tuned for twitchy jets and helicopters.
-                let rate = if feel.fine_enabled {
-                    match s.action {
-                        Action::Elevator | Action::Aileron => 2.5,
-                        Action::Rudder => 1.5,
-                        Action::Throttle => 0.5,
-                        Action::PitchTrim => 0.15,
-                        _ => s.rate,
-                    }
-                } else {
-                    s.rate
-                };
                 Binding {
                     action: s.action,
                     property: s.property,
                     pos,
                     neg,
-                    rate,
+                    rate: feel.rate_for(s.action).unwrap_or(s.rate),
                     axis: s.axis,
                     min: s.min,
                     max: s.max,
@@ -369,10 +401,13 @@ fn read_input(
     mut lights: ResMut<crate::lights::AircraftLights>,
 ) {
     let dt = time.delta_secs_f64();
-    // Fine control: C172 only for now. `Space` is free on the Cessna and is
-    // easier to hold with the thumb than Alt; Alt works everywhere too.
+    // Fine control: C172 only for now. `Space` is the throttle's own key —
+    // it must NOT arm fine mode while you feed power on a final (every tap
+    // elsewhere would quietly quarter itself, the mushy-then-snappy mess a
+    // line-up dies of). Shift and Alt are free everywhere and sit under the
+    // left hand anyway.
     let fine = bindings.feel.fine_enabled
-        && (keys.pressed(KeyCode::Space)
+        && (keys.pressed(KeyCode::ShiftLeft)
             || keys.pressed(KeyCode::AltLeft)
             || keys.pressed(KeyCode::AltRight));
     let feel = bindings.feel;
@@ -868,7 +903,7 @@ mod tests {
         }
         keys.release(KeyCode::KeyW);
 
-        // Inside the 100 ms linger the nudge is still there.
+        // Inside the 350 ms linger the nudge is still there.
         for _ in 0..3 {
             for b in &mut bindings.list {
                 b.update(&keys, dt, feel, false);
@@ -917,7 +952,7 @@ mod tests {
         let dt = 1.0 / 60.0;
 
         keys.press(KeyCode::KeyW);
-        for _ in 0..60 {
+        for _ in 0..72 {
             for b in &mut bindings.list {
                 b.update(&keys, dt, feel, false);
             }
@@ -925,6 +960,52 @@ mod tests {
 
         let value = axis_value(&bindings, Action::Elevator);
         assert!(value < -0.9, "holding W should reach full up: {value}");
+    }
+
+    #[test]
+    fn jet_feel_is_transport_slow_on_the_stick_and_lingers_after_release() {
+        let mut bindings = Bindings::for_aircraft("737");
+        let feel = bindings.feel;
+        assert_eq!(feel.tap_step, 0.0, "no tap nudge on the jet");
+        let mut keys = ButtonInput::<KeyCode>::default();
+        let dt = 1.0 / 60.0;
+
+        // W pitches up. One second of holding at 0.85/s: close to full, but
+        // far from the old 3/s twitch (0.33 s).
+        keys.press(KeyCode::KeyW);
+        for _ in 0..60 {
+            for b in &mut bindings.list {
+                b.update(&keys, dt, feel, false);
+            }
+        }
+        let held = axis_value(&bindings, Action::Elevator);
+        assert!(
+            (held + 0.85).abs() < 0.06,
+            "one second should be ~85% travel: {held}"
+        );
+
+        // The release: a short linger at the attained attitude, then a slow
+        // spring-back — no instant snap.
+        keys.release(KeyCode::KeyW);
+        for _ in 0..6 {
+            for b in &mut bindings.list {
+                b.update(&keys, dt, feel, false);
+            }
+        }
+        let lingering = axis_value(&bindings, Action::Elevator);
+        assert!(
+            (lingering - held).abs() < 0.02,
+            "the 200 ms linger should hold the deflect: {lingering}"
+        );
+
+        // Then it decays gently back to centre.
+        for _ in 0..150 {
+            for b in &mut bindings.list {
+                b.update(&keys, dt, feel, false);
+            }
+        }
+        let released = axis_value(&bindings, Action::Elevator);
+        assert!(released.abs() < 1e-6, "axis did not return: {released}");
     }
 
     #[test]
