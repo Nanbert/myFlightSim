@@ -23,7 +23,9 @@ pub mod hop;
 pub mod hud;
 pub mod ils;
 pub mod input;
+pub mod lesson_flow;
 pub mod landing;
+pub mod landing_lesson;
 pub mod lens;
 pub mod lights;
 pub mod map;
@@ -38,6 +40,7 @@ pub mod sim;
 pub mod sky;
 pub mod statue;
 pub mod takeoff;
+pub mod takeoff_lesson;
 pub mod taxi;
 pub mod tutorial;
 pub mod ui_theme;
@@ -105,10 +108,13 @@ pub fn run() {
         .add_plugins(aerodrome::AerodromePlugin)
         .add_plugins(landing::LandingPlugin)
         .add_plugins(takeoff::TakeoffPlugin)
+        .add_plugins(takeoff_lesson::TakeoffLessonPlugin)
+        .add_plugins(landing_lesson::LandingLessonPlugin)
         .add_plugins(approach::ApproachPlugin)
         .add_plugins(hop::HopPlugin)
         .add_plugins(checklist::ChecklistPlugin)
         .add_plugins(taxi::TaxiPlugin)
+        .add_plugins(lesson_flow::LessonFlowPlugin)
         .add_plugins(mission::MissionPlugin)
         .add_plugins(combat::CombatPlugin)
         .add_plugins(lights::LightsPlugin)

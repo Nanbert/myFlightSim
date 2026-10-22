@@ -3,9 +3,8 @@
 //!
 //! ```text
 //!        EXIT TO MENU ?
-//!   The flight stays where it is; OK discards it.
-//!   | OK - EXIT TO MENU |
-//!   [Enter] OK     [Esc] BACK
+//!   The flight stays where it is; Enter discards it.
+//!   [Enter] Back to menu        [Esc] Back to game
 //! ```
 //!
 //! Enter returns to the hangar (the same semantics the old direct Esc had:
@@ -31,15 +30,17 @@ struct CardLine {
     size: f32,
     /// Extra space above (blank-line equivalents, like the page rows).
     gap: f32,
-    /// Renders the current action row: lit bar + accent rail.
-    is_ok_row: bool,
 }
 
 pub struct PausePlugin;
 
 impl Plugin for PausePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, toggle_pause.run_if(flying))
+        app.add_systems(Update, toggle_pause.run_if(flying).run_if(
+            // A lesson popup pins the flight instead (see `lesson_flow`): its
+            // own rows answer the keys while the plate stands aside.
+            not(crate::lesson_flow::modal),
+        ))
             // Whatever way a flight ends, the flag never leaks.
             .add_systems(OnExit(AppState::Flying), clear_pause)
             // Development hook: `PAUSE=1` boots the flight paused (with the
@@ -113,6 +114,9 @@ fn spawn_card(commands: &mut Commands) {
             },
             // The scene dims under the card, same as the hangar's panel.
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+            // Same layering as the lesson popups: above the cockpit overlay
+            // and HUD panes (z 15-20), below combat/MCP (30+).
+            GlobalZIndex(25),
             PauseCard,
             DespawnOnExit(AppState::Flying),
         ))
@@ -145,34 +149,14 @@ fn spawn_card(commands: &mut Commands) {
         ))
         .id();
     for line in [
-        CardLine { text: "EXIT TO MENU ?", color: ui_theme::accent(), size: 26.0, gap: 0.0, is_ok_row: false },
-        CardLine { text: "The flight stays where it is; OK discards it.", color: ui_theme::dim(), size: 18.0, gap: 8.0, is_ok_row: false },
-        CardLine { text: "OK - EXIT TO MENU", color: ui_theme::text(), size: 22.0, gap: 18.0, is_ok_row: true },
-        CardLine { text: "[Enter] OK     [Esc] BACK", color: ui_theme::dim(), size: 16.0, gap: 18.0, is_ok_row: false },
+        CardLine { text: "EXIT TO MENU ?", color: ui_theme::accent(), size: 26.0, gap: 0.0 },
+        CardLine { text: "The flight stays where it is; Enter discards it.", color: ui_theme::dim(), size: 18.0, gap: 8.0 },
     ] {
-        // The OK row borrows the page cursor look: translucent bar + rail.
-        let (padding, border) = match line.is_ok_row {
-            true => (UiRect::all(Val::Px(8.0)), UiRect::left(Val::Px(3.0))),
-            false => (UiRect::ZERO, UiRect::ZERO),
-        };
         commands.spawn((
             Node {
                 margin: UiRect::top(Val::Px(line.gap)),
-                padding,
-                border,
-                border_radius: BorderRadius::all(Val::Px(4.0)),
                 ..default()
             },
-            BorderColor::all(if line.is_ok_row {
-                ui_theme::accent()
-            } else {
-                Color::NONE
-            }),
-            BackgroundColor(if line.is_ok_row {
-                ui_theme::accent_soft()
-            } else {
-                Color::NONE
-            }),
             Text::new(line.text.to_string()),
             TextFont {
                 font_size: FontSize::Px(line.size),
@@ -182,6 +166,9 @@ fn spawn_card(commands: &mut Commands) {
             ChildOf(card),
         ));
     }
+    // The hint footer, the same dim style as every other key row
+    // (`ui_theme::key_footer`): no lit bar, just the keys.
+    ui_theme::key_footer(commands, card, 20.0, &[("Enter", "Back to menu"), ("Esc", "Back to game")]);
 }
 
 /// There is no pause without a flight.

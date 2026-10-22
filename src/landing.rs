@@ -6,7 +6,9 @@
 //! landing and shows a small report card. Grading is per-aircraft: the club
 //! 172 wants a slow backtrack of a touchdown at 65 kt, the 737 gets approach
 //! numbers (a flap-scheduled Vref and a shallower rate budget). Mission
-//! flights are F-22 and have their own terrain.
+//! flights are F-22 and have their own terrain. The graded M3 landing lesson
+//! mutes this card — its own `landing_lesson` module samples the same stream
+//! into a centre-screen finals card.
 
 use bevy::prelude::*;
 
@@ -14,6 +16,7 @@ use crate::aerodrome::{on_runway, runway_along, runway_lateral};
 use crate::aircraft_profile;
 use crate::app_state::{unpaused, AppState};
 use crate::map::ActiveMap;
+use crate::mission::{ActiveLesson, Lesson};
 use crate::sim::{AircraftState, Sim};
 use crate::ui_theme;
 
@@ -107,6 +110,7 @@ fn update_landing(
     time: Res<Time>,
     sim: Res<Sim>,
     map: Res<ActiveMap>,
+    lesson: Res<ActiveLesson>,
     weather: Res<crate::weather::Weather>,
     aircraft: Res<AircraftState>,
     mut state: ResMut<LandingState>,
@@ -115,10 +119,14 @@ fn update_landing(
     let Ok((mut text, mut node)) = report.single_mut() else {
         return;
     };
+    // The graded M3 lesson owns the landing display: its landing_lesson
+    // samples the same wow edge into its own card at the centre of the
+    // screen, so the passive corner card mutes while the lesson flies.
     if !matches!(
         aircraft_profile::normalized(&sim.name),
         "c172p" | "737"
     ) || map.0.is_some()
+        || lesson.0 == Some(Lesson::Landing)
     {
         node.display = Display::None;
         return;
@@ -480,6 +488,7 @@ mod tests {
         app.insert_resource(crate::sim::Sim::new("c172p"));
         app.insert_resource(crate::map::ActiveMap::default());
         app.insert_resource(crate::weather::Weather::default());
+        app.insert_resource(crate::mission::ActiveLesson::default());
         app.insert_resource(super::LandingState::default());
         app.insert_resource(crate::sim::AircraftState {
             on_ground: true,
@@ -542,6 +551,7 @@ mod tests {
         app.insert_resource(crate::sim::Sim::new("c172p"));
         app.insert_resource(crate::map::ActiveMap::default());
         app.insert_resource(crate::weather::Weather::default());
+        app.insert_resource(crate::mission::ActiveLesson::default());
         app.insert_resource(super::LandingState::default());
         app.insert_resource(crate::sim::AircraftState {
             on_ground: true,

@@ -553,7 +553,16 @@ fn capture_render_pose(sim: Res<Sim>, mut rp: ResMut<RenderPose>) {
     rp.curr_heading = heading;
 }
 
-fn publish_state(mut sim: ResMut<Sim>, time: Res<Time>, mut state: ResMut<AircraftState>) {
+/// Publishes the FDM readouts onto [`AircraftState`] every unpaused frame.
+/// `pub(crate)`: the lesson-flow watcher orders against this — during a
+/// frozen popup nothing writes `AircraftState`, so the last write lingers at
+/// the failure spot and a stale read would re-arm that same FAIL (see
+/// `lesson_flow::watch`).
+pub(crate) fn publish_state(
+    mut sim: ResMut<Sim>,
+    time: Res<Time>,
+    mut state: ResMut<AircraftState>,
+) {
     let (pos, _, _) = sim.pose();
     // Split the borrow: the FDM is read through `m` while the HUD history
     // fields are written below, without either aliasing the other.
