@@ -72,16 +72,14 @@ pub const AIRCRAFT: [MenuAircraft; 4] = [
         frame_h: 6.0,
     },
 ];
-/// Top-row entries after the aircraft: global settings, then about.
-const EXTRA_TOP: [&str; 2] = ["SETTINGS", "ABOUT"];
+/// Top-row entries after the aircraft: global settings, then about, then exit.
+const EXTRA_TOP: [&str; 3] = ["SETTINGS", "ABOUT", "EXIT"];
 const SETTINGS_TOP: usize = AIRCRAFT.len();
 const ABOUT_TOP: usize = AIRCRAFT.len() + 1;
+const EXIT_TOP: usize = AIRCRAFT.len() + 2;
 const TOP_COUNT: usize = AIRCRAFT.len() + EXTRA_TOP.len();
 /// The F-22's row: the only aircraft with a mission entry.
 const F22_INDEX: usize = 1;
-/// Number of pooled sub-row slots (the widest sub-row list is the C172's:
-/// PLAY / TUTORIAL / INFO / SETTINGS / FEEL).
-const SUB_SLOTS: usize = 5;
 /// World spacing between parked showcase models (m).
 const SPACING: f32 = 48.0;
 
@@ -98,27 +96,24 @@ struct TopLabel(usize);
 #[derive(Component)]
 struct TopUnderline(usize);
 #[derive(Component)]
-struct SubLabel(usize);
-#[derive(Component)]
 struct PanelRoot;
+#[derive(Component)]
+struct CardRoot;
 /// The footer text cell's query filter, factored out to keep the signature
 /// readable.
-type FooterTextFilter = (With<FooterText>, Without<TopLabel>, Without<SubLabel>);
+type FooterTextFilter = (With<FooterText>, Without<TopLabel>, Without<TopUnderline>);
 /// The one-line key hints at the bottom of the hangar; text follows the state
 /// (browsing vs. an open page).
 #[derive(Component)]
 struct FooterText;
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-enum Focus {
-    #[default]
-    Top,
-    Sub,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
+    /// The aircraft's sub-menu card: PLAY / TUTORIAL / INFO / SETTINGS / FEEL.
+    Submenu,
     About,
+    /// The exit confirmation card.
+    Exit,
     /// How to fly the selected aircraft, in the sim and in reality.
     Tutorial,
     Info,
@@ -211,14 +206,13 @@ fn settings_row_count(id: &str) -> usize {
     has_flight_model_row(id) as usize + assist_row_count(id)
 }
 
-/// Where the cursor is: the highlighted top entry, the focus level, the sub
-/// index, and any full-page overlay that is open.
+/// Where the cursor is: the highlighted top entry, the submenu card cursor,
+/// and the stack of open page cards.
 #[derive(Resource, Default)]
 struct MenuSelection {
     top: usize,
-    focus: Focus,
     sub: usize,
-    page: Option<Page>,
+    page_stack: Vec<Page>,
 }
 
 impl MenuSelection {
@@ -232,16 +226,30 @@ impl MenuSelection {
         AIRCRAFT[self.top.min(AIRCRAFT.len() - 1)].id
     }
 
-    /// Keep the sub index valid for the current top entry; entries with no
-    /// sub-row can't hold sub focus.
-    fn clamp_sub(&mut self) {
-        let n = sub_items(self.top).len();
-        if n == 0 {
-            self.sub = 0;
-            self.focus = Focus::Top;
-        } else if self.sub >= n {
-            self.sub = n - 1;
+    /// The page on top of the stack, or `None` if no card is open.
+    fn current_page(&self) -> Option<&Page> {
+        self.page_stack.last()
+    }
+
+    /// Push a page onto the stack (open a sub-card).
+    fn push_page(&mut self, page: Page) {
+        self.page_stack.push(page);
+    }
+
+    /// Close the current card: pop if there's a card beneath, else clear.
+    fn close_card(&mut self) {
+        if self.page_stack.len() > 1 {
+            self.page_stack.pop();
+        } else {
+            self.page_stack.clear();
         }
+    }
+
+    /// Open the initial card for the current top entry (sub-menu, settings,
+    /// or about), resetting the submenu cursor.
+    fn open_initial(&mut self) {
+        self.sub = 0;
+        self.page_stack = vec![initial_page_for(self.top)];
     }
 }
 
@@ -285,6 +293,20 @@ fn sub_items(top: usize) -> &'static [&'static str] {
             _ => &["PLAY", "TUTORIAL", "INFO"],
         },
         _ => &[],
+    }
+}
+
+/// The initial card that auto-opens when a top entry is selected. Aircraft
+/// entries open their sub-menu card; SETTINGS/ABOUT/EXIT open their page directly.
+fn initial_page_for(top: usize) -> Page {
+    if top == SETTINGS_TOP {
+        Page::Global
+    } else if top == ABOUT_TOP {
+        Page::About
+    } else if top == EXIT_TOP {
+        Page::Exit
+    } else {
+        Page::Submenu
     }
 }
 
@@ -364,9 +386,8 @@ fn auto_start_aircraft(mut sel: ResMut<MenuSelection>, mut next: ResMut<NextStat
     let id = aircraft_profile::normalized(&id);
     if let Some(i) = AIRCRAFT.iter().position(|a| a.id == id) {
         sel.top = i;
-        sel.focus = Focus::Top;
         sel.sub = 0;
-        sel.page = None;
+        sel.page_stack.clear();
         next.set(AppState::Flying);
     }
 }
@@ -379,21 +400,44 @@ fn auto_open_page(mut sel: ResMut<MenuSelection>) {
         return;
     };
     let opened = match page.to_ascii_uppercase().as_str() {
-        "ABOUT" => Page::About,
+        "ABOUT" => {
+            sel.top = ABOUT_TOP;
+            Page::About
+        }
+        "GLOBAL" => {
+            sel.top = SETTINGS_TOP;
+            Page::Global
+        }
+        "EXIT" => {
+            sel.top = EXIT_TOP;
+            Page::Exit
+        }
         "TUTORIAL" => Page::Tutorial,
         "INFO" => Page::Info,
         "SETTINGS" => Page::Settings,
         "PLAY" => Page::Play,
         "MISSIONS" => Page::Missions,
-        "GLOBAL" => Page::Global,
         "FEEL" => Page::Feel,
         _ => return,
     };
-    sel.page = Some(opened);
+    // Sub-pages sit beneath the sub-menu card; initial cards stand alone.
+    if matches!(
+        opened,
+        Page::Tutorial
+            | Page::Info
+            | Page::Settings
+            | Page::Play
+            | Page::Missions
+            | Page::Feel
+    ) {
+        sel.page_stack = vec![Page::Submenu, opened];
+    } else {
+        sel.page_stack = vec![opened];
+    }
 }
 
 /// Select the aircraft matching the loaded sim (startup default or the one we
-/// just flew) and reset the cursor.
+/// just flew) and reset the cursor, opening its sub-menu card.
 fn enter_menu(mut sel: ResMut<MenuSelection>, sim: Res<Sim>) {
     let cur = if sim.name == "b737" {
         "737"
@@ -403,9 +447,8 @@ fn enter_menu(mut sel: ResMut<MenuSelection>, sim: Res<Sim>) {
     let top = AIRCRAFT.iter().position(|a| a.id == cur).unwrap_or(0);
     *sel = MenuSelection {
         top,
-        focus: Focus::Top,
         sub: 0,
-        page: None,
+        page_stack: vec![initial_page_for(top)],
     };
 }
 
@@ -465,9 +508,26 @@ fn setup_menu_ui(mut commands: Commands) {
             Node {
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(28.0),
+                padding: UiRect {
+                    left: Val::Px(32.0),
+                    right: Val::Px(32.0),
+                    top: Val::Px(16.0),
+                    bottom: Val::Px(14.0),
+                },
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(10.0)),
                 margin: UiRect::bottom(Val::Px(18.0)),
                 ..default()
             },
+            BorderColor::all(ui_theme::accent_soft()),
+            BackgroundColor(ui_theme::panel_bg()),
+            BoxShadow::new(
+                ui_theme::panel_glow(),
+                Val::ZERO,
+                Val::ZERO,
+                Val::Px(18.0),
+                Val::Px(56.0),
+            ),
             ChildOf(root),
         ))
         .id();
@@ -508,29 +568,6 @@ fn setup_menu_ui(mut commands: Commands) {
         ));
     }
 
-    let sub_row = commands
-        .spawn((
-            Node {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(36.0),
-                ..default()
-            },
-            ChildOf(root),
-        ))
-        .id();
-    for i in 0..SUB_SLOTS {
-        commands.spawn((
-            Text::new(""),
-            TextFont {
-                font_size: FontSize::Px(22.0),
-                ..default()
-            },
-            TextColor(Color::WHITE),
-            SubLabel(i),
-            ChildOf(sub_row),
-        ));
-    }
-
     // Full-page overlay, spawned after the rows so it draws on top of them.
     // A scene-darkening backdrop plus a centred card keeps the hangar frame
     // visible while the page reads; the rows dim out under it.
@@ -556,6 +593,7 @@ fn setup_menu_ui(mut commands: Commands) {
     // The card: rounded, hairline green border, backlit-glass glow.
     let card = commands
         .spawn((
+            CardRoot,
             Node {
                 flex_direction: FlexDirection::Column,
                 width: Val::Percent(92.0),
@@ -578,7 +616,7 @@ fn setup_menu_ui(mut commands: Commands) {
                 Val::ZERO,
                 Val::ZERO,
                 Val::Px(18.0),
-                Val::Px(56.0),
+                Val::Px(12.0),
             ),
             ChildOf(panel),
         ))
@@ -624,8 +662,8 @@ fn color_dim() -> Color {
     Color::srgb(0.42, 0.47, 0.58)
 }
 
-/// Repaint the labels and the panel from the current selection. The pooled
-/// sub-row slots are simply cleared when an entry has fewer items.
+/// Repaint the labels and the panel from the current selection. The panel
+/// shows the top of the page stack (sub-menu card, settings page, etc.).
 #[allow(clippy::too_many_arguments)]
 fn update_menu_ui(
     sel: Res<MenuSelection>,
@@ -637,10 +675,10 @@ fn update_menu_ui(
     aircraft_settings: Res<AircraftSettings>,
     feel_state: Res<FeelState>,
     tutorial_state: Res<TutorialState>,
-    mut tops: Query<(&TopLabel, &mut Text, &mut TextColor), Without<SubLabel>>,
-    mut bars: Query<(&TopUnderline, &mut BackgroundColor), Without<TopLabel>>,
-    mut subs: Query<(&SubLabel, &mut Text, &mut TextColor), Without<TopLabel>>,
-    mut panel: Query<&mut Node, With<PanelRoot>>,
+    mut tops: Query<(&TopLabel, &mut Text, &mut TextColor)>,
+    mut bars: Query<(&TopUnderline, &mut BackgroundColor)>,
+    mut panel: Query<&mut Node, (With<PanelRoot>, Without<CardRoot>)>,
+    mut card: Query<&mut Node, With<CardRoot>>,
     mut footer: Query<&mut Text, FooterTextFilter>,
     mut pages: ResMut<menu_page::PageLines>,
 ) {
@@ -653,8 +691,11 @@ fn update_menu_ui(
         if text.0 != labels[i] {
             text.0 = labels[i].to_string();
         }
+        // The top entry under a sub-menu card is "pointed at" (selected
+        // colour); a focused entry with its own card is accent.
+        let on_aircraft_card = matches!(sel.current_page(), Some(Page::Submenu));
         let want = if i == sel.top {
-            if sel.focus == Focus::Top {
+            if on_aircraft_card {
                 color_active()
             } else {
                 color_selected()
@@ -679,43 +720,39 @@ fn update_menu_ui(
         }
     }
 
-    let items = sub_items(sel.top);
-    for (SubLabel(i), mut text, mut color) in &mut subs {
-        let i = *i;
-        match items.get(i) {
-            Some(label) => {
-                if text.0 != **label {
-                    text.0 = (*label).to_string();
-                }
-                let want = if sel.focus == Focus::Sub && i == sel.sub {
-                    color_active()
-                } else if i == sel.sub {
-                    color_selected()
-                } else {
-                    color_dim()
-                };
-                if color.0 != want {
-                    color.0 = want;
-                }
-            }
-            None if !text.0.is_empty() => text.0.clear(),
-            None => {}
-        }
-    }
-
-    let want_display = if sel.page.is_some() {
-        Display::Flex
-    } else {
+    let want_display = if sel.page_stack.is_empty() {
         Display::None
+    } else {
+        Display::Flex
     };
     for mut node in &mut panel {
         if node.display != want_display {
             node.display = want_display;
         }
     }
+    // Narrow cards for EXIT, Submenu, and Settings pages; wider for content-heavy pages.
+    for mut node in &mut card {
+        let narrow = matches!(
+            sel.current_page(),
+            Some(Page::Exit)
+                | Some(Page::Submenu)
+                | Some(Page::Global)
+                | Some(Page::Settings)
+        );
+        let want_width = if narrow { Val::Px(450.0) } else { Val::Percent(92.0) };
+        let want_max = if narrow { Val::Px(450.0) } else { Val::Px(1180.0) };
+        if node.width != want_width {
+            node.width = want_width;
+        }
+        if node.max_width != want_max {
+            node.max_width = want_max;
+        }
+    }
     // The page renders as structured rows (menu_page module); freeform pages
     // fold their prose through `freeform`, which keeps the old text look.
-    pages.0 = match sel.page {
+    pages.0 = match sel.current_page().copied() {
+        Some(Page::Submenu) => submenu_lines(sel.top, sel.sub),
+        Some(Page::Exit) => exit_lines(),
         Some(Page::Global) => global_settings_lines(&weather, &settings),
         Some(Page::Play) => play_lines(sel.aircraft_id(), &play),
         Some(Page::Missions) => missions_lines(&missions),
@@ -731,18 +768,22 @@ fn update_menu_ui(
         None => Vec::new(),
     };
 
-    // The hint bar follows the focus level, so the player always sees what the
-    // next keypress does.
+    // The hint bar follows the current card, so the player always sees what
+    // the next keypress does.
     if let Ok(mut text) = footer.single_mut() {
-        let want = if let Some(Page::Feel) = sel.page {
-            "[LEFT/RIGHT] ADJUST   [R] RESET ROW   [ENTER]/[ESC] CLOSE"
-        } else if sel.page.is_some() {
-            "[LEFT/RIGHT] ADJUST   [ENTER] / [ESC] CLOSE"
-        } else {
-            match sel.focus {
-                Focus::Top => "[LEFT/RIGHT] BROWSE   [DOWN] MENU   [ENTER] SELECT",
-                Focus::Sub => "[LEFT/RIGHT] MOVE   [ENTER] OPEN   [ESC] BACK",
+        let want = match sel.current_page().copied() {
+            Some(Page::Feel) => "[,/.] ADJUST   [R] RESET   [ENTER]/[ESC] CLOSE   [LEFT/RIGHT] TAB",
+            Some(Page::Submenu) => "[UP/DOWN] SELECT   [ENTER] OPEN   [ESC] BACK   [LEFT/RIGHT] TAB",
+            Some(Page::Exit) => "[ENTER] EXIT   [ESC] BACK   [LEFT/RIGHT] TAB",
+            Some(Page::Play) | Some(Page::Missions) => {
+                "[UP/DOWN] SELECT   [ENTER] FLY   [ESC] BACK   [LEFT/RIGHT] TAB"
             }
+            Some(Page::Global) | Some(Page::Settings) => {
+                "[UP/DOWN] SELECT   [,/.] CHANGE   [ENTER]/[ESC] CLOSE   [LEFT/RIGHT] TAB"
+            }
+            Some(Page::About) | Some(Page::Info) => "[ENTER]/[ESC] CLOSE   [LEFT/RIGHT] TAB",
+            Some(Page::Tutorial) => "[UP/DOWN] SCROLL   [ENTER]/[ESC] CLOSE   [LEFT/RIGHT] TAB",
+            None => "[LEFT/RIGHT] BROWSE   [ENTER] OPEN",
         };
         if text.0 != want {
             text.0 = want.to_string();
@@ -780,7 +821,7 @@ fn aircraft_settings_lines(id: &str, config: &GameConfig, settings: &AircraftSet
     }
 
     out.push(PageLine::blank());
-    out.push(PageLine::hint("[Up/Down] select   [Left/Right] change   [Esc] close"));
+    out.push(PageLine::hint("[Up/Down] select   [,/.] change   [Esc] close   [Left/Right] tab"));
     out
 }
 
@@ -929,7 +970,7 @@ fn feel_lines(id: &str, config: &GameConfig, state: &FeelState) -> Vec<PageLine>
     }
     out.push(PageLine::blank());
     out.push(PageLine::hint(
-        "[Up/Down] select   [Left/Right] adjust   [R] reset row   [Enter/Esc] close",
+        "[Up/Down] select   [,/.] adjust   [R] reset row   [Enter/Esc] close   [Left/Right] tab",
     ));
     out
 }
@@ -957,7 +998,7 @@ fn global_settings_lines(weather: &Weather, settings: &SettingsState) -> Vec<Pag
     }
     out.push(PageLine::blank());
     out.push(PageLine::hint(
-        "[Up/Down] select   [Left/Right] change   [Enter] or [Esc] to close",
+        "[Up/Down] select   [,/.] change   [Enter] or [Esc] to close   [Left/Right] tab",
     ));
     out
 }
@@ -1006,6 +1047,32 @@ fn missions_lines(missions: &MissionState) -> Vec<PageLine> {
     out
 }
 
+/// The sub-menu card rows: the aircraft's playable options, one per row.
+fn submenu_lines(top: usize, sub: usize) -> Vec<PageLine> {
+    let items = sub_items(top);
+    let mut out = vec![
+        PageLine::heading(format!("{} - MENU", AIRCRAFT[top].label)),
+        PageLine::blank(),
+    ];
+    for (i, label) in items.iter().enumerate() {
+        out.push(PageLine::option(*label, "", i == sub));
+    }
+    out.push(PageLine::blank());
+    out.push(PageLine::hint("[Up/Down] select   [Enter] open   [Esc] back   [Left/Right] tab"));
+    out
+}
+
+/// The exit confirmation card rows: a single question and an OK button.
+fn exit_lines() -> Vec<PageLine> {
+    vec![
+        PageLine::heading("Are you sure to exit?"),
+        PageLine::blank(),
+        PageLine::option("OK", "", true),
+        PageLine::blank(),
+        PageLine::hint("[Enter] exit   [Esc] back"),
+    ]
+}
+
 fn page_text(page: Page, sel: &MenuSelection) -> String {
     let close = "\n\n[Enter] or [Esc] to close";
     let label = AIRCRAFT[sel.aircraft_index().unwrap_or(0)].label;
@@ -1024,7 +1091,7 @@ fn page_text(page: Page, sel: &MenuSelection) -> String {
         // and the `*_lines` builders, which need live state; `page_text` never
         // sees these.
         Page::Tutorial | Page::Settings | Page::Global | Page::Play | Page::Feel
-        | Page::Missions => {
+        | Page::Missions | Page::Submenu | Page::Exit => {
             String::new()
         }
     }
@@ -1050,11 +1117,72 @@ fn menu_input(
     let enter = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
     let esc = keys.just_pressed(KeyCode::Escape);
 
-    // A page swallows navigation. GLOBAL and SETTINGS are short option lists
-    // (Up/Down select, Left/Right change); the rest are read-only.
-    // Enter/Escape dismiss the read-only pages.
-    if let Some(page) = sel.page {
+    // A card is open: handle its navigation.
+    if let Some(page) = sel.current_page().copied() {
         match page {
+            // The sub-menu card: Up/Down picks an item, Enter opens the
+            // sub-page or launches a flight. Left/Right closes the card and
+            // switches tabs.
+            Page::Submenu => {
+                let items = sub_items(sel.top);
+                let n = items.len();
+                if n > 0 {
+                    let up = keys.just_pressed(KeyCode::ArrowUp);
+                    let down = keys.just_pressed(KeyCode::ArrowDown);
+                    sel.sub = cursor_nav(sel.sub, n, up, down);
+
+                    if enter {
+                        match items.get(sel.sub).copied() {
+                            // The F-22's FREE FLY launches straight onto the
+                            // runway with the realistic model.
+                            Some("FREE FLY") => {
+                                pending.0 = None;
+                                lesson_pending.0 = None;
+                                next.set(AppState::Flying);
+                                sel.page_stack.clear();
+                            }
+                            Some("MISSIONS") => {
+                                mission_state.row = 0;
+                                sel.push_page(Page::Missions);
+                            }
+                            Some("PLAY") => {
+                                play.row = 0;
+                                sel.push_page(Page::Play);
+                            }
+                            Some("TUTORIAL") => {
+                                tutorial_state.scroll = 0;
+                                sel.push_page(Page::Tutorial);
+                            }
+                            Some("INFO") => sel.push_page(Page::Info),
+                            Some("SETTINGS") => {
+                                aircraft_settings.row = 0;
+                                sel.push_page(Page::Settings);
+                            }
+                            Some("FEEL") => {
+                                feel_state.row = 0;
+                                sel.push_page(Page::Feel);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if esc {
+                        sel.close_card();
+                    }
+
+                    // Left/Right closes the card and switches tabs.
+                    if keys.just_pressed(KeyCode::ArrowLeft) {
+                        sel.close_card();
+                        sel.top = (sel.top + TOP_COUNT - 1) % TOP_COUNT;
+                        sel.open_initial();
+                    }
+                    if keys.just_pressed(KeyCode::ArrowRight) {
+                        sel.close_card();
+                        sel.top = (sel.top + 1) % TOP_COUNT;
+                        sel.open_initial();
+                    }
+                }
+            }
             // The start-state page: free flight or a graded lesson. Lessons
             // are C172-only, so other aircraft see just the free row.
             Page::Play => {
@@ -1075,10 +1203,22 @@ fn menu_input(
                     };
                     lesson_pending.0 = lesson;
                     next.set(AppState::Flying);
-                    sel.page = None;
+                    sel.page_stack.clear();
                 }
                 if esc {
-                    sel.page = None;
+                    sel.close_card();
+                }
+
+                // Left/Right closes the card and switches tabs.
+                if keys.just_pressed(KeyCode::ArrowLeft) {
+                    sel.close_card();
+                    sel.top = (sel.top + TOP_COUNT - 1) % TOP_COUNT;
+                    sel.open_initial();
+                }
+                if keys.just_pressed(KeyCode::ArrowRight) {
+                    sel.close_card();
+                    sel.top = (sel.top + 1) % TOP_COUNT;
+                    sel.open_initial();
                 }
             }
             // The F-22 mission list: pick an arcade combat map.
@@ -1091,14 +1231,27 @@ fn menu_input(
                     if let Some(map) = MapId::from_label(map::MAP_LABELS[mission_state.row]) {
                         pending.0 = Some(map);
                         next.set(AppState::Flying);
-                        sel.page = None;
+                        sel.page_stack.clear();
                     }
                 }
                 if esc {
-                    sel.page = None;
+                    sel.close_card();
+                }
+
+                // Left/Right closes the card and switches tabs.
+                if keys.just_pressed(KeyCode::ArrowLeft) {
+                    sel.close_card();
+                    sel.top = (sel.top + TOP_COUNT - 1) % TOP_COUNT;
+                    sel.open_initial();
+                }
+                if keys.just_pressed(KeyCode::ArrowRight) {
+                    sel.close_card();
+                    sel.top = (sel.top + 1) % TOP_COUNT;
+                    sel.open_initial();
                 }
             }
-            // GLOBAL is a settings list (Up/Down select, Left/Right change);
+            // GLOBAL is a settings list (Up/Down select, ,/. change); it is
+            // the initial card for the SETTINGS top entry.
             Page::Global => {
                 if keys.just_pressed(KeyCode::ArrowUp) {
                     settings.row = (settings.row + SETTINGS_ROWS - 1) % SETTINGS_ROWS;
@@ -1106,8 +1259,13 @@ fn menu_input(
                 if keys.just_pressed(KeyCode::ArrowDown) {
                     settings.row = (settings.row + 1) % SETTINGS_ROWS;
                 }
-                let dir = keys.just_pressed(KeyCode::ArrowRight) as isize
-                    - keys.just_pressed(KeyCode::ArrowLeft) as isize;
+                let dir = if keys.just_pressed(KeyCode::Comma) {
+                    -1
+                } else if keys.just_pressed(KeyCode::Period) {
+                    1
+                } else {
+                    0
+                };
                 if dir != 0 {
                     match settings.row {
                         0 => {
@@ -1130,7 +1288,19 @@ fn menu_input(
                     }
                 }
                 if enter || esc {
-                    sel.page = None;
+                    sel.close_card();
+                }
+
+                // Left/Right closes the card and switches tabs.
+                if keys.just_pressed(KeyCode::ArrowLeft) {
+                    sel.close_card();
+                    sel.top = (sel.top + TOP_COUNT - 1) % TOP_COUNT;
+                    sel.open_initial();
+                }
+                if keys.just_pressed(KeyCode::ArrowRight) {
+                    sel.close_card();
+                    sel.top = (sel.top + 1) % TOP_COUNT;
+                    sel.open_initial();
                 }
             }
             Page::Settings => {
@@ -1140,8 +1310,13 @@ fn menu_input(
                 let down = keys.just_pressed(KeyCode::ArrowDown);
                 aircraft_settings.row = cursor_nav(aircraft_settings.row, n, up, down);
 
-                let dir = keys.just_pressed(KeyCode::ArrowRight) as isize
-                    - keys.just_pressed(KeyCode::ArrowLeft) as isize;
+                let dir = if keys.just_pressed(KeyCode::Comma) {
+                    -1
+                } else if keys.just_pressed(KeyCode::Period) {
+                    1
+                } else {
+                    0
+                };
                 if dir != 0 {
                     let row = aircraft_settings.row;
                     if has_flight_model_row(id) && row == 0 {
@@ -1158,10 +1333,22 @@ fn menu_input(
                     config::save(&config, &sink);
                 }
                 if enter || esc {
-                    sel.page = None;
+                    sel.close_card();
+                }
+
+                // Left/Right closes the card and switches tabs.
+                if keys.just_pressed(KeyCode::ArrowLeft) {
+                    sel.close_card();
+                    sel.top = (sel.top + TOP_COUNT - 1) % TOP_COUNT;
+                    sel.open_initial();
+                }
+                if keys.just_pressed(KeyCode::ArrowRight) {
+                    sel.close_card();
+                    sel.top = (sel.top + 1) % TOP_COUNT;
+                    sel.open_initial();
                 }
             }
-            // The CONTROL FEEL page: Up/Down picks a knob, Left/Right steps
+            // The CONTROL FEEL page: Up/Down picks a knob, ,/. steps
             // its multiplier (persisted instantly), R resets the row; Enter
             // on RESTORE ALL wipes the aircraft's feel back to stock.
             Page::Feel => {
@@ -1170,8 +1357,13 @@ fn menu_input(
                 let n = rows.len();
                 feel_state.row = cursor_nav(feel_state.row, n,
                     keys.just_pressed(KeyCode::ArrowUp), keys.just_pressed(KeyCode::ArrowDown));
-                let dir = keys.just_pressed(KeyCode::ArrowRight) as isize
-                    - keys.just_pressed(KeyCode::ArrowLeft) as isize;
+                let dir = if keys.just_pressed(KeyCode::Comma) {
+                    -1
+                } else if keys.just_pressed(KeyCode::Period) {
+                    1
+                } else {
+                    0
+                };
                 if dir != 0 {
                     feel_change(&mut config, id, rows[feel_state.row % n].knob, dir);
                     config::save(&config, &sink);
@@ -1185,11 +1377,23 @@ fn menu_input(
                         config.reset_feel(id);
                         config::save(&config, &sink);
                     } else {
-                        sel.page = None;
+                        sel.close_card();
                     }
                 }
                 if esc {
-                    sel.page = None;
+                    sel.close_card();
+                }
+
+                // Left/Right closes the card and switches tabs.
+                if keys.just_pressed(KeyCode::ArrowLeft) {
+                    sel.close_card();
+                    sel.top = (sel.top + TOP_COUNT - 1) % TOP_COUNT;
+                    sel.open_initial();
+                }
+                if keys.just_pressed(KeyCode::ArrowRight) {
+                    sel.close_card();
+                    sel.top = (sel.top + 1) % TOP_COUNT;
+                    sel.open_initial();
                 }
             }
             Page::Tutorial => {
@@ -1216,105 +1420,75 @@ fn menu_input(
                 }
                 tutorial_state.scroll = scroll.min(max);
                 if enter || esc {
-                    sel.page = None;
+                    sel.close_card();
                     tutorial_state.scroll = 0;
+                }
+
+                // Left/Right closes the card and switches tabs.
+                if keys.just_pressed(KeyCode::ArrowLeft) {
+                    sel.close_card();
+                    sel.top = (sel.top + TOP_COUNT - 1) % TOP_COUNT;
+                    sel.open_initial();
+                }
+                if keys.just_pressed(KeyCode::ArrowRight) {
+                    sel.close_card();
+                    sel.top = (sel.top + 1) % TOP_COUNT;
+                    sel.open_initial();
+                }
+            }
+            Page::Exit => {
+                if enter {
+                    std::process::exit(0);
+                }
+                if esc {
+                    sel.close_card();
+                }
+
+                // Left/Right closes the card and switches tabs.
+                if keys.just_pressed(KeyCode::ArrowLeft) {
+                    sel.close_card();
+                    sel.top = (sel.top + TOP_COUNT - 1) % TOP_COUNT;
+                    sel.open_initial();
+                }
+                if keys.just_pressed(KeyCode::ArrowRight) {
+                    sel.close_card();
+                    sel.top = (sel.top + 1) % TOP_COUNT;
+                    sel.open_initial();
                 }
             }
             Page::Info | Page::About => {
                 if enter || esc {
-                    sel.page = None;
+                    sel.close_card();
+                }
+
+                // Left/Right closes the card and switches tabs.
+                if keys.just_pressed(KeyCode::ArrowLeft) {
+                    sel.close_card();
+                    sel.top = (sel.top + TOP_COUNT - 1) % TOP_COUNT;
+                    sel.open_initial();
+                }
+                if keys.just_pressed(KeyCode::ArrowRight) {
+                    sel.close_card();
+                    sel.top = (sel.top + 1) % TOP_COUNT;
+                    sel.open_initial();
                 }
             }
         }
         return;
     }
 
-    // Left/Right are context-sensitive: on the top row they switch entries, on
-    // the sub-row they move within it. (Up/Down own the focus change, so the
-    // sub-row needs the horizontal keys to be reachable at all.)
+    // No card open: top-row navigation. Left/Right switches entries and
+    // auto-opens the new entry's card; Enter re-opens the current card.
     if keys.just_pressed(KeyCode::ArrowLeft) {
-        match sel.focus {
-            Focus::Top => {
-                sel.top = (sel.top + TOP_COUNT - 1) % TOP_COUNT;
-                sel.clamp_sub();
-            }
-            Focus::Sub => {
-                let n = sub_items(sel.top).len();
-                if n > 0 {
-                    sel.sub = (sel.sub + n - 1) % n;
-                }
-            }
-        }
+        sel.top = (sel.top + TOP_COUNT - 1) % TOP_COUNT;
+        sel.open_initial();
     }
     if keys.just_pressed(KeyCode::ArrowRight) {
-        match sel.focus {
-            Focus::Top => {
-                sel.top = (sel.top + 1) % TOP_COUNT;
-                sel.clamp_sub();
-            }
-            Focus::Sub => {
-                let n = sub_items(sel.top).len();
-                if n > 0 {
-                    sel.sub = (sel.sub + 1) % n;
-                }
-            }
-        }
+        sel.top = (sel.top + 1) % TOP_COUNT;
+        sel.open_initial();
     }
-    if keys.just_pressed(KeyCode::ArrowDown) && !sub_items(sel.top).is_empty() {
-        sel.focus = Focus::Sub;
-    }
-    if keys.just_pressed(KeyCode::ArrowUp) {
-        sel.focus = Focus::Top;
-    }
-    if keys.just_pressed(KeyCode::Escape) && sel.focus == Focus::Sub {
-        sel.focus = Focus::Top;
-    }
-
     if enter {
-        match sel.focus {
-            Focus::Top => {
-                if sel.top == SETTINGS_TOP {
-                    sel.page = Some(Page::Global); // SETTINGS opens its page
-                } else if sel.top == ABOUT_TOP {
-                    sel.page = Some(Page::About); // ABOUT opens straight away
-                } else if !sub_items(sel.top).is_empty() {
-                    sel.focus = Focus::Sub;
-                }
-            }
-            Focus::Sub => match sub_items(sel.top).get(sel.sub).copied() {
-                // The F-22's FREE FLY launches straight onto the runway with
-                // the realistic model; no start page needed.
-                Some("FREE FLY") => {
-                    pending.0 = None;
-                    lesson_pending.0 = None;
-                    next.set(AppState::Flying);
-                }
-                Some("MISSIONS") => {
-                    mission_state.row = 0;
-                    sel.page = Some(Page::Missions);
-                }
-                Some("PLAY") => {
-                    // PLAY opens the start-state page: free flight plus the
-                    // C172's graded lesson missions.
-                    play.row = 0;
-                    sel.page = Some(Page::Play);
-                }
-                Some("TUTORIAL") => {
-                    tutorial_state.scroll = 0;
-                    sel.page = Some(Page::Tutorial);
-                }
-                Some("INFO") => sel.page = Some(Page::Info),
-                Some("SETTINGS") => {
-                    sel.page = Some(Page::Settings);
-                    aircraft_settings.row = 0;
-                }
-                Some("FEEL") => {
-                    sel.page = Some(Page::Feel);
-                    feel_state.row = 0;
-                }
-                _ => {}
-            },
-        }
+        sel.open_initial();
     }
 }
 
@@ -1495,9 +1669,9 @@ mod tests {
                 _ => assert!(!sub_items(top).contains(&"SETTINGS"), "{}", aircraft.id),
             }
         }
-        assert!(SUB_SLOTS >= sub_items(F22_INDEX).len());
         assert!(sub_items(SETTINGS_TOP).is_empty());
         assert!(sub_items(ABOUT_TOP).is_empty());
+        assert!(sub_items(EXIT_TOP).is_empty());
     }
 
     /// The lit `Option` row of a page model, for the given label.
