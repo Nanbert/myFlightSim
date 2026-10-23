@@ -177,7 +177,10 @@ pub struct AerodromePlugin;
 
 impl Plugin for AerodromePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        // Exists from boot so `Res<Airfield>` holders never see it missing;
+        // `spawn_aerodrome` refreshes it each flight.
+        app.init_resource::<Airfield>()
+            .add_systems(
             OnEnter(AppState::Flying),
             spawn_aerodrome.after(StartFlight),
         )
@@ -226,14 +229,17 @@ fn spawn_aerodrome(
     // 737's (short but usable) practice runway. Missions force the F-22
     // and build their own terrain.
     let n = aircraft_profile::normalized(&sim.name);
-    if !matches!(n, "c172p" | "737") || map.0.is_some() {
+    let home_field = matches!(n, "c172p" | "737") && map.0.is_none();
+
+    // Seed the spec on every flight: the systems holding `Res<Airfield>`
+    // fail outright when the resource is missing, so mission maps and
+    // home-less aircraft carry `None`, which consumers resolve to MYFS
+    // geometry.
+    let spec = crate::airfield::spec_for(&sim.name);
+    commands.insert_resource(Airfield(home_field.then_some(spec.clone())));
+    if !home_field {
         return;
     }
-
-    // Insert the active airfield spec so scoring / ILS / taxi modules can
-    // query geometry at runtime instead of reading MYFS constants.
-    let spec = crate::airfield::spec_for(&sim.name);
-    commands.insert_resource(Airfield(Some(spec.clone())));
 
     // The 737 flies ZSNM 石家庄正定 (4E, 3400 × 45 m); the C172 keeps MYFS.
     if n == "737" {
