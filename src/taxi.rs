@@ -18,6 +18,7 @@
 
 use bevy::prelude::*;
 
+use crate::airfield::AirfieldSpec;
 use crate::app_state::{unpaused, AppState};
 use crate::sim::AircraftState;
 
@@ -80,10 +81,10 @@ pub struct Taximeter {
 
 impl Taximeter {
     /// Feed one frame's readouts. Pure over its own state, for tests.
-    fn step(&mut self, on_ground: bool, gs_kts: f64, x: f32, z: f32, dt: f32) {
+    fn step(&mut self, on_ground: bool, gs_kts: f64, x: f32, z: f32, stand_z: f32, dt: f32) {
         let gs = gs_kts as f32;
         self.peak_gs = self.peak_gs.max(gs);
-        let dz = z - crate::aerodrome::STAND_Z;
+        let dz = z - stand_z;
         let in_corridor =
             on_ground && gs < TAXI_MAX_GS && x > X_MIN && x < X_MAX && dz.abs() < CORRIDOR_Z;
         self.offset = in_corridor.then_some(dz);
@@ -226,10 +227,10 @@ fn final_word(dist: f32, score: f32) -> &'static str {
 }
 
 impl HoldShort {
-    fn step(&mut self, on_ground: bool, gs_kts: f64, x: f32, z: f32, dt: f32) {
+    fn step(&mut self, on_ground: bool, gs_kts: f64, x: f32, z: f32, spec: &AirfieldSpec, dt: f32) {
         let gs = gs_kts as f32;
         self.peak_gs = self.peak_gs.max(gs);
-        let Some(off) = crate::aerodrome::connector_offset(x, z)
+        let Some(off) = spec.connector_offset(x, z)
             .filter(|_| on_ground && gs < TAXI_MAX_GS)
         else {
             // Off the connector (or over it at flight speed): prompt and card
@@ -243,7 +244,7 @@ impl HoldShort {
             self.rest_for = 0.0;
             return;
         };
-        let dist = x - crate::aerodrome::HOLD_LINE_X;
+        let dist = x - spec.hold_line_x;
         if gs > REST_MAX_GS {
             // Rolling — any taxi pace counts, creeping to the line included:
             // a stop that creeps its last metre still grades its whole leg.
@@ -367,17 +368,21 @@ fn update_hold(
     aircraft: Res<AircraftState>,
     map: Res<crate::map::ActiveMap>,
     lesson: Res<crate::mission::ActiveLesson>,
+    airfield: Res<crate::airfield::Airfield>,
     mut hs: ResMut<HoldShort>,
     mut card: Query<(&mut Text, &mut Node), With<HoldCard>>,
 ) {
     let Ok((mut text, mut node)) = card.single_mut() else {
         return;
     };
+    let default_spec = AirfieldSpec::myfs();
+    let spec = airfield.0.as_ref().unwrap_or(&default_spec);
     hs.step(
         aircraft.on_ground,
         aircraft.gs_kts,
         aircraft.pos.x,
         aircraft.pos.z,
+        spec,
         time.delta_secs(),
     );
     // `TAXI_DEBUG=1` prints the meter's verdict inputs twice a second, so a
@@ -389,11 +394,11 @@ fn update_hold(
             eprintln!(
                 "[taxi] band={:>4} dist={:+6.1} off={:+5.1} gs={:.2} ground={} \
                  rest={:.1} samples={} peak={:.1} done={} settled={}",
-                crate::aerodrome::connector_offset(aircraft.pos.x, aircraft.pos.z)
+                spec.connector_offset(aircraft.pos.x, aircraft.pos.z)
                     .map(|o| format!("{o:+.1}"))
                     .unwrap_or_else(|| "None".into()),
-                aircraft.pos.x - crate::aerodrome::HOLD_LINE_X,
-                crate::aerodrome::connector_offset(aircraft.pos.x, aircraft.pos.z)
+                aircraft.pos.x - spec.hold_line_x,
+                spec.connector_offset(aircraft.pos.x, aircraft.pos.z)
                     .unwrap_or(f32::NAN),
                 aircraft.gs_kts,
                 aircraft.on_ground,
@@ -447,17 +452,22 @@ fn update(
     time: Res<Time>,
     aircraft: Res<AircraftState>,
     map: Res<crate::map::ActiveMap>,
+    airfield: Res<crate::airfield::Airfield>,
     mut meter: ResMut<Taximeter>,
 ) {
     // Home-field guidance only: the stand lives in the aerodrome frame.
     if map.0.is_some() {
         return;
     }
+    let default_spec = AirfieldSpec::myfs();
+    let spec = airfield.0.as_ref().unwrap_or(&default_spec);
+    let stand_z = spec.stand.map(|s| s.z).unwrap_or(0.0);
     meter.step(
         aircraft.on_ground,
         aircraft.gs_kts,
         aircraft.pos.x,
         aircraft.pos.z,
+        stand_z,
         time.delta_secs(),
     );
 }
@@ -465,15 +475,20 @@ fn update(
 #[cfg(test)]
 mod tests {
     use super::{Grade, Taximeter};
+    use crate::airfield::AirfieldSpec;
 
     const DT: f32 = 1.0 / 60.0;
     // The stand's line sits at z = -150; corridor x runs 10..95.
     const LINE_Z: f32 = -150.0;
 
+    fn spec() -> AirfieldSpec {
+        AirfieldSpec::myfs()
+    }
+
     fn roll(meter: &mut Taximeter, secs: f32, gs: f64, x: f32, z: f32) {
         let steps = (secs / DT).ceil() as usize;
         for _ in 0..steps {
-            meter.step(true, gs, x, z, DT);
+            meter.step(true, gs, x, z, LINE_Z, DT);
         }
     }
 
@@ -542,8 +557,9 @@ mod tests {
 
     fn hs_roll(meter: &mut HoldShort, secs: f32, gs: f64, x: f32, z: f32) {
         let steps = (secs / DT).ceil() as usize;
+        let s = spec();
         for _ in 0..steps {
-            meter.step(true, gs, x, z, DT);
+            meter.step(true, gs, x, z, &s, DT);
         }
     }
 

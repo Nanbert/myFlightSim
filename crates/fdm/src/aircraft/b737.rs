@@ -241,23 +241,30 @@ const PRE: &[NamedFn] = &[GE_CD, GE_CL];
 /// Three fuel tanks: full left/right wing tanks (10000 lb each) and a part-full
 /// center tank (4000 lb). Positions are structural-frame inches, matching the
 /// `<tank>` locations.
+/// MTOW load: OEW 89 700 lb, 60 000 lb fuel (25 k wing × 2 + 10 k centre),
+/// 22 900 lb payload — 172 600 lb total, CG near [610, 0, -32].
 const POINTS: &[PointMass] = &[
     PointMass {
-        weight_lb: 10000.0,
+        weight_lb: 25000.0,
         pos_in: [520.0, -80.0, -18.0],
     },
     PointMass {
-        weight_lb: 10000.0,
+        weight_lb: 25000.0,
         pos_in: [520.0, 80.0, -18.0],
     },
     PointMass {
-        weight_lb: 4000.0,
+        weight_lb: 10000.0,
         pos_in: [480.0, 0.0, -18.0],
+    },
+    // Payload: passengers and baggage at the cabin CG.
+    PointMass {
+        weight_lb: 22900.0,
+        pos_in: [750.0, 0.0, -40.0],
     },
 ];
 
 const MASS: MassSpec = MassSpec {
-    empty_weight_lb: 83000.0,
+    empty_weight_lb: 89700.0,
     // `negated_crossproduct_inertia` in the model file flips the sign of ixz
     // that `Inertia::new` expects, hence -8000.
     empty_inertia: [562000.0, 1.473e6, 1.894e6, 0.0, -8000.0, 0.0],

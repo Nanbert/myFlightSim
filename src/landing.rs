@@ -12,7 +12,7 @@
 
 use bevy::prelude::*;
 
-use crate::aerodrome::{on_runway, runway_along, runway_lateral};
+use crate::airfield::AirfieldSpec;
 use crate::aircraft_profile;
 use crate::app_state::{unpaused, AppState};
 use crate::map::ActiveMap;
@@ -113,6 +113,7 @@ fn update_landing(
     lesson: Res<ActiveLesson>,
     weather: Res<crate::weather::Weather>,
     aircraft: Res<AircraftState>,
+    airfield: Res<crate::airfield::Airfield>,
     mut state: ResMut<LandingState>,
     mut report: Query<(&mut Text, &mut Node), With<LandingReport>>,
 ) {
@@ -133,6 +134,8 @@ fn update_landing(
     }
 
     let now = time.elapsed_secs();
+    let default_spec = AirfieldSpec::myfs();
+    let spec = airfield.0.as_ref().unwrap_or(&default_spec);
     // A lightly smoothed vertical speed: the raw FDM value is noisy at the
     // moment of contact.
     state.vs_smooth += (aircraft.vs_fpm - state.vs_smooth) * 0.18;
@@ -167,8 +170,8 @@ fn update_landing(
             state.touchdown = Some(Touchdown {
                 fpm: state.vs_smooth,
                 cas: speed,
-                lateral: runway_lateral(aircraft.pos.x) as f64,
-                along: runway_along(aircraft.heading_deg as f32, aircraft.pos.z) as f64,
+                lateral: spec.runway_lateral(aircraft.pos.x) as f64,
+                along: spec.runway_along(aircraft.heading_deg as f32, aircraft.pos.z) as f64,
                 bank: aircraft.roll_deg,
                 hdg_deg: aircraft.heading_deg,
                 xwind_kt: xwind as f64,
@@ -178,7 +181,7 @@ fn update_landing(
                 } else {
                     Kind::C172
                 },
-                on_runway: on_runway(aircraft.pos.x, aircraft.pos.z),
+                on_runway: spec.on_runway(aircraft.pos.x, aircraft.pos.z),
                 runway,
                 at: now,
             });
@@ -489,6 +492,7 @@ mod tests {
         app.insert_resource(crate::map::ActiveMap::default());
         app.insert_resource(crate::weather::Weather::default());
         app.insert_resource(crate::mission::ActiveLesson::default());
+        app.insert_resource(crate::airfield::Airfield(Some(crate::airfield::AirfieldSpec::myfs())));
         app.insert_resource(super::LandingState::default());
         app.insert_resource(crate::sim::AircraftState {
             on_ground: true,
@@ -552,6 +556,7 @@ mod tests {
         app.insert_resource(crate::map::ActiveMap::default());
         app.insert_resource(crate::weather::Weather::default());
         app.insert_resource(crate::mission::ActiveLesson::default());
+        app.insert_resource(crate::airfield::Airfield(Some(crate::airfield::AirfieldSpec::myfs())));
         app.insert_resource(super::LandingState::default());
         app.insert_resource(crate::sim::AircraftState {
             on_ground: true,

@@ -12,6 +12,7 @@
 use bevy::prelude::*;
 
 use crate::aircraft_profile;
+use crate::airfield::{Airfield};
 use crate::app_state::{unpaused, AppState};
 use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim, StartFlight};
@@ -32,7 +33,7 @@ pub const TAXI_X: f32 = 45.0;
 pub const TAXI_Z0: f32 = THRESHOLD_Z - 6.0;
 pub const TAXI_Z1: f32 = RUNWAY_END_Z + 36.0;
 const APRON_X: f32 = 111.0;
-const APRON_Z: f32 = -150.0;
+pub const APRON_Z: f32 = -150.0;
 /// The C172 ramp stand on the lead-in line: the `P` spawn parks at (75, -150)
 /// facing the taxiway. Far enough from the pump that spawning cold doesn't
 /// auto-fill the tanks, aligned with the connector at the apron's own level.
@@ -141,10 +142,11 @@ fn paint_designator(
     cz: f32,
     mx: f32,
     mz: f32,
+    scale: f32,
 ) {
-    let cell_w = 5.6_f32;
-    let cell_h = 12.0_f32;
-    let seg = 1.1_f32;
+    let cell_w = 5.6_f32 * scale;
+    let cell_h = 12.0_f32 * scale;
+    let seg = 1.1_f32 * scale;
     let (half_w, half_h) = (cell_w * 0.5, cell_h * 0.5);
     let step = cell_w + 1.2;
     let y = PAINT_Y + 0.002;
@@ -228,6 +230,17 @@ fn spawn_aerodrome(
         return;
     }
 
+    // Insert the active airfield spec so scoring / ILS / taxi modules can
+    // query geometry at runtime instead of reading MYFS constants.
+    let spec = crate::airfield::spec_for(&sim.name);
+    commands.insert_resource(Airfield(Some(spec.clone())));
+
+    // The 737 flies ZSNM 石家庄正定 (4E, 3400 × 45 m); the C172 keeps MYFS.
+    if n == "737" {
+        spawn_zsnm(&mut commands, &mut meshes, &mut materials);
+        return;
+    }
+
     let grass = materials.add(StandardMaterial {
         base_color: Color::srgb(0.13, 0.21, 0.11),
         perceptual_roughness: 1.0,
@@ -276,35 +289,35 @@ fn spawn_aerodrome(
     });
     let red = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 0.08, 0.03),
-        emissive: LinearRgba::rgb(4.0, 0.10, 0.02),
+        emissive: LinearRgba::new(4.0, 0.10, 0.02, 1.0),
         ..default()
     });
     let white = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 0.98, 0.90),
-        emissive: LinearRgba::rgb(4.0, 3.6, 2.8),
+        emissive: LinearRgba::new(4.0, 3.6, 2.8, 1.0),
         ..default()
     });
     let lamp = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 0.85, 0.55),
-        emissive: LinearRgba::rgb(3.0, 2.0, 0.8),
+        emissive: LinearRgba::new(3.0, 2.0, 0.8, 1.0),
         ..default()
     });
     let green = materials.add(StandardMaterial {
         base_color: Color::srgb(0.2, 1.0, 0.35),
-        emissive: LinearRgba::rgb(0.2, 3.0, 0.5),
+        emissive: LinearRgba::new(0.2, 3.0, 0.5, 1.0),
         ..default()
     });
     // Taxiway edge lights: quiet blue, a step dimmer than the runway stuff.
     let blue = materials.add(StandardMaterial {
         base_color: Color::srgb(0.2, 0.5, 1.0),
-        emissive: LinearRgba::rgb(0.25, 0.9, 3.4),
+        emissive: LinearRgba::new(0.25, 0.9, 3.4, 1.0),
         ..default()
     });
     // Threshold bars run a step dimmer than the beacon green: from five miles
     // out the five-bulb bar still blooms into one blob, just a smaller one.
     let green_dim = materials.add(StandardMaterial {
         base_color: Color::srgb(0.2, 1.0, 0.35),
-        emissive: LinearRgba::rgb(0.15, 2.0, 0.4),
+        emissive: LinearRgba::new(0.15, 2.0, 0.4, 1.0),
         ..default()
     });
 
@@ -351,7 +364,7 @@ fn spawn_aerodrome(
             &mut commands,
             &asphalt,
             TAXI_X - RUNWAY_WIDTH * 0.5,
-            12.0,
+            spec.connector_half_depth * 2.0,
             (TAXI_X + RUNWAY_WIDTH * 0.5) * 0.5,
             z,
             PAVE_Y + 0.003,
@@ -420,6 +433,7 @@ fn spawn_aerodrome(
         THRESHOLD_Z - 16.0,
         1.0,
         -1.0,
+        1.0,
     );
     paint_designator(
         &mut commands,
@@ -429,6 +443,7 @@ fn spawn_aerodrome(
         0.0,
         RUNWAY_END_Z + 16.0,
         -1.0,
+        1.0,
         1.0,
     );
     // Aiming points, 300 m in from each threshold.
@@ -510,7 +525,7 @@ fn spawn_aerodrome(
         // Runway holding position, FAA-ordered (see `HOLD_SOLID_XS`): double
         // solid on the holding side, double dashed over the runway's edge.
         for x in HOLD_SOLID_XS {
-            slab(&mut commands, &yellow, 0.3, 12.0, x, z, PAINT_Y + 0.004);
+            slab(&mut commands, &yellow, 0.3, spec.connector_half_depth * 2.0, x, z, PAINT_Y + 0.004);
         }
         for x in HOLD_DASHED_XS {
             for dz in [-4.0, 0.0, 4.0] {
@@ -647,7 +662,7 @@ fn spawn_aerodrome(
     let head_mesh = meshes.add(Cuboid::new(0.8, 0.35, 0.8));
     let flood_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 0.9, 0.7),
-        emissive: LinearRgba::rgb(6.0, 5.0, 3.2),
+        emissive: LinearRgba::new(6.0, 5.0, 3.2, 1.0),
         ..default()
     });
     for z in [APRON_Z + 30.0, APRON_Z - 60.0] {
@@ -853,6 +868,262 @@ pub fn on_pavement(x: f32, z: f32) -> bool {
         .iter()
         .any(|cz| (RUNWAY_WIDTH * 0.5..=TAXI_X).contains(&x) && (z - cz).abs() <= 6.0);
     on_runway(x, z) || on_taxiway || on_apron || on_connector
+}
+
+/// Spawn the ZSNM 石家庄正定 4E airfield for the 737: 3400 × 45 m runway,
+/// E-class parallel taxiway, rapid exits, ICAO-standard markings, ALSF-style
+/// approach lighting, PAPI both ends, terminal massing, and tower.
+fn spawn_zsnm(
+    mut commands: &mut Commands,
+    mut meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+) {
+    use crate::airfield::AirfieldSpec;
+    let spec = AirfieldSpec::zsnm();
+    let s = spec.mark_scale(); // ≈ 0.9842 for 45 m runway
+
+    // --- materials (same palette as MYFS) ---
+    let grass = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.13, 0.21, 0.11),
+        perceptual_roughness: 1.0,
+        ..default()
+    });
+    let asphalt = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.075, 0.082, 0.088),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+    let concrete = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.38, 0.38, 0.36),
+        perceptual_roughness: 0.85,
+        ..default()
+    });
+    let paint = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.92, 0.92, 0.86),
+        perceptual_roughness: 0.6,
+        ..default()
+    });
+    let yellow = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.88, 0.68, 0.12),
+        perceptual_roughness: 0.7,
+        ..default()
+    });
+    let metal = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.34, 0.37, 0.38),
+        perceptual_roughness: 0.65,
+        metallic: 0.35,
+        ..default()
+    });
+    let roof = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.20, 0.22, 0.23),
+        perceptual_roughness: 0.75,
+        ..default()
+    });
+    let dark = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.06, 0.07, 0.08),
+        perceptual_roughness: 0.9,
+        ..default()
+    });
+    let orange = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.85, 0.42, 0.08),
+        perceptual_roughness: 0.8,
+        ..default()
+    });
+    let red = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.08, 0.05),
+        emissive: LinearRgba::new(3.0, 0.10, 0.04, 1.0),
+        ..default()
+    });
+    let white = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.98, 0.88),
+        emissive: LinearRgba::new(3.0, 2.8, 2.2, 1.0),
+        ..default()
+    });
+    let lamp = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.85, 0.55),
+        emissive: LinearRgba::new(3.0, 2.0, 0.8, 1.0),
+        ..default()
+    });
+    let blue = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.2, 0.5, 1.0),
+        emissive: LinearRgba::new(0.25, 0.9, 3.4, 1.0),
+        ..default()
+    });
+    let green_dim = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.2, 1.0, 0.35),
+        emissive: LinearRgba::new(0.15, 2.0, 0.4, 1.0),
+        ..default()
+    });
+
+    // One unit plane, scaled per marking / pavement slab.
+    let quad = meshes.add(Plane3d::default().mesh().size(1.0, 1.0));
+    let slab = |commands: &mut Commands, mat: &Handle<StandardMaterial>, w: f32, l: f32, x: f32, z: f32, y: f32| {
+        commands.spawn((
+            Mesh3d(quad.clone()),
+            MeshMaterial3d(mat.clone()),
+            Transform::from_xyz(x, y, z).with_scale(Vec3::new(w, 1.0, l)),
+            DespawnOnExit(AppState::Flying),
+        ));
+    };
+
+    // --- ground, runway, taxiway, apron ---
+    slab(&mut commands, &grass, 50_000.0, 50_000.0, 0.0, 0.0, GRASS_Y);
+    slab(&mut commands, &asphalt, spec.rwy_width, spec.rwy_length, 0.0, spec.rwy_center_z(), PAVE_Y);
+    slab(&mut commands, &asphalt, spec.taxi_width, spec.taxi_z0 - spec.taxi_z1, spec.taxi_x, (spec.taxi_z0 + spec.taxi_z1) * 0.5, PAVE_Y + 0.004);
+    for c in &spec.connectors {
+        let stub_w = spec.taxi_x - spec.rwy_width * 0.5;
+        slab(&mut commands, &asphalt, stub_w, spec.connector_half_depth * 2.0, (spec.taxi_x + spec.rwy_width * 0.5) * 0.5, c.z, PAVE_Y + 0.003);
+    }
+    if let Some(ref apron) = spec.apron {
+        slab(&mut commands, &concrete, apron.width, apron.depth, apron.x, apron.z, PAVE_Y + 0.005);
+    }
+
+    // --- markings (ICAO Annex 14, scaled by `s`) ---
+    let edge_x = spec.rwy_width * 0.5 - 0.15 * s;
+    for x in [-edge_x, edge_x] {
+        slab(&mut commands, &paint, 0.3 * s, spec.rwy_length - 2.0, x, spec.rwy_center_z(), PAINT_Y);
+    }
+    let mut z = spec.threshold_z - 60.0;
+    while z > spec.rwy_end_z + 60.0 {
+        slab(&mut commands, &paint, 0.45 * s, 36.0 * s, 0.0, z, PAINT_Y);
+        z -= 60.0 * s;
+    }
+    let bar_w = 3.0 * s;
+    let bar_l = 45.0 * s;
+    let gap = (spec.rwy_width - 12.0 * bar_w) / 11.0;
+    for end in [spec.threshold_z, spec.rwy_end_z] {
+        let into = if end == spec.threshold_z { -1.0_f32 } else { 1.0 };
+        for i in 0..12 {
+            let x = -spec.rwy_width * 0.5 + bar_w * 0.5 + i as f32 * (bar_w + gap);
+            slab(&mut commands, &paint, bar_w, bar_l, x, end + into * (6.0 * s + bar_l * 0.5), PAINT_Y);
+        }
+    }
+    let dsc = 1.5_f32;
+    paint_designator(&mut commands, &quad, &paint, "36", 0.0, spec.threshold_z - 24.0, 1.0, -1.0, dsc);
+    paint_designator(&mut commands, &quad, &paint, "18", 0.0, spec.rwy_end_z + 24.0, -1.0, 1.0, dsc);
+    let aim_l = 45.0 * s;
+    let aim_w = 9.0 * s;
+    let aim_x = 15.3 * s;
+    for (end, into) in [(spec.threshold_z, -1.0_f32), (spec.rwy_end_z, 1.0_f32)] {
+        for x in [-aim_x, aim_x] {
+            slab(&mut commands, &paint, aim_w, aim_l, x, end + into * 311.0 * s, PAINT_Y);
+        }
+    }
+    let tdz_l = 22.5 * s;
+    let tdz_w = 1.8 * s;
+    let tdz_x = 11.7 * s;
+    for (end, into) in [(spec.threshold_z, -1.0_f32), (spec.rwy_end_z, 1.0_f32)] {
+        for d in [152.0_f32, 457.0, 610.0, 762.0] {
+            for x in [-tdz_x, tdz_x] {
+                slab(&mut commands, &paint, tdz_w, tdz_l, x, end + into * d * s, PAINT_Y);
+            }
+        }
+    }
+    slab(&mut commands, &yellow, 0.3 * s, spec.taxi_z0 - spec.taxi_z1, spec.taxi_x, (spec.taxi_z0 + spec.taxi_z1) * 0.5, PAINT_Y + 0.002);
+    for c in &spec.connectors {
+        let stub_len = spec.taxi_x - spec.rwy_width * 0.5;
+        slab(&mut commands, &yellow, stub_len, 0.3 * s, (spec.taxi_x + spec.rwy_width * 0.5) * 0.5, c.z, PAINT_Y + 0.002);
+        let hold_len = spec.connector_half_depth * 2.0;
+        for x in &spec.hold_solid_xs {
+            slab(&mut commands, &yellow, 0.3 * s, hold_len, *x, c.z, PAINT_Y + 0.004);
+        }
+        for x in &spec.hold_dashed_xs {
+            let dz_step = spec.connector_half_depth;
+            for dz in [-dz_step, 0.0, dz_step] {
+                slab(&mut commands, &yellow, 0.3 * s, 3.0 * s, *x, c.z + dz, PAINT_Y + 0.004);
+            }
+        }
+    }
+    if let Some(ref stand) = spec.stand {
+        slab(&mut commands, &yellow, 0.3 * s, 4.0, (spec.taxi_x + stand.x) * 0.5, stand.z, PAINT_Y + 0.002);
+        slab(&mut commands, &yellow, 0.3 * s, 6.0, stand.x, stand.z, PAINT_Y + 0.002);
+    }
+
+    // --- buildings ---
+    let box_mesh = |meshes: &mut ResMut<Assets<Mesh>>, w: f32, h: f32, d: f32| {
+        meshes.add(Cuboid::new(w, h, d))
+    };
+    let terminal = box_mesh(&mut meshes, 120.0, 25.0, 300.0);
+    let terminal_roof = box_mesh(&mut meshes, 130.0, 2.0, 310.0);
+    commands.spawn((Mesh3d(terminal), MeshMaterial3d(concrete.clone()), Transform::from_xyz(350.0, 12.5, -1500.0), DespawnOnExit(AppState::Flying)));
+    commands.spawn((Mesh3d(terminal_roof), MeshMaterial3d(roof.clone()), Transform::from_xyz(350.0, 26.0, -1500.0), DespawnOnExit(AppState::Flying)));
+    let pier = box_mesh(&mut meshes, 20.0, 15.0, 80.0);
+    for z in [-1500.0, -1350.0, -1650.0] {
+        commands.spawn((Mesh3d(pier.clone()), MeshMaterial3d(metal.clone()), Transform::from_xyz(270.0, 7.5, z), DespawnOnExit(AppState::Flying)));
+    }
+    let tower = box_mesh(&mut meshes, 8.0, 45.0, 8.0);
+    let tower_cab = box_mesh(&mut meshes, 14.0, 6.0, 14.0);
+    commands.spawn((Mesh3d(tower), MeshMaterial3d(concrete.clone()), Transform::from_xyz(180.0, 22.5, -1700.0), DespawnOnExit(AppState::Flying)));
+    commands.spawn((Mesh3d(tower_cab), MeshMaterial3d(dark.clone()), Transform::from_xyz(180.0, 48.0, -1700.0), DespawnOnExit(AppState::Flying)));
+    let cargo = box_mesh(&mut meshes, 100.0, 12.0, 60.0);
+    commands.spawn((Mesh3d(cargo), MeshMaterial3d(metal.clone()), Transform::from_xyz(350.0, 6.0, -1800.0), DespawnOnExit(AppState::Flying)));
+    let maint = box_mesh(&mut meshes, 60.0, 10.0, 40.0);
+    commands.spawn((Mesh3d(maint), MeshMaterial3d(metal.clone()), Transform::from_xyz(180.0, 5.0, -1200.0), DespawnOnExit(AppState::Flying)));
+
+    // --- runway edge lights: 45.72 m spacing ---
+    let light_mesh = meshes.add(Cuboid::new(0.28, 0.28, 0.28));
+    for x in [-edge_x, edge_x] {
+        let mut z = spec.threshold_z - 45.72;
+        while z > spec.rwy_end_z + 45.72 {
+            commands.spawn((Mesh3d(light_mesh.clone()), MeshMaterial3d(lamp.clone()), Transform::from_xyz(x, 0.22, z), DespawnOnExit(AppState::Flying)));
+            z -= 45.72;
+        }
+    }
+    // Threshold lights: 5 green per end.
+    for z in [spec.threshold_z, spec.rwy_end_z] {
+        for i in 0..5usize {
+            commands.spawn((Mesh3d(light_mesh.clone()), MeshMaterial3d(green_dim.clone()), Transform::from_xyz(-18.0 + i as f32 * 9.0, 0.22, z), DespawnOnExit(AppState::Flying)));
+        }
+    }
+    // Runway end lights: 5 red per end.
+    for z in [spec.threshold_z + 4.0, spec.rwy_end_z - 4.0] {
+        for i in 0..5usize {
+            commands.spawn((Mesh3d(light_mesh.clone()), MeshMaterial3d(red.clone()), Transform::from_xyz(-18.0 + i as f32 * 9.0, 0.22, z), DespawnOnExit(AppState::Flying)));
+        }
+    }
+    // Taxiway edge lights: blue, 30 m spacing.
+    for x in [spec.taxi_x - spec.taxi_width * 0.5, spec.taxi_x + spec.taxi_width * 0.5] {
+        let mut z = spec.taxi_z1 + 15.0;
+        while z < spec.taxi_z0 {
+            commands.spawn((Mesh3d(light_mesh.clone()), MeshMaterial3d(blue.clone()), Transform::from_xyz(x, 0.20, z), DespawnOnExit(AppState::Flying)));
+            z += 30.0;
+        }
+    }
+    // Apron floodlights.
+    let pole_mesh = meshes.add(Cuboid::new(0.15, 8.0, 0.15));
+    let head_mesh = meshes.add(Cuboid::new(1.2, 0.5, 1.2));
+    let flood_mat = materials.add(StandardMaterial { base_color: Color::srgb(1.0, 0.9, 0.7), emissive: LinearRgba::new(6.0, 5.0, 3.2, 1.0), ..default() });
+    for z in [-1400.0, -1600.0] {
+        commands.spawn((Mesh3d(pole_mesh.clone()), MeshMaterial3d(concrete.clone()), Transform::from_xyz(200.0, 4.0, z), DespawnOnExit(AppState::Flying)));
+        commands.spawn((Mesh3d(head_mesh.clone()), MeshMaterial3d(flood_mat.clone()), Transform::from_xyz(200.0, 8.2, z), DespawnOnExit(AppState::Flying)));
+        commands.spawn((PointLight { color: Color::srgb(1.0, 0.92, 0.78), intensity: 20_000.0, range: 120.0, ..default() }, Transform::from_xyz(200.0, 8.0, z)));
+    }
+    // Tower beacon.
+    let beacon_mesh = meshes.add(Sphere::new(0.3));
+    commands.spawn((Mesh3d(beacon_mesh.clone()), MeshMaterial3d(red.clone()), Transform::from_xyz(150.0, 52.0, -1700.0), DespawnOnExit(AppState::Flying)));
+
+    // --- PAPI, both directions ---
+    let papi_housing = meshes.add(Cuboid::new(0.9, 0.5, 0.5));
+    let papi_lamp = meshes.add(Cuboid::new(0.7, 0.35, 0.12));
+    let papi_z36 = spec.threshold_z - 300.0;
+    let papi_z18 = spec.rwy_end_z + 300.0;
+    for (i, angle) in PAPI_ANGLES.iter().enumerate() {
+        let x = -35.0 - i as f32 * 9.5;
+        commands.spawn((Mesh3d(papi_housing.clone()), MeshMaterial3d(dark.clone()), Transform::from_xyz(x, 0.25, papi_z36), DespawnOnExit(AppState::Flying)));
+        commands.spawn((PapiLight { angle_deg: *angle, side: PapiSide::South, z: papi_z36 }, Mesh3d(papi_lamp.clone()), MeshMaterial3d(red.clone()), Transform::from_xyz(x, 0.28, papi_z36 + 0.30), DespawnOnExit(AppState::Flying)));
+    }
+    for (i, angle) in PAPI_ANGLES.iter().enumerate() {
+        let x = 35.0 + (3 - i) as f32 * 9.5;
+        commands.spawn((Mesh3d(papi_housing.clone()), MeshMaterial3d(dark.clone()), Transform::from_xyz(x, 0.25, papi_z18), DespawnOnExit(AppState::Flying)));
+        commands.spawn((PapiLight { angle_deg: *angle, side: PapiSide::North, z: papi_z18 }, Mesh3d(papi_lamp.clone()), MeshMaterial3d(red.clone()), Transform::from_xyz(x, 0.28, papi_z18 - 0.30), DespawnOnExit(AppState::Flying)));
+    }
+    commands.insert_resource(PapiMats { red, white });
+
+    // --- windsock ---
+    let pole = meshes.add(Cylinder::new(0.12, 6.0));
+    let sock = meshes.add(Cone::new(0.50, 2.6));
+    commands.spawn((Mesh3d(pole), MeshMaterial3d(metal.clone()), Transform::from_xyz(28.0, 3.0, -60.0), DespawnOnExit(AppState::Flying)));
+    commands.spawn((Windsock, Mesh3d(sock), MeshMaterial3d(orange), Transform::from_xyz(28.0, 6.2, -58.7).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)), DespawnOnExit(AppState::Flying)));
 }
 
 #[cfg(test)]

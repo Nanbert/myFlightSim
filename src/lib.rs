@@ -5,6 +5,7 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
 pub mod aerodrome;
+pub mod airfield;
 pub mod aircraft_profile;
 pub mod app_state;
 pub mod approach;

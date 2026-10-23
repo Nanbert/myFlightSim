@@ -17,7 +17,7 @@
 
 use bevy::prelude::*;
 
-use crate::aerodrome::{connector_offset, on_pavement, HOLD_LINE_X};
+use crate::airfield::AirfieldSpec;
 use crate::app_state::{flying, AppState, Paused};
 use crate::mission::{ActiveLesson, Lesson, PendingLesson};
 use crate::sim::AircraftState;
@@ -102,6 +102,7 @@ pub(crate) fn watch(
     keys: Res<ButtonInput<KeyCode>>,
     aircraft: Res<AircraftState>,
     map: Res<crate::map::ActiveMap>,
+    airfield: Res<crate::airfield::Airfield>,
     lesson: Res<ActiveLesson>,
     mut hs: ResMut<HoldShort>,
     mut tl: ResMut<crate::takeoff_lesson::TakeoffLesson>,
@@ -156,11 +157,13 @@ pub(crate) fn watch(
         hide_prompt(&mut prompt);
         return;
     }
+    let default_spec = AirfieldSpec::myfs();
+    let spec = airfield.0.as_ref().unwrap_or(&default_spec);
     // --- triggers. A popup's despawn is one command flush behind
     // `tear_down`, so a lingering entity means a card is still on screen
     // this frame: never double-open underneath it.
     let no_popup = popup.is_empty();
-    let off_pavement = aircraft.on_ground && !on_pavement(aircraft.pos.x, aircraft.pos.z);
+    let off_pavement = aircraft.on_ground && !spec.on_pavement(aircraft.pos.x, aircraft.pos.z);
     if no_popup && off_pavement {
         let reason = if matches!(lesson, Lesson::Landing) {
             FAIL_OFF_RUNWAY
@@ -176,8 +179,8 @@ pub(crate) fn watch(
         && matches!(lesson, crate::mission::Lesson::Taxi)
         && hs.done.is_none()
         && aircraft.on_ground
-        && connector_offset(aircraft.pos.x, aircraft.pos.z).is_some()
-        && aircraft.pos.x < HOLD_LINE_X - NOSE_LEAD
+        && spec.connector_offset(aircraft.pos.x, aircraft.pos.z).is_some()
+        && aircraft.pos.x < spec.hold_line_x - NOSE_LEAD
     {
         open_fail(&mut flow, &mut commands, FAIL_INCURSION);
         return;

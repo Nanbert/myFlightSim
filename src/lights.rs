@@ -118,22 +118,22 @@ fn spawn_aircraft_lights(
     let bulb = meshes.add(Sphere::new(0.08));
     let red = materials.add(StandardMaterial {
         base_color: Color::srgb(0.6, 0.04, 0.02),
-        emissive: LinearRgba::rgb(5.0, 0.2, 0.06),
+        emissive: LinearRgba::new(5.0, 0.2, 0.06, 1.0),
         ..default()
     });
     let green = materials.add(StandardMaterial {
         base_color: Color::srgb(0.03, 0.5, 0.1),
-        emissive: LinearRgba::rgb(0.2, 5.0, 0.9),
+        emissive: LinearRgba::new(0.2, 5.0, 0.9, 1.0),
         ..default()
     });
     let white = materials.add(StandardMaterial {
         base_color: Color::srgb(0.9, 0.9, 0.85),
-        emissive: LinearRgba::rgb(4.5, 4.4, 4.0),
+        emissive: LinearRgba::new(4.5, 4.4, 4.0, 1.0),
         ..default()
     });
     let beacon_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.8, 0.05, 0.02),
-        emissive: LinearRgba::rgb(6.0, 0.15, 0.05),
+        emissive: LinearRgba::new(6.0, 0.15, 0.05, 1.0),
         ..default()
     });
     commands.entity(root).with_children(|parent| {

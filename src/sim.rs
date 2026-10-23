@@ -133,9 +133,11 @@ impl Sim {
     pub fn reset_stand(&mut self) {
         self.model.set("ic/vc-kts", 0.0);
         self.model.set("ic/h-sl-ft", self.model.rest_h_ft());
-        self.model.set("ic/psi-true-deg", 270.0);
-        let north_m = crate::aerodrome::STAND_Z as f64;
-        let east_m = crate::aerodrome::STAND_X as f64;
+        let spec = crate::airfield::spec_for(&self.name);
+        let stand = spec.stand.expect("airfield has a stand");
+        self.model.set("ic/psi-true-deg", stand.heading as f64);
+        let north_m = stand.z as f64;
+        let east_m = stand.x as f64;
         self.model
             .set("ic/lat-gc-deg", -(north_m / 0.3048) / fdm::FT_PER_DEG_LAT);
         self.model
@@ -493,6 +495,7 @@ fn advance_fdm(
     mcp: Res<Mcp>,
     mut ap: ResMut<Autopilot>,
     mut ils_res: ResMut<crate::ils::Ils>,
+    airfield: Res<crate::airfield::Airfield>,
     map: Res<crate::map::ActiveMap>,
     weather: Res<crate::weather::Weather>,
 ) {
@@ -525,7 +528,9 @@ fn advance_fdm(
 
     // The autothrottle and the engaged modes write their own channels after
     // the bindings, so the automation wins the step.
-    let ils = crate::ils::compute(&sim);
+    let default_spec = crate::airfield::AirfieldSpec::myfs();
+    let spec = airfield.0.as_ref().unwrap_or(&default_spec);
+    let ils = crate::ils::compute(&sim, spec);
     *ils_res = ils;
     crate::autopilot::advance(&mut *sim.model, &mcp, &mut ap, DT, &ils);
 
@@ -727,7 +732,8 @@ mod tests {
         let mut sim = Sim::new("737");
         sim.reset_final();
         let (pos, _, _) = sim.pose();
-        let ils = crate::ils::compute(&sim);
+        let spec = crate::airfield::AirfieldSpec::zsnm();
+        let ils = crate::ils::compute(&sim, &spec);
         assert!(
             ils.available,
             "should be inside the approach gate {ils:?} pos={pos:?}"
@@ -742,7 +748,7 @@ mod tests {
         );
         // And the runway reset is *behind* both antennas, not on scale.
         sim.reset_ground();
-        assert!(!crate::ils::compute(&sim).available);
+        assert!(!crate::ils::compute(&sim, &spec).available);
     }
 
     #[test]
@@ -750,7 +756,8 @@ mod tests {
         std::env::set_var("FDM_BACKEND", "rust");
         let mut sim = Sim::new("c172p");
         sim.reset_final_c172();
-        let ils = crate::ils::compute(&sim);
+        let spec = crate::airfield::AirfieldSpec::myfs();
+        let ils = crate::ils::compute(&sim, &spec);
         assert!(ils.available, "should be inside the approach gate {ils:?}");
         assert!(ils.loc_dev_deg.abs() < 1.0, "{:?}", ils.loc_dev_deg);
         // 640 ft against a beam 2 NM out (~640 ft): riding the beam.

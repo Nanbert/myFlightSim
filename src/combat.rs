@@ -466,7 +466,7 @@ fn combat_assets(meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>)
             base_color: Color::srgb(0.42, 0.10, 0.09),
             metallic: 0.3,
             perceptual_roughness: 0.6,
-            emissive: LinearRgba::rgb(0.05, 0.01, 0.0),
+            emissive: LinearRgba::new(0.05, 0.01, 0.0, 1.0),
             ..default()
         }),
         // Escorts read hotter than the drones: they are the ones that shoot.
@@ -474,7 +474,7 @@ fn combat_assets(meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>)
             base_color: Color::srgb(0.62, 0.22, 0.06),
             metallic: 0.35,
             perceptual_roughness: 0.5,
-            emissive: LinearRgba::rgb(0.12, 0.02, 0.0),
+            emissive: LinearRgba::new(0.12, 0.02, 0.0, 1.0),
             ..default()
         }),
         missile_mesh: meshes.add(Cuboid::new(0.16, 0.16, 2.0)),
@@ -494,19 +494,19 @@ fn combat_assets(meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>)
         tracer_mesh: meshes.add(Cuboid::new(0.18, 0.18, 5.0)),
         tracer_mat: mats.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.72, 0.25),
-            emissive: LinearRgba::rgb(6.0, 3.0, 0.4),
+            emissive: LinearRgba::new(6.0, 3.0, 0.4, 1.0),
             ..default()
         }),
         boom_mesh: meshes.add(Sphere::new(1.0)),
         boom_mat: mats.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.55, 0.12),
-            emissive: LinearRgba::rgb(8.0, 3.2, 0.5),
+            emissive: LinearRgba::new(8.0, 3.2, 0.5, 1.0),
             ..default()
         }),
         flare_mesh: meshes.add(Sphere::new(0.35)),
         flare_mat: mats.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.9, 0.6),
-            emissive: LinearRgba::rgb(10.0, 6.0, 1.5),
+            emissive: LinearRgba::new(10.0, 6.0, 1.5, 1.0),
             ..default()
         }),
         // Elongated sphere: reads as a hot exhaust bead at any range, with the
@@ -514,14 +514,14 @@ fn combat_assets(meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>)
         flame_mesh: meshes.add(Sphere::new(0.5)),
         flame_mat: mats.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.82, 0.45),
-            emissive: LinearRgba::rgb(14.0, 7.0, 1.6),
+            emissive: LinearRgba::new(14.0, 7.0, 1.6, 1.0),
             ..default()
         }),
         smoke_mesh: meshes.add(Sphere::new(1.0)),
         flash_mesh: meshes.add(Sphere::new(0.22)),
         flash_mat: mats.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.86, 0.55),
-            emissive: LinearRgba::rgb(24.0, 13.0, 3.5),
+            emissive: LinearRgba::new(24.0, 13.0, 3.5, 1.0),
             ..default()
         }),
     }

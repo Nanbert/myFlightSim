@@ -1598,6 +1598,7 @@ fn update_hud(
     bindings: Res<Bindings>,
     ap: Res<Autopilot>,
     map: Res<crate::map::ActiveMap>,
+    airfield: Res<crate::airfield::Airfield>,
     lesson: Res<crate::mission::ActiveLesson>,
     taxi: Res<crate::taxi::Taximeter>,
     mut hints: Local<(String, (bool, bool, bool, bool))>,
@@ -1642,11 +1643,16 @@ fn update_hud(
     // mission appends its tag so the player knows which spawn they re-flew.
     let place = match map.0 {
         Some(m) => format!("   [{}]", m.label()),
-        None if aircraft_profile::normalized(&sim.name) == "c172p" => match lesson.0 {
-            Some(lesson) => format!("   [MYFS RWY 36 | {}]", lesson.label()),
-            None => "   [MYFS RWY 36]".to_owned(),
-        },
-        None => String::new(),
+        None => {
+            let default_spec = crate::airfield::AirfieldSpec::myfs();
+            let spec = airfield.0.as_ref().unwrap_or(&default_spec);
+            match lesson.0 {
+                Some(lesson) => {
+                    format!("   [{} RWY {} | {}]", spec.icao, spec.rwy_id, lesson.label())
+                }
+                None => format!("   [{} RWY {}]", spec.icao, spec.rwy_id),
+            }
+        }
     };
 
     // Instrument readings — what a real panel shows (RPM, not "throttle %").

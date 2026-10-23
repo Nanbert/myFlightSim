@@ -20,7 +20,7 @@
 
 use bevy::prelude::*;
 
-use crate::aerodrome::{RUNWAY_END_Z, THRESHOLD_Z};
+use crate::airfield::AirfieldSpec;
 use crate::sim::Sim;
 
 /// Glideslope angle shared by both runways.
@@ -79,9 +79,9 @@ impl Default for Ils {
     }
 }
 
-/// World position -> deviation, using the runway geometry in `aerodrome`.
+/// World position -> deviation, using the runway geometry in the spec.
 /// `z_north = -z_world` north convention comes from [`Sim::pose`].
-pub fn compute(sim: &Sim) -> Ils {
+pub fn compute(sim: &Sim, spec: &AirfieldSpec) -> Ils {
     let (pos, _, _) = sim.pose();
     let x_east = pos.x as f64;
     let z_world = pos.z as f64;
@@ -92,7 +92,7 @@ pub fn compute(sim: &Sim) -> Ils {
 
     // Runway 36: antenna at the 18 end, beam lays over the threshold toward the
     // approach gate at world +Z. On course = north = up the runway.
-    let d36 = z_world - THRESHOLD_Z as f64;
+    let d36 = z_world - spec.threshold_z as f64;
     if d36 > 0.0 {
         let dev = beam(x_east, h_m, d36, gs_rise, 0.0);
         if let Some(ils) = dev {
@@ -102,7 +102,7 @@ pub fn compute(sim: &Sim) -> Ils {
 
     // Runway 18: approached from the north, antenna at the 36 end. On course =
     // south, so "right of course" is west (−east).
-    let d18 = RUNWAY_END_Z as f64 - z_world;
+    let d18 = spec.rwy_end_z as f64 - z_world;
     if d18 > 0.0 {
         let dev = beam(-x_east, h_m, d18, gs_rise, 180.0);
         if let Some(ils) = dev {

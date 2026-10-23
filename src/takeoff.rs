@@ -23,7 +23,7 @@
 
 use bevy::prelude::*;
 
-use crate::aerodrome::on_runway;
+use crate::airfield::AirfieldSpec;
 use crate::aircraft_profile;
 use crate::app_state::{unpaused, AppState};
 use crate::map::ActiveMap;
@@ -133,6 +133,7 @@ fn update_takeoff(
     sim: Res<Sim>,
     map: Res<ActiveMap>,
     aircraft: Res<AircraftState>,
+    airfield: Res<crate::airfield::Airfield>,
     mut state: ResMut<TakeoffState>,
     mut report: Query<(&mut Text, &mut Node), With<TakeoffReport>>,
 ) {
@@ -157,6 +158,8 @@ fn update_takeoff(
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
     let ground = aircraft.on_ground;
+    let default_spec = AirfieldSpec::myfs();
+    let spec = airfield.0.as_ref().unwrap_or(&default_spec);
 
     // The liftoff edge: wheels leave with the roll already established.
     if !ground && state.was_ground && aircraft.gs_kts > ROLL_MIN_GS && state.lift.is_none() {
@@ -172,7 +175,7 @@ fn update_takeoff(
             pitch: aircraft.pitch_deg,
             bank: aircraft.roll_deg.abs(),
             gear_up_s: None,
-            on_runway: on_runway(aircraft.pos.x, aircraft.pos.z),
+            on_runway: spec.on_runway(aircraft.pos.x, aircraft.pos.z),
             runway,
             at: now,
         });
