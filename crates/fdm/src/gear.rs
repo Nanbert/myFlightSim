@@ -21,6 +21,10 @@ use crate::state::{add, cross, dot, norm, scale, State, Vec3};
 const D2R: f64 = std::f64::consts::PI / 180.0;
 const R2D: f64 = 180.0 / std::f64::consts::PI;
 
+/// Feet per second per knot (matches `lib.rs`'s conversion, kept local so the
+/// ground reaction stays a self-contained module).
+const KT_TO_FPS: f64 = 1.68781;
+
 /// Speed below which friction ramps in smoothly (ft/s), so the explicit model
 /// doesn't chatter between + and - around zero at the 120 Hz step. High speed
 /// recovers the full Coulomb magnitude; near zero the force fades, which is
@@ -51,6 +55,30 @@ pub enum BrakeGroup {
     Right,
 }
 
+/// Speed-attenuated nosewheel steering, the jets' rule: the wheel keeps the
+/// full `steer_max_deg` up to `lo_kt`, then the authority tapers linearly to
+/// `floor_deg` at `hi_kt` — rudder-pedal-only steering at taxi speed, as on a
+/// real 737 where the tiller is a low-speed tool.
+#[derive(Clone, Copy)]
+pub struct SteerFade {
+    pub lo_kt: f64,
+    pub hi_kt: f64,
+    pub floor_deg: f64,
+}
+
+/// The steering deflection limit at `gs_kt` ground speed: `steer_max_deg`
+/// faded by [`SteerFade`] when the gear declares one, full authority otherwise.
+fn steer_limit(gear: &Gear, gs_kt: f64) -> f64 {
+    match gear.steer_fade {
+        None => gear.steer_max_deg,
+        Some(f) => {
+            let floor = f.floor_deg.min(gear.steer_max_deg);
+            let t = ((f.hi_kt - gs_kt) / (f.hi_kt - f.lo_kt)).clamp(0.0, 1.0);
+            floor + (gear.steer_max_deg - floor) * t
+        }
+    }
+}
+
 /// One ground contact point: geometry, strut, and friction data. Positions are
 /// structural-frame inches from the datum, matching the model's `<contact>`
 /// blocks.
@@ -68,6 +96,9 @@ pub struct Gear {
     pub contact: ContactType,
     /// Max steering deflection (deg); 0 for a fixed wheel.
     pub steer_max_deg: f64,
+    /// Steering-authority fade with speed; `None` keeps full deflection at any
+    /// speed (the fixed-gear airframes and the F-22).
+    pub steer_fade: Option<SteerFade>,
     pub brake: BrakeGroup,
 }
 
@@ -95,6 +126,9 @@ pub fn ground_force(
 ) -> Ground {
     // Ground normal ("up") in body axes: NED down is -z, so up is (0,0,-1).
     let up_body = s.ned_to_body([0.0, 0.0, -1.0]);
+    // Ground speed (kt) drives the steering-authority fade.
+    let v_ned_cg = s.body_to_ned(s.vel);
+    let gs_kt = v_ned_cg[0].hypot(v_ned_cg[1]) / KT_TO_FPS;
     let mut out = Ground::default();
 
     for (gear, &r) in gears.iter().zip(arms_ft) {
@@ -137,7 +171,7 @@ pub fn ground_force(
         // wheel left, which yaws the aircraft left.
         let fwd_h = horizontal([1.0, 0.0, 0.0], up_body);
         let roll = if gear.steer_max_deg != 0.0 {
-            let theta = rudder_cmd * gear.steer_max_deg * D2R;
+            let theta = rudder_cmd * steer_limit(gear, gs_kt) * D2R;
             add(
                 scale(fwd_h, theta.cos()),
                 scale(cross(up_body, fwd_h), theta.sin()),
@@ -205,5 +239,57 @@ fn horizontal(v: Vec3, n: Vec3) -> Vec3 {
         [1.0, 0.0, 0.0]
     } else {
         scale(h, 1.0 / m)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn faded_gear() -> Gear {
+        Gear {
+            pos_in: [0.0; 3],
+            spring: 0.0,
+            damp: 0.0,
+            damp_rebound: 0.0,
+            static_f: 0.8,
+            dyn_f: 0.5,
+            roll_f: 0.02,
+            contact: ContactType::Bogey,
+            steer_max_deg: 35.0,
+            steer_fade: Some(SteerFade {
+                lo_kt: 5.0,
+                hi_kt: 40.0,
+                floor_deg: 7.0,
+            }),
+            brake: BrakeGroup::None,
+        }
+    }
+
+    #[test]
+    fn steer_fade_holds_full_deflection_at_a_walk() {
+        assert_eq!(steer_limit(&faded_gear(), 0.0), 35.0);
+        assert_eq!(steer_limit(&faded_gear(), 5.0), 35.0);
+    }
+
+    #[test]
+    fn steer_fade_tapers_between_the_knees() {
+        // Halfway between 5 and 40 kt the authority is halfway between 35
+        // and 7 degrees.
+        let mid = steer_limit(&faded_gear(), 22.5);
+        assert!((mid - 21.0).abs() < 0.01, "mid fade = {mid}");
+    }
+
+    #[test]
+    fn steer_fade_floors_at_taxi_speed() {
+        assert_eq!(steer_limit(&faded_gear(), 40.0), 7.0);
+        assert_eq!(steer_limit(&faded_gear(), 120.0), 7.0);
+    }
+
+    #[test]
+    fn no_fade_keeps_full_deflection_at_any_speed() {
+        let mut g = faded_gear();
+        g.steer_fade = None;
+        assert_eq!(steer_limit(&g, 120.0), 35.0);
     }
 }

@@ -7,6 +7,10 @@
 
 use bevy::prelude::*;
 
+/// Pavement-edge tolerance (m), shared by every band in `on_pavement` and the
+/// corridor queries (matches `on_runway`'s).
+pub(crate) const PAVEMENT_TOL: f32 = 1.0;
+
 /// A taxiway connector leaving the runway's east edge for the parallel way.
 #[derive(Clone, Debug)]
 pub struct Connector {
@@ -14,6 +18,18 @@ pub struct Connector {
     pub z: f32,
     /// A rapid exit (chicane) rather than a threshold stub.
     pub rapid: bool,
+}
+
+/// One straight leg of the taxi-lesson route (stand → parallel → hold short).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CorridorSeg {
+    /// The stand's lead-in line: apron stand → parallel taxiway.
+    LeadIn,
+    /// The parallel taxiway proper.
+    Parallel,
+    /// The departure stub: the non-rapid connector at the 36 threshold, where
+    /// the lesson holds short.
+    Stub,
 }
 
 /// An apron slab.
@@ -109,13 +125,17 @@ impl AirfieldSpec {
     }
 
     /// Whether a world point is on any paved surface: runway, parallel
-    /// taxiway, connectors, apron.
+    /// taxiway, connectors, apron. Every band carries the same edge tolerance
+    /// as `on_runway`, which also papers over the hairline seams where
+    /// adjoining slabs meet (ZSNM's apron begins 0.5 m east of the taxiway's
+    /// east edge — the stand lead-in crosses that gap).
     pub fn on_pavement(&self, x: f32, z: f32) -> bool {
         if self.on_runway(x, z) {
             return true;
         }
-        let on_taxiway = (self.taxi_x - self.taxi_width * 0.5
-            ..=self.taxi_x + self.taxi_width * 0.5)
+        let tol = PAVEMENT_TOL;
+        let on_taxiway = (self.taxi_x - self.taxi_width * 0.5 - tol
+            ..=self.taxi_x + self.taxi_width * 0.5 + tol)
             .contains(&x)
             && (self.taxi_z1..=self.taxi_z0).contains(&z);
         if on_taxiway {
@@ -124,14 +144,16 @@ impl AirfieldSpec {
         let on_connector = self
             .connectors
             .iter()
-            .any(|c| (self.rwy_width * 0.5..=self.taxi_x).contains(&x)
-                && (z - c.z).abs() <= self.connector_half_depth);
+            .any(|c| (self.rwy_width * 0.5..=self.taxi_x + tol).contains(&x)
+                && (z - c.z).abs() <= self.connector_half_depth + tol);
         if on_connector {
             return true;
         }
         if let Some(ref apron) = self.apron {
-            if (apron.x - apron.width * 0.5..=apron.x + apron.width * 0.5).contains(&x)
-                && (apron.z - apron.depth * 0.5..=apron.z + apron.depth * 0.5).contains(&z)
+            if (apron.x - apron.width * 0.5 - tol..=apron.x + apron.width * 0.5 + tol)
+                .contains(&x)
+                && (apron.z - apron.depth * 0.5 - tol..=apron.z + apron.depth * 0.5 + tol)
+                    .contains(&z)
             {
                 return true;
             }
@@ -147,6 +169,46 @@ impl AirfieldSpec {
         self.connectors.iter().find_map(|c| {
             ((z - c.z).abs() < half && band_x.contains(&x)).then_some(z - c.z)
         })
+    }
+
+    /// The connector the taxi lesson holds short at — the non-rapid stub
+    /// nearest the 36 threshold. `None` when the field declares no connectors.
+    pub fn lesson_stub_z(&self) -> Option<f32> {
+        self.connectors
+            .iter()
+            .filter(|c| !c.rapid)
+            .min_by(|a, b| {
+                (a.z - self.threshold_z)
+                    .abs()
+                    .total_cmp(&(b.z - self.threshold_z).abs())
+            })
+            .map(|c| c.z)
+    }
+
+    /// Signed lateral offset from the taxi-lesson route's painted centreline,
+    /// with the leg that owns the point; `None` off the route. The narrow legs
+    /// own their junctions with the parallel (a point between two lines grades
+    /// against the one it is joining or leaving).
+    pub fn lesson_corridor(&self, x: f32, z: f32) -> Option<(CorridorSeg, f32)> {
+        let stand = self.stand?;
+        let half = self.connector_half_depth + PAVEMENT_TOL;
+        if (self.taxi_x - half..=stand.x + half).contains(&x) && (z - stand.z).abs() <= half {
+            return Some((CorridorSeg::LeadIn, z - stand.z));
+        }
+        if let Some(stub_z) = self.lesson_stub_z() {
+            if (self.rwy_width * 0.5..=self.taxi_x - half).contains(&x)
+                && (z - stub_z).abs() <= half
+            {
+                return Some((CorridorSeg::Stub, z - stub_z));
+            }
+        }
+        let taxi_half = self.taxi_width * 0.5 + PAVEMENT_TOL;
+        if (self.taxi_x - taxi_half..=self.taxi_x + taxi_half).contains(&x)
+            && (self.taxi_z1..=self.taxi_z0).contains(&z)
+        {
+            return Some((CorridorSeg::Parallel, x - self.taxi_x));
+        }
+        None
     }
 
     // ------------------------------------------------------------------
@@ -338,5 +400,47 @@ mod tests {
         assert!(!s.on_runway(0.0, s.rwy_end_z - 10.0));
         // Past the threshold is not.
         assert!(!s.on_runway(0.0, s.threshold_z + 10.0));
+    }
+
+    #[test]
+    fn zsnm_apron_seam_is_pavement() {
+        // The apron starts 0.5 m east of the taxiway's east edge; the stand
+        // lead-in rolls across that seam on its way to the parallel.
+        let s = AirfieldSpec::zsnm();
+        for x in [141.6, 141.8, 142.0] {
+            assert!(s.on_pavement(x, -1500.0), "seam at x={x} must be pavement");
+        }
+    }
+
+    #[test]
+    fn zsnm_lesson_corridor_follows_the_route() {
+        let s = AirfieldSpec::zsnm();
+        use CorridorSeg::*;
+        // On the stand's lead-in line, mid-leg.
+        assert_eq!(s.lesson_corridor(200.0, -1500.0), Some((LeadIn, 0.0)));
+        assert_eq!(s.lesson_corridor(200.0, -1503.0), Some((LeadIn, -3.0)));
+        // The junction with the parallel belongs to the lead-in, not the way.
+        assert_eq!(s.lesson_corridor(130.0, -1495.0), Some((LeadIn, 5.0)));
+        // Established on the parallel, south of the junction.
+        assert_eq!(s.lesson_corridor(128.0, -800.0), Some((Parallel, -2.0)));
+        assert_eq!(s.lesson_corridor(130.0, -800.0), Some((Parallel, 0.0)));
+        // The departure stub sits at the 36 threshold, and its junction with
+        // the parallel belongs to the stub.
+        assert_eq!(s.lesson_stub_z(), Some(134.0));
+        assert_eq!(s.lesson_corridor(80.0, 134.0), Some((Stub, 0.0)));
+        assert_eq!(s.lesson_corridor(80.0, 131.0), Some((Stub, -3.0)));
+        // Off the route: the apron away from the lead-in, and the rapid exits.
+        assert_eq!(s.lesson_corridor(300.0, -1500.0), None);
+        assert_eq!(s.lesson_corridor(100.0, -360.0), None);
+    }
+
+    #[test]
+    fn myfs_lesson_corridor_is_well_formed() {
+        let s = AirfieldSpec::myfs();
+        use CorridorSeg::*;
+        assert_eq!(s.lesson_stub_z(), Some(134.0));
+        assert_eq!(s.lesson_corridor(75.0, -150.0), Some((LeadIn, 0.0)));
+        assert_eq!(s.lesson_corridor(45.0, -400.0), Some((Parallel, 0.0)));
+        assert_eq!(s.lesson_corridor(30.0, 134.0), Some((Stub, 0.0)));
     }
 }

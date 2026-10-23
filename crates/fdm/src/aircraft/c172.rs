@@ -482,6 +482,7 @@ const fn skid(pos_in: [f64; 3]) -> Gear {
         roll_f: 0.2,
         contact: ContactType::Structure,
         steer_max_deg: 0.0,
+        steer_fade: None,
         brake: BrakeGroup::None,
     }
 }

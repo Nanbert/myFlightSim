@@ -478,6 +478,20 @@ fn b737() -> Vec<String> {
     p.line("  autothrottle. You start on the runway; the A/P can only");
     p.line("  engage airborne.");
 
+    p.heading("M1 TAXI - THE GRADED TAXI (GAME)");
+    p.line("  PLAY > M1 TAXI seats you at the ZSNM stand, engines idling,");
+    p.line("  parking brake holding. The drill: follow the lead-in line");
+    p.line("  out, turn left onto the parallel taxiway, taxi 1.6 km south,");
+    p.line("  then right onto the runway-36 stub and one clean stop before");
+    p.line("  the holding pair.");
+    p.line("  The meter grades the whole leg: centreline keeping, the speed");
+    p.line("  band (20 kt on the straight parallel, 10 kt on the apron, the");
+    p.line("  stub and the turns), thrust discipline (bump the levers to");
+    p.line("  break away, then idle), and the stop's nose-to-line margin.");
+    p.line("  Nosewheel authority fades with speed - 35 deg at a walk,");
+    p.line("  pedal-only 7 deg by 40 kt - so slow down before the turns.");
+    p.line("  Wheels on grass or a nose past the solid pair fails the run.");
+
     p.heading("GAME CONTROLS (fixed keys)");
     fixed_wing_rows(&mut p, &b);
     p.row("Landing gear", toggle(&b, ToggleAction::Gear));
@@ -596,10 +610,14 @@ mod tests {
     #[test]
     fn every_aircraft_page_covers_game_real_and_todo() {
         for id in ids() {
-            let text = render(id, 0);
-            assert!(text.contains("GAME CONTROLS"), "{id} has no game keys");
-            assert!(text.contains("REAL"), "{id} has no real procedure");
-            assert!(text.contains("TODO"), "{id} has no TODO section");
+            // The markers can land on any scroll page (the 737's M1 section
+            // pushes GAME CONTROLS past the first window).
+            let whole = (0..=max_scroll(id))
+                .map(|s| render(id, s))
+                .collect::<String>();
+            assert!(whole.contains("GAME CONTROLS"), "{id} has no game keys");
+            assert!(whole.contains("REAL"), "{id} has no real procedure");
+            assert!(whole.contains("TODO"), "{id} has no TODO section");
         }
     }
 

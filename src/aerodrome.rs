@@ -864,15 +864,19 @@ pub fn on_runway(x: f32, z: f32) -> bool {
 
 /// Whether a world point is on any of the home field's paved slabs: the
 /// runway, the parallel taxiway, the connector stubs and the apron. The
-/// ground-lesson FAIL check uses it — wheels in the grass end the run.
+/// ground-lesson FAIL check uses it — wheels in the grass end the run. Every
+/// band carries the same edge tolerance as `on_runway` (see
+/// `airfield::PAVEMENT_TOL`; the spec's `on_pavement` is the live copy and
+/// this one follows it for the parity test).
 pub fn on_pavement(x: f32, z: f32) -> bool {
-    let on_taxiway =
-        (TAXI_X - 6.0..=TAXI_X + 6.0).contains(&x) && (TAXI_Z1..=TAXI_Z0).contains(&z);
-    let on_apron = (APRON_X - 60.0..=APRON_X + 60.0).contains(&x)
-        && (APRON_Z - 80.0..=APRON_Z + 80.0).contains(&z);
-    let on_connector = CONNECTOR_ZS
-        .iter()
-        .any(|cz| (RUNWAY_WIDTH * 0.5..=TAXI_X).contains(&x) && (z - cz).abs() <= 6.0);
+    let tol = crate::airfield::PAVEMENT_TOL;
+    let on_taxiway = (TAXI_X - 6.0 - tol..=TAXI_X + 6.0 + tol).contains(&x)
+        && (TAXI_Z1..=TAXI_Z0).contains(&z);
+    let on_apron = (APRON_X - 60.0 - tol..=APRON_X + 60.0 + tol).contains(&x)
+        && (APRON_Z - 80.0 - tol..=APRON_Z + 80.0 + tol).contains(&z);
+    let on_connector = CONNECTOR_ZS.iter().any(|cz| {
+        (RUNWAY_WIDTH * 0.5..=TAXI_X + tol).contains(&x) && (z - cz).abs() <= 6.0 + tol
+    });
     on_runway(x, z) || on_taxiway || on_apron || on_connector
 }
 

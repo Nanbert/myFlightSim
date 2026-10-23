@@ -24,6 +24,7 @@ pub mod hop;
 pub mod hud;
 pub mod ils;
 pub mod input;
+pub mod jet_taxi;
 pub mod lesson_flow;
 pub mod landing;
 pub mod landing_lesson;
@@ -115,6 +116,7 @@ pub fn run() {
         .add_plugins(hop::HopPlugin)
         .add_plugins(checklist::ChecklistPlugin)
         .add_plugins(taxi::TaxiPlugin)
+        .add_plugins(jet_taxi::JetTaxiPlugin)
         .add_plugins(lesson_flow::LessonFlowPlugin)
         .add_plugins(mission::MissionPlugin)
         .add_plugins(combat::CombatPlugin)

@@ -30,11 +30,11 @@
 //! landing-roll deceleration this sim models.
 //! Values are imperial: areas ft², arms ft, moments slug·ft², positions inches.
 
-use super::{bogey, Aircraft, MassSpec, PointMass};
+use super::{bogey, bogey_fade, Aircraft, MassSpec, PointMass};
 use crate::aero::{Aerodynamics, Axis, Factor, Function, NamedFn};
 use crate::engine::{PowerplantSpec, TurbineSpec};
 use crate::fcs::{ControlSystem, DirectFcs};
-use crate::gear::{BrakeGroup, Gear};
+use crate::gear::{BrakeGroup, Gear, SteerFade};
 use crate::table::{Table1, Table2};
 
 const R2D: f64 = 180.0 / std::f64::consts::PI;
@@ -352,15 +352,24 @@ const FCS: DirectFcs = DirectFcs {
 // `bogey` is the shared tyre constructor in `super`; this airframe is the one
 // that overrides the rebound damping (its XML sets 8 kips against 4 kips).
 
-/// Nosewheel steers (max 35 deg); the mains carry the brakes.
+/// Nosewheel steers (max 35 deg) with speed-attenuated authority: full tiller
+/// deflection below 5 kt, tapering to pedal-only 7 deg by 40 kt — the real
+/// jet's rule, and what makes a 20 kt centerline hold a rudder exercise
+/// instead of a twitch. The mains carry the brakes.
+const NOSE_STEER_FADE: SteerFade = SteerFade {
+    lo_kt: 5.0,
+    hi_kt: 40.0,
+    floor_deg: 7.0,
+};
+
 const GEAR: &[Gear] = &[
-    bogey(
+    bogey_fade(
         [158.0, 0.0, -84.0],
         90000.0,
         4000.0,
         8000.0,
         35.0,
-        BrakeGroup::None,
+        NOSE_STEER_FADE,
     ),
     bogey(
         [648.0, -100.0, -84.0],

@@ -8,7 +8,7 @@
 use crate::aero::Aerodynamics;
 use crate::engine::PowerplantSpec;
 use crate::fcs::ControlSystem;
-use crate::gear::{BrakeGroup, ContactType, Gear};
+use crate::gear::{BrakeGroup, ContactType, Gear, SteerFade};
 use crate::rotor::RotorSpec;
 use crate::state::{Inertia, Vec3};
 
@@ -76,7 +76,34 @@ const fn bogey(
         roll_f: 0.02,
         contact: ContactType::Bogey,
         steer_max_deg,
+        steer_fade: None,
         brake,
+    }
+}
+
+/// A steering bogey whose authority fades with ground speed (the jets'
+/// nosewheel: full tiller deflection at a walk, pedal-only steering at taxi
+/// speed). Brakes stay with the mains, so the steering wheel carries none.
+const fn bogey_fade(
+    pos_in: [f64; 3],
+    spring: f64,
+    damp: f64,
+    damp_rebound: f64,
+    steer_max_deg: f64,
+    fade: SteerFade,
+) -> Gear {
+    Gear {
+        pos_in,
+        spring,
+        damp,
+        damp_rebound,
+        static_f: 0.8,
+        dyn_f: 0.5,
+        roll_f: 0.02,
+        contact: ContactType::Bogey,
+        steer_max_deg,
+        steer_fade: Some(fade),
+        brake: BrakeGroup::None,
     }
 }
 

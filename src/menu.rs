@@ -1003,16 +1003,10 @@ fn global_settings_lines(weather: &Weather, settings: &SettingsState) -> Vec<Pag
     out
 }
 
-/// The PLAY page rows: the start-state list. Free flight for every aircraft;
-/// the graded lesson missions are the C172's, so other aircraft see only the
-/// free row (and a note).
+/// The PLAY page rows: the start-state list. The C172 and the 737 carry their
+/// own graded lessons; the rest see only the free row (and a note).
 fn play_lines(id: &str, play: &PlayState) -> Vec<PageLine> {
-    let cessna = aircraft_profile::normalized(id) == "c172p";
-    let rows: &[crate::mission::PlayRow] = if cessna {
-        &crate::mission::PLAY_MENU
-    } else {
-        &crate::mission::PLAY_MENU[..1]
-    };
+    let rows = crate::mission::rows_for(id);
     let mut out = vec![
         PageLine::heading(format!("{} - SELECT START", aircraft_label(id))),
         PageLine::blank(),
@@ -1022,9 +1016,9 @@ fn play_lines(id: &str, play: &PlayState) -> Vec<PageLine> {
         out.push(PageLine::note(format!("      {}", row.hint)));
         out.push(PageLine::blank());
     }
-    if !cessna {
+    if rows.len() == 1 {
         out.push(PageLine::note(
-            "The graded lessons fly the Cessna 172 only.",
+            "The graded lessons fly the Cessna 172 and the 737.",
         ));
         out.push(PageLine::blank());
     }
@@ -1183,25 +1177,16 @@ fn menu_input(
                     }
                 }
             }
-            // The start-state page: free flight or a graded lesson. Lessons
-            // are C172-only, so other aircraft see just the free row.
+            // The start-state page: free flight or a graded lesson. The C172
+            // and the 737 carry their own lesson rows; the rest see just the
+            // free row.
             Page::Play => {
-                let cessna = aircraft_profile::normalized(sel.aircraft_id()) == "c172p";
-                let n = if cessna {
-                    crate::mission::PLAY_MENU.len()
-                } else {
-                    1
-                };
+                let rows = crate::mission::rows_for(sel.aircraft_id());
                 let up = keys.just_pressed(KeyCode::ArrowUp);
                 let down = keys.just_pressed(KeyCode::ArrowDown);
-                play.row = cursor_nav(play.row, n, up, down);
+                play.row = cursor_nav(play.row, rows.len(), up, down);
                 if enter {
-                    let lesson = if cessna {
-                        crate::mission::PLAY_MENU[play.row].lesson
-                    } else {
-                        None
-                    };
-                    lesson_pending.0 = lesson;
+                    lesson_pending.0 = rows.get(play.row).and_then(|row| row.lesson);
                     next.set(AppState::Flying);
                     sel.page_stack.clear();
                 }
@@ -1543,7 +1528,7 @@ fn start_flight(
         sim.reset_air(map.spawn_alt_ft(), map.spawn_kts());
     } else {
         match active.0 {
-            Some(Lesson::Taxi) => sim.reset_stand(),
+            Some(Lesson::Taxi) | Some(Lesson::JetTaxi) => sim.reset_stand(),
             Some(Lesson::Takeoff) => sim.reset_ground(),
             Some(Lesson::Landing) => sim.reset_final_c172(),
             None => sim.reset_ground(),
@@ -1581,6 +1566,18 @@ fn start_flight(
             b.value = 0.67;
         }
     }
+    // The jet taxi lesson starts at idle with the parking brake holding her:
+    // the profile's 60% taxi throttle would have the 737 rolling before the
+    // first frame.
+    if matches!(active.0, Some(Lesson::JetTaxi)) {
+        if let Some(b) = controls
+            .list
+            .iter_mut()
+            .find(|b| b.action == crate::aircraft_profile::Action::Throttle)
+        {
+            b.value = 0.0;
+        }
+    }
     *bindings = controls;
     // Every flight starts under manual control with the MCP at its defaults;
     // the 737's autopilot can be engaged once airborne.
@@ -1589,8 +1586,9 @@ fn start_flight(
     rp.init = false;
 }
 
-/// Development hook: `LESSON=taxi|takeoff|landing|final` parses to the matching
-/// lesson, so screenshots can boot straight into a spawn without the menu.
+/// Development hook: `LESSON=taxi|takeoff|landing|jettaxi` parses to the
+/// matching lesson, so screenshots can boot straight into a spawn without the
+/// menu.
 fn dev_lesson() -> Option<Lesson> {
     let key = std::env::var("LESSON").ok()?;
     let key = key.to_ascii_uppercase();
@@ -1598,6 +1596,7 @@ fn dev_lesson() -> Option<Lesson> {
         "TAXI" | "M1" => Some(Lesson::Taxi),
         "TAKEOFF" | "M2" => Some(Lesson::Takeoff),
         "LANDING" | "M3" => Some(Lesson::Landing),
+        "JETTAXI" | "737TAXI" => Some(Lesson::JetTaxi),
         _ => None,
     }
 }
@@ -1705,7 +1704,7 @@ mod tests {
     }
 
     #[test]
-    fn the_play_page_text_marks_the_cursor_and_hides_lessons_off_cessna() {
+    fn the_play_page_text_marks_the_cursor_and_hides_lessons_off_the_graded_two() {
         let out = play_lines("c172p", &PlayState { row: 2 });
         assert!(out.iter().any(|l| l.kind == menu_page::LineKind::Heading
             && l.left.contains("SELECT START")),
@@ -1717,9 +1716,14 @@ mod tests {
         assert!(option_row(&other, "FREE FLIGHT").active);
         assert!(other.iter().all(|l| !l.left.starts_with('M')), "{other:?}");
         assert!(
-            other.iter().any(|l| l.left.contains("Cessna 172 only")),
+            other.iter().any(|l| l.left.contains("Cessna 172 and the 737")),
             "{other:?}"
         );
+        // The 737's own PLAY page: free flight plus its taxi lesson, no note.
+        let jet = play_lines("737", &PlayState { row: 1 });
+        assert!(option_row(&jet, "M1 TAXI").active, "cursor on the lesson");
+        assert!(option_row(&jet, "FREE FLIGHT").right.is_empty());
+        assert!(!jet.iter().any(|l| l.left.contains("Cessna 172")), "{jet:?}");
     }
 
     #[test]

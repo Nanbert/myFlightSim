@@ -81,6 +81,9 @@ pub struct Readouts {
     pub piston_c172: bool,
     /// True for the 737.
     pub jet_737: bool,
+    /// The 737's taxi lesson is flying: its ground moments belong to the
+    /// lesson's flow prompt, not the takeoff card.
+    pub taxi_lesson: bool,
 }
 
 /// Advance the phase machine and evaluate the active phase's items.
@@ -208,8 +211,13 @@ fn jet_after_takeoff(r: &Readouts) -> (Phase, Vec<Item>) {
 /// state — the jet never cold-starts in this sim, so any ground moment is the
 /// takeoff card, and a touch-and-go rolls it back open by itself. `Done` stays
 /// quiet in the air (approach flap is not a clean-up item) and lets the next
-/// ground moment restart the flow.
+/// ground moment restart the flow. The one exception: the jet's taxi lesson
+/// owns its own ground guidance, and its stand must sit at idle with clean
+/// wings — not the takeoff card's flaps-and-thrust.
 fn evaluate_jet(phase: Phase, r: &Readouts) -> (Phase, Vec<Item>) {
+    if r.taxi_lesson && r.on_ground {
+        return (Phase::Off, Vec::new());
+    }
     match phase {
         Phase::AfterTakeoff => {
             if r.on_ground {
@@ -278,6 +286,7 @@ fn spawn_panel(mut commands: Commands) {
 fn update(
     sim: Res<Sim>,
     aircraft: Res<AircraftState>,
+    lesson: Res<crate::mission::ActiveLesson>,
     mut state: ResMut<ChecklistState>,
     mut panel: Query<(&mut Text, &mut Node), With<ChecklistPanel>>,
 ) {
@@ -303,6 +312,7 @@ fn update(
         gear_pos: aircraft.gear_pos,
         piston_c172,
         jet_737,
+        taxi_lesson: jet_737 && lesson.0 == Some(crate::mission::Lesson::JetTaxi),
     };
     let (phase, items) = evaluate(state.phase, &readouts);
     state.phase = phase;
@@ -352,6 +362,21 @@ mod tests {
             on_ground: true,
             ..default()
         }
+    }
+
+    #[test]
+    fn the_jet_taxi_lesson_holds_its_tongue() {
+        // On the ground mid-lesson: the flow prompt guides the taxi, and the
+        // takeoff card (flaps 5, throttle full) would coach exactly wrong.
+        let mut taxiing = j();
+        taxiing.taxi_lesson = true;
+        let (phase, items) = evaluate(Phase::Off, &taxiing);
+        assert_eq!(phase, Phase::Off);
+        assert!(items.is_empty());
+        // The card reopens once the lesson is not the context.
+        let (phase, items) = evaluate(Phase::Off, &j());
+        assert_eq!(phase, Phase::BeforeTakeoff);
+        assert_eq!(items.len(), 2);
     }
 
     fn ticks(items: &[Item]) -> String {

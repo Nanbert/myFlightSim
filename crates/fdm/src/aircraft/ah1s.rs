@@ -379,6 +379,7 @@ const fn skid_shoe(pos_in: [f64; 3], spring: f64, damp: f64) -> Gear {
         roll_f: 0.65,
         contact: ContactType::Bogey,
         steer_max_deg: 0.0,
+        steer_fade: None,
         brake: BrakeGroup::None,
     }
 }
@@ -399,6 +400,7 @@ const GEAR: &[Gear] = &[
         roll_f: 0.65,
         contact: ContactType::Structure,
         steer_max_deg: 0.0,
+        steer_fade: None,
         brake: BrakeGroup::None,
     },
 ];

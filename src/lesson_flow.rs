@@ -1,14 +1,15 @@
-//! Lesson flow: the graded C172 lessons (M1..M3) get actionable overlays
-//! instead of passive meters. Free flight keeps the meters' passive displays;
-//! in a lesson this module owns the hold-short prompt and pins two modals
-//! over the frozen sim:
+//! Lesson flow: the graded lessons (the C172's M1..M3, the 737's M1) get
+//! actionable overlays instead of passive meters. Free flight keeps the
+//! meters' passive displays; in a lesson this module owns the hold-short
+//! prompt and pins two modals over the frozen sim:
 //!
 //! - **FAIL** — the wheels leave the pavement, or (per lesson) an attempt's
-//!   own rule trips: the M1 holding-pair incursion, the M2 climb failures,
-//!   the M3 unstable approach at the 500 ft gate: paused, with
-//!   RID/back-to-menu rows.
-//! - **The finals cards** — a graded stop (M1), the M2 climb gate or the
-//!   M3 stopped landing pauses the flight under its lesson's numbers.
+//!   own rule trips: the M1 holding-pair incursion (either airframe), the M2
+//!   climb failures, the M3 unstable approach at the 500 ft gate: paused,
+//!   with RID/back-to-menu rows.
+//! - **The finals cards** — a graded stop (M1, either airframe), the M2
+//!   climb gate or the M3 stopped landing pauses the flight under its
+//!   lesson's numbers.
 //!
 //! Every card answers on keyboard rows in the codebase's pause-plate idiom:
 //! R retries the lesson (routed via the hangar with the lesson pending, so
@@ -107,6 +108,7 @@ pub(crate) fn watch(
     mut hs: ResMut<HoldShort>,
     mut tl: ResMut<crate::takeoff_lesson::TakeoffLesson>,
     mut ll: ResMut<crate::landing_lesson::LandingLesson>,
+    mut jt: ResMut<crate::jet_taxi::JetTaxiMeter>,
     mut flow: ResMut<FlowCard>,
     paused: Option<Res<Paused>>,
     mut commands: Commands,
@@ -144,6 +146,7 @@ pub(crate) fn watch(
                 // its settled latch (its `done` stays for the debug report).
                 Lesson::Takeoff => tl.rearm(),
                 Lesson::Landing => ll.rearm(),
+                Lesson::JetTaxi => jt.rearm(),
                 _ => hs.settled = false,
             }
         }
@@ -173,14 +176,23 @@ pub(crate) fn watch(
         open_fail(&mut flow, &mut commands, reason);
         return;
     }
-    // The ground-lesson FAIL list is Taxi-only, and the same lines re-cross
-    // legally once the grade is in.
+    // The ground-lesson FAIL list is the taxi drills' (either airframe), and
+    // the same lines re-cross legally once the grade is in.
+    let nose_lead = match lesson {
+        Lesson::JetTaxi => crate::jet_taxi::NOSE_LEAD_M,
+        _ => NOSE_LEAD,
+    };
+    let graded = match lesson {
+        Lesson::Taxi => hs.done.is_some(),
+        Lesson::JetTaxi => jt.done.is_some(),
+        _ => false,
+    };
     if no_popup
-        && matches!(lesson, crate::mission::Lesson::Taxi)
-        && hs.done.is_none()
+        && !graded
+        && matches!(lesson, Lesson::Taxi | Lesson::JetTaxi)
         && aircraft.on_ground
         && spec.connector_offset(aircraft.pos.x, aircraft.pos.z).is_some()
-        && aircraft.pos.x < spec.hold_line_x - NOSE_LEAD
+        && aircraft.pos.x < spec.hold_line_x - nose_lead
     {
         open_fail(&mut flow, &mut commands, FAIL_INCURSION);
         return;
@@ -220,6 +232,21 @@ pub(crate) fn watch(
                 return;
             }
             show_prompt(&mut prompt, ll.live.clone());
+        }
+        return;
+    }
+    // --- the 737's M1: the whole-route meter owns the triggers here. Its
+    // graded stop ends the lesson, so the card has no Continue row.
+    if matches!(lesson, Lesson::JetTaxi) {
+        if no_popup {
+            if jt.settled && jt.done.is_some() {
+                let body = jt.finals_text();
+                flow.kind = Some(Card::Grade);
+                commands.insert_resource(Paused);
+                spawn_popup(&mut commands, "HOLD SHORT - GRADED", body, false);
+                return;
+            }
+            show_prompt(&mut prompt, jt.live.clone());
         }
         return;
     }
