@@ -1580,13 +1580,16 @@ fn start_flight(
             b.value = 0.0;
         }
     }
-    // The jet landing lesson arrives at flaps 5 with the trim's own descent
-    // power: pin the lever pair so the first frame holds the seat.
+    // The jet landing lesson arrives at flaps 5. The pinned throttle is the
+    // 3-degree beam's own book value (~0.25: the descent's gravity share
+    // carries most of the drag), not level power - level power (~0.5) had
+    // the APP-coupled seat accelerating down the beam. Dirty-ing up then
+    // decelerates her into the ladder's targets on its own.
     if matches!(active.0, Some(Lesson::JetLanding)) {
         for b in controls.list.iter_mut() {
             match b.action {
                 crate::aircraft_profile::Action::Flap => b.value = 5.0 / 40.0,
-                crate::aircraft_profile::Action::Throttle => b.value = 0.5,
+                crate::aircraft_profile::Action::Throttle => b.value = 0.25,
                 _ => {}
             }
         }
@@ -1596,6 +1599,11 @@ fn start_flight(
     // the 737's autopilot can be engaged once airborne.
     ap.reset();
     mcp.reset();
+    // The arrival's own speed plan in the window, so an A/T engage (5) holds
+    // the seat's 180 instead of the 250 default.
+    if matches!(active.0, Some(Lesson::JetLanding)) {
+        mcp.ias_kts = 180.0;
+    }
     rp.init = false;
 }
 
