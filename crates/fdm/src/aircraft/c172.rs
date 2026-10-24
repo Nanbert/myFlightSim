@@ -6,7 +6,7 @@
 //!
 //! Values are imperial: areas ft², arms ft, moments slug·ft², positions inches.
 
-use super::{bogey, Aircraft, FuelSpec, MassSpec, PointMass};
+use super::{Aircraft, FuelSpec, MassSpec, PointMass, bogey};
 use crate::aero::{Aerodynamics, Axis, Factor, Function, NamedFn};
 use crate::engine::{PistonSpec, PowerplantSpec, PropSpec};
 use crate::fcs::{ControlSystem, DirectFcs};
@@ -495,6 +495,7 @@ const GEAR: &[Gear] = &[
         600.0,
         600.0,
         10.0,
+        0.02,
         BrakeGroup::None,
     ),
     bogey(
@@ -503,6 +504,7 @@ const GEAR: &[Gear] = &[
         1600.0,
         1600.0,
         0.0,
+        0.02,
         BrakeGroup::Left,
     ),
     bogey(
@@ -511,6 +513,7 @@ const GEAR: &[Gear] = &[
         1600.0,
         1600.0,
         0.0,
+        0.02,
         BrakeGroup::Right,
     ),
     skid([-37.7, 0.0, 26.6]),

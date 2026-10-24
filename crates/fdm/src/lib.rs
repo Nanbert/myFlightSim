@@ -2910,6 +2910,39 @@ mod tests {
         m
     }
 
+    #[test]
+    fn the_jet_coasts_gently_at_idle() {
+        // Idle thrust (~1,670 lbf) nearly balances the 0.012 tyre's rolling
+        // resistance: from 10 kt at idle she bleeds off slowly, not halts
+        // dead. The generic 0.02 tyre made idle a net 1,800 lbf brake.
+        let mut m = Fdm::new("737");
+        m.set("ic/vc-kts", 10.0);
+        m.set("ic/h-sl-ft", 49.0 / 12.0);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        m.set("fcs/throttle-cmd-norm", 0.0);
+        for _ in 0..120 * 10 {
+            m.step();
+        }
+        let kt = m.get("velocities/vg-fps") / KT_TO_FPS;
+        assert!(kt >= 9.0, "idle bleeds off gently, got {kt:.2} kt");
+        assert!(kt <= 10.1, "and never accelerates on its own: {kt:.2} kt");
+    }
+
+    #[test]
+    fn a_small_bump_breaks_the_jet_away() {
+        // 30% thrust against the rolling tyre moves 172,600 lb: the
+        // break-away bump of the taxi drill.
+        let mut m = parked_737();
+        m.set("fcs/throttle-cmd-norm", 0.30);
+        for _ in 0..120 * 30 {
+            m.step();
+        }
+        let kt = m.get("velocities/vg-fps") / KT_TO_FPS;
+        assert!(kt > 3.0, "a 30% bump gets her rolling, got {kt:.2} kt");
+    }
+
     /// A 737 at a cruise condition, trimmed and holding. Installs the engines
     /// first so the trim solver sees their thrust.
     fn cruise_737(vc: f64, alt: f64) -> Fdm {

@@ -22,7 +22,7 @@
 // limits, not approximations of the math constants clippy is looking for.
 #![allow(clippy::approx_constant)]
 
-use super::{bogey, Aircraft, MassSpec, PointMass};
+use super::{Aircraft, MassSpec, PointMass, bogey};
 use crate::aero::{Aerodynamics, Axis, Factor, Function, NamedFn};
 use crate::engine::{PowerplantSpec, TurbineSpec};
 use crate::fcs::{ControlSystem, FbwSpec};
@@ -826,6 +826,7 @@ const GEAR: &[Gear] = &[
         6201.1,
         6201.1,
         80.0,
+        0.02,
         BrakeGroup::None,
     ),
     bogey(
@@ -834,6 +835,7 @@ const GEAR: &[Gear] = &[
         22402.2,
         22402.2,
         0.0,
+        0.02,
         BrakeGroup::Left,
     ),
     bogey(
@@ -842,6 +844,7 @@ const GEAR: &[Gear] = &[
         22402.2,
         22402.2,
         0.0,
+        0.02,
         BrakeGroup::Right,
     ),
 ];

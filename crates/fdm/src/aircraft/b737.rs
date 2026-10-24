@@ -30,7 +30,7 @@
 //! landing-roll deceleration this sim models.
 //! Values are imperial: areas ft², arms ft, moments slug·ft², positions inches.
 
-use super::{bogey, bogey_fade, Aircraft, MassSpec, PointMass};
+use super::{Aircraft, MassSpec, PointMass, bogey, bogey_fade};
 use crate::aero::{Aerodynamics, Axis, Factor, Function, NamedFn};
 use crate::engine::{PowerplantSpec, TurbineSpec};
 use crate::fcs::{ControlSystem, DirectFcs};
@@ -362,6 +362,14 @@ const NOSE_STEER_FADE: SteerFade = SteerFade {
     floor_deg: 7.0,
 };
 
+/// The tyres' rolling coefficient: a dry-concrete jet value, not JSBSim's
+/// generic 0.02 fallback. At 0.012 the rolling resistance (~2,070 lbf at the
+/// 172,600 lb taxi weight) nearly balances idle thrust (~1,670 lbf), so an
+/// idle taxi creeps and bleeds off gently — the bump-and-coast the taxi
+/// lesson grades. The generic 0.02 (3,452 lbf) made idle a net brake no
+/// realistic thrust cadence could out-coast.
+const TAXI_ROLL_F: f64 = 0.012;
+
 const GEAR: &[Gear] = &[
     bogey_fade(
         [158.0, 0.0, -84.0],
@@ -369,6 +377,7 @@ const GEAR: &[Gear] = &[
         4000.0,
         8000.0,
         35.0,
+        TAXI_ROLL_F,
         NOSE_STEER_FADE,
     ),
     bogey(
@@ -377,6 +386,7 @@ const GEAR: &[Gear] = &[
         10000.0,
         20000.0,
         0.0,
+        TAXI_ROLL_F,
         BrakeGroup::Left,
     ),
     bogey(
@@ -385,6 +395,7 @@ const GEAR: &[Gear] = &[
         10000.0,
         20000.0,
         0.0,
+        TAXI_ROLL_F,
         BrakeGroup::Right,
     ),
 ];

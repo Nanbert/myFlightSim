@@ -54,16 +54,17 @@ pub mod f22;
 pub const LB_TO_SLUG: f64 = 1.0 / 32.174049;
 pub const INCH_TO_FT: f64 = 1.0 / 12.0;
 
-/// A tyre on a strut, transcribed from `<contact type="BOGEY">`. The three
-/// fixed-gear airframes share JSBSim's default static/dynamic/rolling friction
-/// triple (0.8/0.5/0.02); the rebound damping equals the compress damping
-/// unless the airframe's XML overrides it (the 737 does).
+/// A tyre on a strut, transcribed from `<contact type="BOGEY">`. The default
+/// static/dynamic friction triple is JSBSim's (0.8/0.5); `roll_f` is the
+/// tyre's rolling coefficient — dry-concrete jets run ~0.012 (an idle that
+/// creeps), the generic JSBSim fallback 0.02 belongs to the light aircraft.
 const fn bogey(
     pos_in: [f64; 3],
     spring: f64,
     damp: f64,
     damp_rebound: f64,
     steer_max_deg: f64,
+    roll_f: f64,
     brake: BrakeGroup,
 ) -> Gear {
     Gear {
@@ -73,7 +74,7 @@ const fn bogey(
         damp_rebound,
         static_f: 0.8,
         dyn_f: 0.5,
-        roll_f: 0.02,
+        roll_f,
         contact: ContactType::Bogey,
         steer_max_deg,
         steer_fade: None,
@@ -90,6 +91,7 @@ const fn bogey_fade(
     damp: f64,
     damp_rebound: f64,
     steer_max_deg: f64,
+    roll_f: f64,
     fade: SteerFade,
 ) -> Gear {
     Gear {
@@ -99,7 +101,7 @@ const fn bogey_fade(
         damp_rebound,
         static_f: 0.8,
         dyn_f: 0.5,
-        roll_f: 0.02,
+        roll_f,
         contact: ContactType::Bogey,
         steer_max_deg,
         steer_fade: Some(fade),
