@@ -21,7 +21,7 @@ use crate::aircraft_profile;
 use crate::app_state::{unpaused, AppState};
 use crate::autopilot::{AtMode, Autopilot, LatMode, Mcp, SpeedUnit, VertMode};
 use crate::ils;
-use crate::mcp_ui::PANEL_W;
+use crate::mcp_layout::PANEL_W;
 use crate::sim::{AircraftState, Sim};
 use crate::ui_theme;
 use crate::view::{CockpitModel, Ui};

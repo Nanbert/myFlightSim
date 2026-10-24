@@ -131,6 +131,20 @@ test = false
 doc = false
 
 [[example]]
+name = "mcp_bake"
+path = "examples/mcp_bake.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "mcp_focus_shot"
+path = "examples/mcp_focus_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
 name = "menu_shot"
 path = "examples/menu_shot.rs"
 required-features = ["shots"]

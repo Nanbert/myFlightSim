@@ -530,7 +530,7 @@ fn b737() -> Vec<String> {
     p.line("  2. Set the MCP windows with the mouse. The panel sits at the");
     p.line("     bottom of the screen: scroll a window for coarse steps and");
     p.line("     click the knob halves for fine steps. In the cockpit, click");
-    p.line("     the modelled MCP board to focus it.");
+    p.line("     the modelled MCP board to raise the MCP panel.");
     p.line("  3. 1 = HDG SEL, 2 = ALT HOLD (captures now), 3 = V/S,");
     p.line("     4 = LVL CHG, 5 = A/T, M = IAS/MACH display, 6 = APP.");
     p.line("  4. V/S and LVL CHG capture the MCP altitude when reached.");

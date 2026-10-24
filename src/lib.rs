@@ -33,6 +33,10 @@ pub mod landing_lesson;
 pub mod lens;
 pub mod lights;
 pub mod map;
+#[cfg(feature = "shots")]
+pub mod mcp_bake;
+pub mod mcp_layout;
+pub mod mcp_panel;
 pub mod mcp_ui;
 pub mod menu;
 pub mod menu_page;
@@ -100,6 +104,7 @@ pub fn run() {
             lens::LensPlugin,
             menu::MenuPlugin,
         ))
+        .add_plugins(mcp_panel::McpPanelPlugin)
         .add_plugins(g_strain::GStrainPlugin)
         // After the menu: it builds terrain for whatever mission
         // `start_flight` just launched. (A separate call: Bevy's plugin tuples
