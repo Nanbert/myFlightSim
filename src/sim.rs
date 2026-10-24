@@ -309,24 +309,29 @@ impl Sim {
         self.origin_lon = 0.0;
     }
 
-    /// The 737 M3 seat: a mid-range final for ZSNM's ILS 36 — 9 km out at
-    /// 1,650 ft, 180 kt, flaps 5, gear UP (the config ladder is the lesson).
-    /// Just above the 3° beam, so it captures at once; trimmed on the
-    /// gear-up, flaps-5 wing so the seat holds from the first frame.
+    /// The 737 M3 seat: a mid-range final for ZSNM's ILS 36 — 9.2 km out ON
+    /// the 3° beam (1,565 ft), 160 kt, flaps 15, gear UP: arriving already
+    /// in approach configuration, one rung from landing flap. The seat's own
+    /// speed IS the ladder's first target, so the gate (1,000 ft, ~45 s in)
+    /// crosses at ~Vref+6 with the beam's own sink — both criteria with
+    /// margin, which no faster seat allowed. ON the beam — the GS capture's
+    /// angle gate shrinks with distance, so capturing from above at this
+    /// range never fires; seated on it, LOC and GS take at once. Trimmed on
+    /// the seat's own wing so it holds from the first frame.
     pub fn reset_final_jet(&mut self) {
-        let dlat = -(9000.0 / 0.3048) / fdm::FT_PER_DEG_LAT;
+        let dlat = -(9200.0 / 0.3048) / fdm::FT_PER_DEG_LAT;
         self.model.set("ic/lat-gc-deg", dlat);
         self.model.set("ic/long-gc-deg", 0.0);
-        self.model.set("ic/vc-kts", 180.0);
-        self.model.set("ic/h-sl-ft", 1650.0);
+        self.model.set("ic/vc-kts", 160.0);
+        self.model.set("ic/h-sl-ft", 1565.0);
         self.model.set("ic/psi-true-deg", 0.0);
         self.model.set("gear/gear-cmd-norm", 0.0);
         self.model.apply_ic();
-        self.model.set("fcs/flap-cmd-norm", 5.0 / 40.0);
-        self.model.set("fcs/flap-pos-norm", 5.0 / 40.0);
+        self.model.set("fcs/flap-cmd-norm", 15.0 / 40.0);
+        self.model.set("fcs/flap-pos-norm", 15.0 / 40.0);
         self.model.set("gear/gear-pos-norm", 0.0);
         self.light_engine();
-        self.model.trim(180.0, 1650.0);
+        self.model.trim(160.0, 1565.0);
         self.reset_hud_memory();
         self.origin_lat = 0.0;
         self.origin_lon = 0.0;
@@ -531,9 +536,7 @@ impl Plugin for SimPlugin {
             .init_resource::<crate::ils::Ils>()
             .add_systems(
                 FixedUpdate,
-                (advance_fdm, capture_render_pose)
-                    .chain()
-                    .run_if(unpaused),
+                (advance_fdm, capture_render_pose).chain().run_if(unpaused),
             )
             .add_systems(Update, publish_state.run_if(unpaused));
     }
@@ -927,5 +930,190 @@ mod tests {
             "must rest on the runway, not sink through it"
         );
         assert!(sim.model.get("gear/wow") > 0.5, "back on the wheels");
+    }
+}
+
+#[cfg(test)]
+mod m3_probe {
+    use super::*;
+    use crate::aircraft_profile::ToggleAction;
+    use crate::airfield::AirfieldSpec;
+    use crate::autopilot::{Autopilot, Mcp, advance};
+    use crate::ils;
+
+    /// One M3 recipe run, headless: seat, G-5-3-6 (or a subset), a scripted
+    /// config ladder, and a log line every 10 s plus the 1,000 ft crossing.
+    fn run(tag: &str, at: bool, window: bool) {
+        std::env::set_var("FDM_BACKEND", "rust");
+        let mut sim = Sim::new("737");
+        sim.reset_final_jet();
+        // A breath before the keys, as a human takes: the first steps recompute
+        // the stale weight-on-wheels flag the ground spawn left behind.
+        for _ in 0..120 {
+            sim.model.set("fcs/throttle-cmd-norm", 0.25);
+            sim.model.step();
+        }
+        let spec = AirfieldSpec::zsnm();
+        let mut ap = Autopilot::default();
+        let mut mcp = Mcp::default();
+        mcp.ias_kts = 180.0;
+        mcp.vs_fpm = -700.0;
+        ap.toggle(&*sim.model);
+        if at {
+            ap.press_mode(ToggleAction::AutoThrottle, &*sim.model);
+        }
+        ap.press_mode(ToggleAction::VsMode, &*sim.model);
+        ap.press_mode(ToggleAction::Approach, &*sim.model);
+        eprintln!(
+            "[{tag}] setup: engaged={} vert={:?} at={:?} armed={} wow={} alt={:.0}",
+            ap.engaged,
+            ap.vert,
+            ap.at,
+            ap.app_armed,
+            sim.model.get("gear/wow"),
+            sim.model.get("position/h-sl-ft"),
+        );
+        let dt = 1.0 / 120.0;
+        let mut t = 0.0f64;
+        let mut last_log = -1.0;
+        for i in 0..120 * 240 {
+            sim.model.set("fcs/throttle-cmd-norm", 0.25);
+            let beams = ils::compute(&sim, &spec);
+            advance(&mut *sim.model, &mcp, &mut ap, dt, &beams);
+            sim.model.step();
+            t += dt;
+            if t > 2.0 {
+                sim.model.set("fcs/flap-cmd-norm", 15.0 / 40.0);
+            }
+            if t > 12.0 {
+                sim.model.set("gear/gear-cmd-norm", 1.0);
+            }
+            if t > 25.0 {
+                sim.model.set("fcs/flap-cmd-norm", 0.75);
+            }
+            // The SOP variant dials the window down with the ladder.
+            if window {
+                mcp.ias_kts = if t < 25.0 { 160.0 } else { 131.0 };
+            }
+            let alt = sim.model.get("position/h-sl-ft");
+            if t - last_log >= 10.0 {
+                last_log = t;
+                eprintln!(
+                    "[{tag}] t={t:5.0} alt={alt:6.0} cas={:6.1} vs={:6.0} pitch={:5.1} flap={:4.0} gear={:3.0} vert={:?} gs={:+.2}",
+                    sim.model.get("velocities/vc-kts"),
+                    sim.model.get("velocities/h-dot-fps") * 60.0,
+                    sim.model.get("attitude/theta-deg"),
+                    sim.model.get("fcs/flap-pos-deg"),
+                    sim.model.get("gear/gear-pos-norm") * 30.0,
+                    ap.vert,
+                    beams.gs_dev_deg,
+                );
+            }
+            if alt < 1000.0 && t > 5.0 {
+                eprintln!(
+                    "[{tag}] GATE t={t:5.0} alt={alt:6.0} cas={:6.1} vs={:6.0} flap={:4.0} gear={:3.0} vert={:?}",
+                    sim.model.get("velocities/vc-kts"),
+                    sim.model.get("velocities/h-dot-fps") * 60.0,
+                    sim.model.get("fcs/flap-pos-deg"),
+                    sim.model.get("gear/gear-pos-norm") * 30.0,
+                    ap.vert,
+                );
+                return;
+            }
+        }
+        eprintln!("[{tag}] never reached the gate");
+    }
+
+    #[test]
+    fn the_m3_recipe_passes_the_gate() {
+        // The coached flow, headless: G-5-3-6, the ladder-paced config, and
+        // the A/T window dialled down with the ladder (the [ key's work).
+        // The 1,000 ft gate's four criteria must all be green.
+        std::env::set_var("FDM_BACKEND", "rust");
+        let mut sim = Sim::new("737");
+        sim.reset_final_jet();
+        for _ in 0..120 {
+            sim.model.set("fcs/throttle-cmd-norm", 0.25);
+            sim.model.step();
+        }
+        let spec = AirfieldSpec::zsnm();
+        let mut ap = Autopilot::default();
+        let mut mcp = Mcp::default();
+        mcp.ias_kts = 160.0;
+        mcp.vs_fpm = -950.0;
+        ap.toggle(&mut *sim.model);
+        ap.press_mode(ToggleAction::AutoThrottle, &mut *sim.model);
+        ap.press_mode(ToggleAction::VsMode, &mut *sim.model);
+        ap.press_mode(ToggleAction::Approach, &mut *sim.model);
+        assert!(ap.engaged, "the seat must not refuse the A/P");
+        let dt = 1.0 / 120.0;
+        let mut t = 0.0f64;
+        // The lesson's gate reads a two-second trend of the sink, not one
+        // frame of the approach's phugoid: mirror the meter's filter here.
+        let mut vs_trend = 0.0f64;
+        for i in 0..120 * 240 {
+            sim.model.set("fcs/throttle-cmd-norm", 0.25);
+            let beams = ils::compute(&sim, &spec);
+            advance(&mut *sim.model, &mcp, &mut ap, dt, &beams);
+            sim.model.step();
+            t += dt;
+            let vs_raw = sim.model.get("velocities/h-dot-fps") * 60.0;
+            vs_trend += (vs_raw - vs_trend) * (dt / 2.0);
+            if t > 3.0 {
+                sim.model.set("gear/gear-cmd-norm", 1.0);
+            }
+            if t > 8.0 {
+                sim.model.set("fcs/flap-cmd-norm", 0.75);
+                mcp.ias_kts = 131.0;
+            }
+            let alt = sim.model.get("position/h-sl-ft");
+            if (5.0..90.0).contains(&t) && alt < 1000.0 {
+                let cas = sim.model.get("velocities/vc-kts");
+                let flap = sim.model.get("fcs/flap-pos-deg");
+                let gear = sim.model.get("gear/gear-pos-norm");
+                let vs = vs_trend;
+                eprintln!("gate t={t:.0} cas={cas:.0} vs={vs:.0} flap={flap:.0} gear={gear:.0}");
+                assert!(gear > 0.95, "gear down at the gate: {gear}");
+                assert!(flap >= 14.0, "flaps 15 at the gate: {flap}");
+                assert!(
+                    cas <= crate::landing::vref(0.75) + 25.0,
+                    "speed at the gate: {cas}"
+                );
+                // The lesson re-uses approach::criteria's shared budget.
+                assert!(vs.abs() <= 1_000.0, "sink at the gate: {vs}");
+                return;
+            }
+        }
+        panic!("the recipe never reached the gate");
+    }
+}
+
+#[cfg(test)]
+mod trim_probe {
+    use super::*;
+
+    #[test]
+    fn probe_seat_trims() {
+        std::env::set_var("FDM_BACKEND", "rust");
+        for (flap, gear, tag) in [
+            (5.0 / 40.0, 0.0, "flaps5 gear-up"),
+            (15.0 / 40.0, 0.0, "flaps15 gear-up"),
+            (5.0 / 40.0, 1.0, "flaps5 gear-dn"),
+            (0.33, 1.0, "reset_final cfg"),
+        ] {
+            let mut sim = Sim::new("737");
+            sim.reset_final_jet();
+            sim.model.set("fcs/flap-cmd-norm", flap);
+            sim.model.set("fcs/flap-pos-norm", flap);
+            sim.model.set("gear/gear-cmd-norm", gear);
+            sim.model.set("gear/gear-pos-norm", gear);
+            sim.model.trim(180.0, 1550.0);
+            eprintln!(
+                "[{tag}] trim={:+.3} elev={:+.3} theta={:+.2}",
+                sim.model.get("fcs/pitch-trim-cmd-norm"),
+                sim.model.get("fcs/elevator-cmd-norm"),
+                sim.model.get("attitude/theta-deg"),
+            );
+        }
     }
 }

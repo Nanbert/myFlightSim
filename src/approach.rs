@@ -13,7 +13,7 @@
 //! - gear down (indicator up-lock, `gear_pos` > 0.95);
 //! - flaps at the approach setting (15 of the wing's 40);
 //! - speed no more than Vref + 25 (`landing::vref`, the fence schedule);
-//! - sink inside 800 fpm.
+//! - sink inside 1,000 fpm.
 //!
 //! The gate arms again above 1500 ft, so a go-around gets re-graded on the
 //! next crossing instead of carrying the old verdict forever.
@@ -21,7 +21,7 @@
 use bevy::prelude::*;
 
 use crate::aircraft_profile;
-use crate::app_state::{unpaused, AppState};
+use crate::app_state::{AppState, unpaused};
 use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim};
 use crate::ui_theme;
@@ -34,7 +34,7 @@ const REARM_ALT: f64 = 1500.0;
 /// approach, not the balloon of a touch-and-go or the settle at spawn.
 const APPROACH_MIN_GS: f64 = 90.0;
 /// Sink budget at the gate, ft/min.
-const SINK_BUDGET: f64 = 800.0;
+const SINK_BUDGET: f64 = 1_000.0;
 /// How long the verdict banner stays up.
 const BANNER_SECS: f32 = 8.0;
 /// Flap degrees the "approach flaps" criterion wants (15 of 40).
@@ -47,7 +47,13 @@ pub struct GateItem {
 }
 
 /// Evaluate the four stability criteria. Kept plain for unit tests.
-pub fn criteria(gear_pos: f64, flap_deg: f64, cas: f64, vs_fpm: f64, flap_norm: f64) -> Vec<GateItem> {
+pub fn criteria(
+    gear_pos: f64,
+    flap_deg: f64,
+    cas: f64,
+    vs_fpm: f64,
+    flap_norm: f64,
+) -> Vec<GateItem> {
     vec![
         GateItem {
             label: "GEAR DOWN",

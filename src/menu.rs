@@ -1652,8 +1652,8 @@ fn start_flight(
     // rate instead of sitting level on the 0 default (and never letting the
     // glideslope capture).
     if matches!(active.0, Some(Lesson::JetLanding)) {
-        mcp.ias_kts = 180.0;
-        mcp.vs_fpm = -700.0;
+        mcp.ias_kts = 160.0;
+        mcp.vs_fpm = -950.0;
     }
     rp.init = false;
 }

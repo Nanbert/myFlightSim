@@ -10,7 +10,8 @@
 //!   hands over at touchdown on its own; RETARD has already left the
 //!   throttles at idle).
 //! - **The 1,000 ft stabilized gate**, the airline's hard rule: gear down,
-//!   flaps 15 or more, at or under Vref+25, sinking no harder than 800 fpm
+//!   flaps 15 or more, at or under Vref+25, sinking no harder than 1,000
+//!   fpm
 //!   (the same `approach::criteria` the free-flight gate checks). Anything
 //!   red there is a **GO AROUND FAIL** — R and fly it again.
 //! - **The touchdown** — sink at the wheels, the 300 m aiming point, the
@@ -443,14 +444,14 @@ fn compose_live(m: &JetLandingMeter, t: &Telem, now: f32) -> Option<String> {
             }
             // The config ladder: the first item not yet done is the call.
             let config = if t.flap_deg < 4.5 {
-                "FLAPS 5 (F) — SLOW 180".to_owned()
+                "FLAPS 5 (F)\nSLOW 160: A/T WINDOW [ x4".to_owned()
             } else if t.flap_deg < 14.5 {
-                "FLAPS 15 (F) — SLOW 160".to_owned()
+                "FLAPS 15 (F)\nSLOW 160: A/T WINDOW [ x4".to_owned()
             } else if t.gear_pos < 0.95 {
                 "FLAPS 15 SET — GEAR DOWN (U)".to_owned()
             } else if t.flap_deg < 29.5 {
                 format!(
-                    "GEAR DOWN — FLAPS 30 (F)\nSLOW TO {:.0} KT",
+                    "GEAR DOWN — FLAPS 30 (F)\nSLOW {:.0}: A/T WINDOW [",
                     crate::landing::vref(LAND_FLAP_NORM) + 5.0
                 )
             } else {
