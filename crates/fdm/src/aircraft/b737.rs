@@ -241,25 +241,22 @@ const PRE: &[NamedFn] = &[GE_CD, GE_CL];
 /// Three fuel tanks: full left/right wing tanks (10000 lb each) and a part-full
 /// center tank (4000 lb). Positions are structural-frame inches, matching the
 /// `<tank>` locations.
-/// MTOW load: OEW 89 700 lb, 60 000 lb fuel (25 k wing × 2 + 10 k centre),
-/// 22 900 lb payload — 172 600 lb total, CG near [610, 0, -32].
+/// Training-ferry load: OEW 89 700 lb, 10 000 lb fuel (5 k wing × 2), no
+/// payload — 99 700 lb total, CG near [600, 0, -34].
+///
+/// The wing tables were authored for the JSBSim model's own book (emptywt
+/// 83 000 lb, no load); the 172 600 lb MTOW point load that rode here for a
+/// while needed 13° of alpha to hold 180 kt at flaps 5 — a permanent mush
+/// that no autopilot could track (and the cruise-trim drift's root). At this
+/// weight the approach book (Vref 118-145) flies at healthy angles again.
 const POINTS: &[PointMass] = &[
     PointMass {
-        weight_lb: 25000.0,
+        weight_lb: 5000.0,
         pos_in: [520.0, -80.0, -18.0],
     },
     PointMass {
-        weight_lb: 25000.0,
+        weight_lb: 5000.0,
         pos_in: [520.0, 80.0, -18.0],
-    },
-    PointMass {
-        weight_lb: 10000.0,
-        pos_in: [480.0, 0.0, -18.0],
-    },
-    // Payload: passengers and baggage at the cabin CG.
-    PointMass {
-        weight_lb: 22900.0,
-        pos_in: [750.0, 0.0, -40.0],
     },
 ];
 
