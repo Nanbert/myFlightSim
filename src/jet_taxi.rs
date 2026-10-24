@@ -77,72 +77,64 @@ const W_LINE: f32 = 0.40;
 /// The live HOLD SHORT prompt wakes inside this distance of the pair.
 const LIVE_RANGE: f32 = 20.0;
 
-/// Inside this distance of the stub junction the arrow switches from
-/// straight-ahead to the right turn onto the stub.
-const TURN_NEAR: f32 = 60.0;
+// --- the guidance script -------------------------------------------------------
+//
+// Three fixed checkpoints, in route order, each a spot in the world where the
+// arrow stands and the heading it points. The arrow never tracks the
+// aeroplane: it says its piece at its post and is gone.
 
-/// Parked this long (after rolling) and the arrow comes back to point the
-/// way. Below it a creep's stop-and-go doesn't flash the display.
-const HINT_REST: f32 = 2.0;
+/// Above this ground speed the aircraft "is moving" (CP1's exit).
+const MOVE_GS: f32 = 1.0;
+/// The approach band where a junction's arrow stands, metres.
+const APPROACH_M: f32 = 100.0;
+/// How far ahead of the stand CP1's arrow posts, metres.
+const STAND_AHEAD_M: f32 = 80.0;
+/// Past the mid-field junction's centreline by this much, its arrow retires.
+const PASSED_M: f32 = 5.0;
+/// This far onto the stub, x-wise, the turn reads as flown.
+const TURNED_IN_M: f32 = 15.0;
 
-/// The route's next command, as the arrow card shows it. Pilot-relative: it
-/// says which way to turn the nose, not which way is north — the painted
-/// lines confirm, the arrow leads.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Arrow {
-    #[default]
-    Hidden,
-    /// The next turn is off the left wing.
-    Left,
-    /// Tracking the route; roll on.
-    Straight,
-    /// The next turn is off the right wing.
-    Right,
-    /// Pointing back up the route — come about.
-    TurnRound,
-    /// The hold-short pair is at hand: the HOLD SHORT prompt owns it now.
-    Stop,
-}
+/// The guidance arrow's cue for a frame: `(x, z, world heading)` of a fixed
+/// post. `None` — the route between posts says nothing.
+pub(crate) type ArrowHint = (f32, f32, f32);
 
-/// Signed heading difference wrapped to ±180°, degrees.
-fn hdg_delta(hdg: f32, reference: f32) -> f32 {
-    (hdg - reference + 180.0).rem_euclid(360.0) - 180.0
-}
-
-/// The route's next command for a frame on `seg` at `heading_deg`.
-fn arrow_state(seg: CorridorSeg, heading_deg: f64, x: f32, z: f32, spec: &AirfieldSpec) -> Arrow {
-    if seg == CorridorSeg::Stub && (x - spec.hold_line_x).abs() <= LIVE_RANGE {
-        return Arrow::Stop;
+/// The three posts of the guidance script, evaluated off the live geometry:
+///
+/// - **CP1 — the stand**: before the first move, the arrow stands on the
+///   lead-in 80 m ahead of the stand, pointing south — the left turn out.
+///   The first movement retires it.
+/// - **CP2 — the mid-field junction**: approaching the connector between the
+///   stand and the departure stub, the arrow stands at the crossroads
+///   pointing south — *straight on, this is not the hold* — until passed.
+/// - **CP3 — the destination**: approaching the stub junction, the arrow
+///   stands at the mouth pointing west — the right turn — until the turn
+///   reads as flown.
+fn checkpoint_hint(
+    never_moved: bool,
+    gs: f32,
+    x: f32,
+    z: f32,
+    spec: &AirfieldSpec,
+) -> Option<ArrowHint> {
+    let stand = spec.stand?;
+    let stub_z = spec.lesson_stub_z()?;
+    let mid_z = spec
+        .connectors
+        .iter()
+        .map(|c| c.z)
+        .find(|cz| stand.z < *cz && *cz < stub_z);
+    if never_moved && gs <= MOVE_GS {
+        return Some((stand.x - STAND_AHEAD_M, stand.z, 180.0));
     }
-    match seg {
-        // The lead-in's mouth meets the parallel: from the west-facing
-        // roll-out, south is off the left wing.
-        CorridorSeg::LeadIn => Arrow::Left,
-        CorridorSeg::Parallel => {
-            let stub_z = spec.lesson_stub_z().unwrap_or(z);
-            if (z - stub_z).abs() < TURN_NEAR {
-                // The last junction: from the southbound roll, the stub's
-                // west is off the right wing.
-                if hdg_delta(heading_deg as f32, 270.0).abs() <= 45.0 {
-                    Arrow::Straight
-                } else {
-                    Arrow::Right
-                }
-            } else {
-                // Keep turning left until the nose is south; pointed north,
-                // the route is behind.
-                let south = hdg_delta(heading_deg as f32, 180.0).abs();
-                if south <= 45.0 {
-                    Arrow::Straight
-                } else if south >= 135.0 {
-                    Arrow::TurnRound
-                } else {
-                    Arrow::Left
-                }
-            }
+    if let Some(mz) = mid_z {
+        if (mz - APPROACH_M..mz + PASSED_M).contains(&z) {
+            return Some((spec.taxi_x, mz, 180.0));
         }
-        CorridorSeg::Stub => Arrow::Straight,
     }
+    if (stub_z - APPROACH_M..=stub_z + 10.0).contains(&z) && x >= spec.taxi_x - TURNED_IN_M {
+        return Some((spec.taxi_x, stub_z, 270.0));
+    }
+    None
 }
 
 /// Whether a frame on `seg` sits in the junction with the parallel — the arc
@@ -176,11 +168,9 @@ pub struct JetTaxiMeter {
     /// The flow prompt's live text while rolling; `None` while parked (the
     /// metre has nothing to say until the grade or the next rollout).
     pub(crate) live: Option<String>,
-    /// The navigation arrow's state this frame; the arrow card shows it.
-    pub(crate) arrow: Arrow,
-    /// Whether the arrow should stand up and be seen this frame: rolling on
-    /// route keeps it out of the view, a stop or a wrong way brings it back.
-    pub(crate) arrow_visible: bool,
+    /// The guidance arrow's post this frame (see `checkpoint_hint`); `None`
+    /// between posts.
+    pub(crate) arrow_hint: Option<ArrowHint>,
     /// Frozen finals after the graded stop on the departure stub.
     pub(crate) done: Option<JetFinals>,
     /// A graded stop is parked: the lesson pins its card on this latch.
@@ -223,7 +213,6 @@ impl JetTaxiMeter {
         on_ground: bool,
         gs_kts: f64,
         throttle: f64,
-        heading_deg: f64,
         x: f32,
         z: f32,
         spec: &AirfieldSpec,
@@ -233,8 +222,7 @@ impl JetTaxiMeter {
             // A graded stop is parked: the finals are frozen and the lesson
             // owns the display.
             self.live = None;
-            self.arrow = Arrow::Hidden;
-            self.arrow_visible = false;
+            self.arrow_hint = None;
             return;
         }
         let gs = gs_kts as f32;
@@ -244,18 +232,7 @@ impl JetTaxiMeter {
         } else {
             None
         };
-        self.arrow = corridor
-            .map(|(seg, _)| arrow_state(seg, heading_deg, x, z, spec))
-            .unwrap_or(Arrow::Hidden);
-        // The arrow is a nudge, not a fixture: up at the stand before the
-        // first move (pointing the way out), gone while she rolls on route,
-        // back after a stop or the instant the nose points back up the
-        // route.
-        self.arrow_visible = if gs > REST_MAX_GS {
-            self.arrow == Arrow::TurnRound
-        } else {
-            self.roll_secs == 0.0 || self.rest_for >= HINT_REST
-        };
+        self.arrow_hint = checkpoint_hint(self.roll_secs == 0.0, gs, x, z, spec);
         if gs > REST_MAX_GS {
             // Rolling — any taxi pace counts, creeping to the line included.
             self.rest_for = 0.0;
@@ -453,7 +430,6 @@ fn update(
         aircraft.on_ground,
         aircraft.gs_kts,
         aircraft.throttle,
-        aircraft.heading_deg,
         aircraft.pos.x,
         aircraft.pos.z,
         spec,
@@ -508,17 +484,14 @@ impl Plugin for JetTaxiPlugin {
 // --- the navigation arrow ------------------------------------------------------
 //
 // The lesson's guidance lives in the world, not on the screen: a big glowing
-// arrow 80 m ahead of the nose, near the ground. It appears when the pilot
-// needs a nudge — pointing the way out of the stand at the start, correcting
-// a wrong-way run, re-appearing after a stop — and vanishes the moment the
-// 737 rolls on route, so it never crowds the view while taxiing.
+// arrow standing at a fixed post near the ground, sliding along the heading
+// it points — the pointing gesture. The meter's checkpoint script decides
+// the post (see `checkpoint_hint`); this entity only shows it.
 
 /// The in-world navigation arrow.
 #[derive(Component)]
 struct NavArrow;
 
-/// How far ahead of the nose the arrow floats, metres.
-const AHEAD_M: f32 = 80.0;
 /// The arrow's height above the pavement, metres.
 const ARROW_Y: f32 = 1.5;
 /// The shaft length and the head's length/radius, metres.
@@ -567,7 +540,6 @@ fn spawn_nav_arrow(
 /// lesson, under a pinned card, or rolling on route, it hides.
 fn update_nav_arrow(
     time: Res<Time>,
-    aircraft: Res<AircraftState>,
     lesson: Res<ActiveLesson>,
     meter: Res<JetTaxiMeter>,
     paused: Option<Res<Paused>>,
@@ -576,43 +548,34 @@ fn update_nav_arrow(
     let Ok((mut vis, mut tf)) = q.single_mut() else {
         return;
     };
-    // Straight is the absence of a command and Stop belongs to the HOLD
-    // SHORT prompt; neither takes the arrow.
-    let directional = matches!(meter.arrow, Arrow::Left | Arrow::Right | Arrow::TurnRound);
-    let show =
-        directional && meter.arrow_visible && lesson.0 == Some(Lesson::JetTaxi) && paused.is_none();
-    *vis = if show {
+    let hint = if lesson.0 == Some(Lesson::JetTaxi) && paused.is_none() {
+        meter.arrow_hint
+    } else {
+        None
+    };
+    *vis = if hint.is_some() {
         Visibility::Visible
     } else {
         Visibility::Hidden
     };
-    if !show {
+    let Some((x, z, hdg)) = hint else {
         return;
-    }
-    // Ahead of the nose along the current heading (psi 0 = north = -Z): the
-    // ground plane is x/z.
-    let hdg = aircraft.heading_deg as f32;
-    let hdg_rad = hdg.to_radians();
-    let ground = Vec2::new(aircraft.pos.x, aircraft.pos.z);
-    let dir = Vec2::new(hdg_rad.sin(), -hdg_rad.cos());
-    let ahead = ground + dir * AHEAD_M;
-    // The command as a world heading, then as a yaw that parks +X on it.
-    let cmd_hdg = match meter.arrow {
-        Arrow::Left => hdg - 90.0,
-        Arrow::Right => hdg + 90.0,
-        Arrow::TurnRound => hdg + 180.0,
-        _ => hdg,
     };
+    // The post is fixed in the world; the animation slides the arrow along
+    // the heading it points — the pointing gesture — never sideways.
     let t = time.elapsed_secs();
-    let sway = (t * std::f32::consts::TAU * 0.9).sin() * 10.0_f32.to_radians();
-    let bob = (t * std::f32::consts::TAU * 1.8).sin() * 0.25;
-    tf.rotation = Quat::from_rotation_y((90.0 - cmd_hdg).to_radians() + sway);
-    tf.translation = Vec3::new(ahead.x, ARROW_Y + bob, ahead.y);
+    let slide = (t * std::f32::consts::TAU * 0.9).sin() * 3.0;
+    let hdg_rad = hdg.to_radians();
+    let dir = Vec2::new(hdg_rad.sin(), -hdg_rad.cos());
+    let post = Vec2::new(x, z) + dir * slide;
+    // A yaw that parks the model's +X on the world heading (psi 0 = -Z).
+    tf.rotation = Quat::from_rotation_y((90.0 - hdg).to_radians());
+    tf.translation = Vec3::new(post.x, ARROW_Y, post.y);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Arrow, JetTaxiMeter};
+    use super::JetTaxiMeter;
     use crate::airfield::AirfieldSpec;
 
     const DT: f32 = 1.0 / 60.0;
@@ -624,15 +587,10 @@ mod tests {
     }
 
     fn roll(m: &mut JetTaxiMeter, secs: f32, gs: f64, thr: f64, x: f32, z: f32) {
-        roll_hdg(m, secs, gs, thr, x, z, 180.0);
-    }
-
-    /// Like `roll`, with the nose heading the frames carry.
-    fn roll_hdg(m: &mut JetTaxiMeter, secs: f32, gs: f64, thr: f64, x: f32, z: f32, hdg: f64) {
         let s = spec();
         let steps = (secs / DT).ceil() as usize;
         for _ in 0..steps {
-            m.step(true, gs, thr, hdg, x, z, &s, DT);
+            m.step(true, gs, thr, x, z, &s, DT);
         }
     }
 
@@ -655,77 +613,56 @@ mod tests {
         assert!(live.contains("TAXI CHECK"), "{live}");
         assert!(live.contains("BREAK AWAY"), "{live}");
         assert!(live.contains("ARROW"), "{live}");
-        // Once rolling, the numbers line and the left arrow carry the frame.
+        // Once rolling, the numbers line carries the frame.
         roll(&mut m, 1.0, 8.0, 0.30, 240.0, -1500.0);
         let live = m.live.expect("the leg prompt");
         assert!(live.contains('Δ'), "{live}");
-        assert_eq!(m.arrow, Arrow::Left);
     }
 
     #[test]
-    fn the_arrow_leads_the_route() {
+    fn the_arrow_plays_the_three_checkpoints() {
         let mut m = JetTaxiMeter::default();
-        // Out of the stand, nose west: the parallel's south is off the left
-        // wing.
-        roll_hdg(&mut m, 1.0, 8.0, 0.02, 200.0, -1500.0, 270.0);
-        assert_eq!(m.arrow, Arrow::Left);
-        // Established southbound on the parallel: roll on.
-        roll_hdg(&mut m, 1.0, 15.0, 0.02, 130.0, -800.0, 180.0);
-        assert_eq!(m.arrow, Arrow::Straight);
-        // Pointed back up the route: come about.
-        roll_hdg(&mut m, 1.0, 10.0, 0.02, 130.0, -800.0, 0.0);
-        assert_eq!(m.arrow, Arrow::TurnRound);
-        // Still swinging the left turn onto south: keep coming left.
-        roll_hdg(&mut m, 1.0, 8.0, 0.02, 140.0, -1495.0, 240.0);
-        assert_eq!(m.arrow, Arrow::Left);
-        // The last junction: from the southbound roll, the stub is a right.
-        roll_hdg(&mut m, 1.0, 8.0, 0.02, 130.0, 100.0, 180.0);
-        assert_eq!(m.arrow, Arrow::Right);
-        // On the stub, tracking the line west.
-        roll_hdg(&mut m, 1.0, 8.0, 0.02, 80.0, 134.0, 270.0);
-        assert_eq!(m.arrow, Arrow::Straight);
-        // The pair at hand: the stop takes the card.
-        roll_hdg(&mut m, 1.0, 4.0, 0.02, 45.0, 134.0, 270.0);
-        assert_eq!(m.arrow, Arrow::Stop);
-        // Off the route: nothing to lead with.
-        roll_hdg(&mut m, 1.0, 8.0, 0.02, 300.0, -1500.0, 270.0);
-        assert_eq!(m.arrow, Arrow::Hidden);
+        // CP1 — the stand, before the first move: the post on the lead-in
+        // 80 m out, pointing south (the left turn out).
+        roll(&mut m, 1.0, 0.0, 0.0, 252.0, -1500.0);
+        assert_eq!(m.arrow_hint, Some((172.0, -1500.0, 180.0)));
+        // Moving: the post has said its piece.
+        roll(&mut m, 0.5, 8.0, 0.30, 240.0, -1500.0);
+        assert_eq!(m.arrow_hint, None);
+        // Rolling the parallel between junctions: quiet.
+        roll(&mut m, 2.0, 15.0, 0.02, 130.0, -800.0);
+        assert_eq!(m.arrow_hint, None);
+        // CP2 — approaching the mid-field junction: straight on through.
+        roll(&mut m, 1.0, 12.0, 0.02, 130.0, -420.0);
+        assert_eq!(m.arrow_hint, Some((130.0, -360.0, 180.0)));
+        // Past it: gone.
+        roll(&mut m, 1.0, 12.0, 0.02, 130.0, -300.0);
+        assert_eq!(m.arrow_hint, None);
+        // CP3 — approaching the destination junction: the right turn.
+        roll(&mut m, 1.0, 10.0, 0.02, 130.0, 60.0);
+        assert_eq!(m.arrow_hint, Some((130.0, 134.0, 270.0)));
+        // Through the turn, tracking the stub: the script is done.
+        roll(&mut m, 1.0, 8.0, 0.02, 110.0, 134.0);
+        assert_eq!(m.arrow_hint, None);
     }
 
     #[test]
-    fn the_arrow_appears_only_when_nudged() {
+    fn a_graded_attempt_hides_the_arrow() {
         let mut m = JetTaxiMeter::default();
-        // The stand, never rolled: the arrow points the way out, at once.
-        roll(&mut m, 0.5, 0.0, 0.0, 252.0, -1500.0);
-        assert_eq!(m.arrow, Arrow::Left);
-        assert!(m.arrow_visible, "the start shows the way out");
-        // Rolling on route: gone.
-        roll(&mut m, 1.0, 8.0, 0.30, 240.0, -1500.0);
-        assert!(!m.arrow_visible, "rolling hides the arrow");
-        // Rolling the wrong way: it stands up that instant.
-        roll_hdg(&mut m, 1.0, 10.0, 0.02, 130.0, -800.0, 0.0);
-        assert_eq!(m.arrow, Arrow::TurnRound);
-        assert!(m.arrow_visible, "the wrong way brings it back");
-        // A creep's pause stays quiet; a real stop brings it back.
-        roll_hdg(&mut m, 1.0, 10.0, 0.02, 130.0, -800.0, 180.0);
-        roll(&mut m, 1.0, 0.2, 0.0, 130.0, -800.0);
-        assert!(!m.arrow_visible, "a second's pause is nothing");
-        roll(&mut m, 2.5, 0.2, 0.0, 130.0, -800.0);
-        assert!(m.arrow_visible, "a stop asks for the way");
-        assert_eq!(m.arrow, Arrow::Straight, "and it is straight on route");
+        textbook(&mut m);
+        assert!(m.done.is_some());
+        assert_eq!(m.arrow_hint, None, "the card owns the display");
     }
 
     #[test]
     fn a_stop_off_the_stub_says_so() {
         let mut m = JetTaxiMeter::default();
         roll(&mut m, 4.0, 12.0, 0.02, 200.0, -1500.0);
-        // Parked on the apron connector — not the hold: the prompt explains
-        // and the arrow keeps leading.
+        // Parked on the apron connector — not the hold: the prompt explains.
         roll(&mut m, PARK, 0.2, 0.0, 200.0, -1500.0);
         let live = m.live.clone().expect("the hint");
         assert!(live.contains("NOT THE HOLD"), "{live}");
         assert_eq!(m.done, None, "no card out here");
-        assert_eq!(m.arrow, Arrow::Left);
     }
 
     #[test]
@@ -806,7 +743,7 @@ mod tests {
         // Rolling through the lead-in's mouth (within 25 m of the parallel):
         // the prompt caps at 10 kt and the frame stays off the sampler.
         let mut m = JetTaxiMeter::default();
-        m.step(true, 12.0, 0.02, 180.0, 140.0, -1500.0, &s, DT);
+        m.step(true, 12.0, 0.02, 140.0, -1500.0, &s, DT);
         assert!(
             m.live.as_deref().unwrap_or("").contains("SLOW"),
             "the junction prompts the slow band: {:?}",
@@ -815,7 +752,7 @@ mod tests {
         assert_eq!(m.samples, 0, "the junction arc is not a centreline mark");
         // The same speed on the clean parallel is inside the cruise band and
         // on the sampler.
-        m.step(true, 12.0, 0.02, 180.0, 130.0, -800.0, &s, DT);
+        m.step(true, 12.0, 0.02, 130.0, -800.0, &s, DT);
         assert!(
             !m.live.as_deref().unwrap_or("").contains("SLOW"),
             "the straight parallel is in band at 12 kt: {:?}",
