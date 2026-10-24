@@ -20,7 +20,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::airfield::AirfieldSpec;
-use crate::app_state::{flying, AppState, Paused};
+use crate::app_state::{AppState, Paused, flying};
 use crate::mission::{ActiveLesson, Lesson, PendingLesson};
 use crate::sim::AircraftState;
 use crate::taxi::HoldShort;
@@ -61,7 +61,10 @@ impl Plugin for LessonFlowPlugin {
             // never written, so the last write lingers at the failure spot —
             // an unordered watch could read that stale state on the first
             // frame after a respawn and re-arm the very same FAIL.
-            .add_systems(Update, watch.after(crate::sim::publish_state).run_if(flying))
+            .add_systems(
+                Update,
+                watch.after(crate::sim::publish_state).run_if(flying),
+            )
             .add_systems(OnEnter(AppState::Menu), replay_lesson)
             .add_systems(OnExit(AppState::Flying), reset_flow)
             // The centred prompt's lifetime is state-driven: every watcher
@@ -203,7 +206,9 @@ pub(crate) fn watch(
         && !graded
         && matches!(lesson, Lesson::Taxi | Lesson::JetTaxi)
         && aircraft.on_ground
-        && spec.connector_offset(aircraft.pos.x, aircraft.pos.z).is_some()
+        && spec
+            .connector_offset(aircraft.pos.x, aircraft.pos.z)
+            .is_some()
         && aircraft.pos.x < spec.hold_line_x - nose_lead
     {
         open_fail(&mut flow, &mut commands, FAIL_INCURSION);
@@ -287,7 +292,12 @@ pub(crate) fn watch(
     if matches!(lesson, Lesson::JetLanding) {
         if no_popup {
             if let Some(reason) = meters.jll.fail {
-                open_fail(&mut flow, &mut commands, reason);
+                open_fail_detail(
+                    &mut flow,
+                    &mut commands,
+                    reason,
+                    meters.jll.fail_detail.clone(),
+                );
                 return;
             }
             if meters.jll.settled && meters.jll.done.is_some() {
@@ -307,12 +317,7 @@ pub(crate) fn watch(
         let body = meters.hs.finals_text();
         flow.kind = Some(Card::Grade);
         commands.insert_resource(Paused);
-        spawn_popup(
-            &mut commands,
-            "HOLD SHORT - GRADED",
-            body,
-            false,
-        );
+        spawn_popup(&mut commands, "HOLD SHORT - GRADED", body, false);
         return;
     }
     // --- the live prompt while the flight runs.
@@ -326,9 +331,20 @@ pub(crate) fn watch(
 }
 
 fn open_fail(flow: &mut FlowCard, commands: &mut Commands, reason: &'static str) {
+    open_fail_detail(flow, commands, reason, None);
+}
+
+/// The FAIL popup, optionally with a detail body (the jet landing gate
+/// names the criteria that were red).
+fn open_fail_detail(
+    flow: &mut FlowCard,
+    commands: &mut Commands,
+    reason: &'static str,
+    detail: Option<String>,
+) {
     flow.kind = Some(Card::Fail);
     commands.insert_resource(Paused);
-    spawn_popup(commands, reason, None, false);
+    spawn_popup(commands, reason, detail, false);
 }
 
 /// Every exit from a modal card scrubs it and the freeze explicitly. The
@@ -336,11 +352,7 @@ fn open_fail(flow: &mut FlowCard, commands: &mut Commands, reason: &'static str)
 /// Flying→Menu→Flying double-hop can lose its exit despawn through bevy
 /// state's latest-event-only reader, which left the card pinned after a
 /// respawn.
-fn tear_down(
-    flow: &mut FlowCard,
-    commands: &mut Commands,
-    popup: &Query<Entity, With<FlowPopup>>,
-) {
+fn tear_down(flow: &mut FlowCard, commands: &mut Commands, popup: &Query<Entity, With<FlowPopup>>) {
     flow.kind = None;
     commands.remove_resource::<Paused>();
     for root in popup.iter() {
@@ -355,10 +367,7 @@ fn hide_prompt(prompt: &mut Query<(&mut Text, &mut Node), With<FlowPrompt>>) {
     }
 }
 
-fn show_prompt(
-    prompt: &mut Query<(&mut Text, &mut Node), With<FlowPrompt>>,
-    live: Option<String>,
-) {
+fn show_prompt(prompt: &mut Query<(&mut Text, &mut Node), With<FlowPrompt>>, live: Option<String>) {
     if let Ok((mut text, mut node)) = prompt.single_mut() {
         if let Some(body) = live {
             text.0 = body;

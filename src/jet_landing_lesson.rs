@@ -92,8 +92,7 @@ const W_SPEED: f32 = 0.10;
 const W_TOUCH: f32 = 0.45;
 const W_ROLLOUT: f32 = 0.20;
 
-const FAIL_GO_AROUND: &str =
-    "FAIL - UNSTABLE AT 1000\nGear, flaps, speed or sink: go around and fly it again.";
+const FAIL_GO_AROUND: &str = "FAIL - UNSTABLE AT 1000";
 const FAIL_HARD: &str = "FAIL - HARD LANDING\nMore than 600 fpm at the wheels.";
 
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -186,6 +185,8 @@ pub struct JetLandingMeter {
     stop_secs: f32,
     /// The fail that parked the attempt, for the lesson-flow popup.
     pub(crate) fail: Option<&'static str>,
+    /// The gate items that were red at the crossing, as the popup's body.
+    pub(crate) fail_detail: Option<String>,
     /// The frozen finals of the attempt (at the stop).
     pub(crate) done: Option<Finals>,
     /// A graded attempt holds its card until it re-arms.
@@ -307,8 +308,11 @@ fn tick(m: &mut JetLandingMeter, t: Telem, now: f32, dt: f32) {
                 let items = crate::approach::criteria(
                     t.gear_pos, t.flap_deg, t.cas_kts, t.vs_fpm, flap_norm,
                 );
-                if items.iter().any(|i| !i.ok) {
+                let red: Vec<&str> = items.iter().filter(|i| !i.ok).map(|i| i.label).collect();
+                if !red.is_empty() {
                     m.fail = Some(FAIL_GO_AROUND);
+                    m.fail_detail =
+                        Some(format!("Go around and fly it again.\n\n{}", red.join("\n")));
                 } else {
                     m.callout = Some(("1000 — STABLE".to_owned(), now + CALLOUT_SECS));
                 }
@@ -341,6 +345,7 @@ fn tick(m: &mut JetLandingMeter, t: Telem, now: f32, dt: f32) {
                 let frame = touch_frame(&t, m);
                 if frame.fpm < HARD_FPM {
                     m.fail = Some(FAIL_HARD);
+                    m.fail_detail = None;
                     m.phase = Phase::Graded;
                     m.live = None;
                     return;
@@ -800,6 +805,14 @@ mod tests {
         tick_at(&mut m, frame(1010.0, 5400.0, 165.0, 5.0, 0.0), 0.0);
         tick_at(&mut m, frame(990.0, 5300.0, 165.0, 5.0, 0.0), 0.1);
         assert_eq!(m.fail, Some(FAIL_GO_AROUND));
+        // The card names what was red: clean at the gate fails the gear and
+        // the flap setting; 165 kt is inside Vref(5)+25 and the sink is
+        // gentle, so those two stay green.
+        let detail = m.fail_detail.clone().expect("the red list");
+        assert!(detail.contains("GEAR DOWN"), "{detail}");
+        assert!(detail.contains("FLAPS 15"), "{detail}");
+        assert!(!detail.contains("\nSPEED"), "{detail}");
+        assert!(!detail.contains("SINK"), "{detail}");
         assert_eq!(m.done, None);
         assert_eq!(m.live, None, "the popup owns the display");
     }
