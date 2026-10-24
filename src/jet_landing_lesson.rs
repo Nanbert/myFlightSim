@@ -123,6 +123,11 @@ struct TouchFrame {
 
 /// One frame's readouts the tick needs: pure and testable, like the jet
 /// takeoff lesson's `Telem`.
+/// The MCP speed window the frame flew with — the `[` arithmetic's input.
+fn mcp_window(t: &Telem) -> f64 {
+    t.mcp_ias
+}
+
 pub struct Telem {
     on_ground: bool,
     gs_kts: f64,
@@ -138,6 +143,8 @@ pub struct Telem {
     gs_dev_deg: f64,
     /// Along-course distance to the threshold, metres.
     dist_m: f64,
+    /// The MCP IAS window, kt (the prompt's [ arithmetic reads it).
+    mcp_ias: f64,
     gear_pos: f64,
     flap_deg: f64,
     reverse_pos: f64,
@@ -448,16 +455,28 @@ fn compose_live(m: &JetLandingMeter, t: &Telem, now: f32) -> Option<String> {
                 ));
             }
             // The config ladder: the first item not yet done is the call.
+            // The window is 5 kt a press: the prompt does the arithmetic,
+            // naming the target and how many [ presses take it there.
+            let window = mcp_window(t);
             let config = if t.flap_deg < 4.5 {
-                "FLAPS 5 (F)\nSLOW 160: A/T WINDOW [ x4".to_owned()
+                format!(
+                    "FLAPS 5 (F)\n[ x{} -> 160 KT",
+                    (window - 160.0).max(0.0) / 5.0
+                )
             } else if t.flap_deg < 14.5 {
-                "FLAPS 15 (F)\nSLOW 160: A/T WINDOW [ x4".to_owned()
+                format!(
+                    "FLAPS 15 (F)\n[ x{} -> 160 KT",
+                    (window - 160.0).max(0.0) / 5.0
+                )
             } else if t.gear_pos < 0.95 {
-                "FLAPS 15 SET — GEAR DOWN (U)".to_owned()
+                format!(
+                    "FLAPS 15 SET — GEAR DOWN (U)\n[ x{} -> 131 KT",
+                    (window - 131.0).max(0.0) / 5.0
+                )
             } else if t.flap_deg < 29.5 {
                 format!(
-                    "GEAR DOWN — FLAPS 30 (F)\nSLOW {:.0}: A/T WINDOW [",
-                    crate::landing::vref(LAND_FLAP_NORM) + 5.0
+                    "GEAR DOWN — FLAPS 30 (F)\n[ x{} -> 131 KT",
+                    (window - 131.0).max(0.0) / 5.0
                 )
             } else {
                 format!(
@@ -571,6 +590,7 @@ fn finals(m: &JetLandingMeter) -> Finals {
 fn step_m3(
     aircraft: Res<AircraftState>,
     ap: Res<crate::autopilot::Autopilot>,
+    mcp: Res<crate::autopilot::Mcp>,
     ils: Res<crate::ils::Ils>,
     airfield: Res<crate::airfield::Airfield>,
     map: Res<crate::map::ActiveMap>,
@@ -600,6 +620,7 @@ fn step_m3(
             gs_dev_deg: if on_beam { ils.gs_dev_deg } else { 0.0 },
             dist_m: ils.dist_m,
             gear_pos: aircraft.gear_pos,
+            mcp_ias: mcp.ias_kts,
             flap_deg: aircraft.flap_deg,
             reverse_pos: aircraft.reverse_pos,
             vert: ap.vert,
@@ -656,6 +677,7 @@ mod tests {
             loc_dev_deg: 0.1,
             gs_dev_deg: 0.05,
             dist_m: dist,
+            mcp_ias: 160.0,
             gear_pos: gear,
             flap_deg: flap,
             reverse_pos: 0.0,
