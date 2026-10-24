@@ -85,6 +85,10 @@ pub enum ToggleAction {
     AutoThrottle,
     /// Switch the MCP speed window between IAS and Mach (737).
     SpeedMach,
+    /// Step the MCP speed window down (737; the A/T holds what it says).
+    SpeedDown,
+    /// Step the MCP speed window up (737).
+    SpeedUp,
     /// Deploy/stow the speedbrake (`fcs/speedbrake-cmd-norm`, 737).
     SpeedBrake,
     /// Arm/disarm thrust reverse (`fcs/reverse-cmd-norm`, 737). The FDM only
@@ -122,6 +126,8 @@ impl ToggleAction {
             ToggleAction::Gear => "gear",
             ToggleAction::Trim => "retrim",
             ToggleAction::RotorTrim => "trim",
+            ToggleAction::SpeedDown => "speed down",
+            ToggleAction::SpeedUp => "speed up",
             ToggleAction::HeliHover => "hover / VTOL",
             ToggleAction::HeliBalance => "auto balance",
             ToggleAction::HdgSel => "HDG SEL",
@@ -485,6 +491,17 @@ pub fn profile(id: &str) -> Profile {
                 t.push(ToggleSpec {
                     action: ToggleAction::Approach,
                     key: KeyCode::Digit6,
+                });
+                // The MCP speed window, on the keys: [ slower, ] faster.
+                // The A/T holds whatever the window says, so the arrival's
+                // speed plan is flyable without leaving the keyboard.
+                t.push(ToggleSpec {
+                    action: ToggleAction::SpeedDown,
+                    key: KeyCode::BracketLeft,
+                });
+                t.push(ToggleSpec {
+                    action: ToggleAction::SpeedUp,
+                    key: KeyCode::BracketRight,
                 });
                 t
             },

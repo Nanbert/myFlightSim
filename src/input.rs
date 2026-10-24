@@ -597,6 +597,13 @@ fn read_input(
             | ToggleAction::LvlChg
             | ToggleAction::AutoThrottle => ap.press_mode(action, &*sim.model),
             ToggleAction::SpeedMach => mcp.toggle_speed_unit(),
+            // The MCP speed window, one nudge per press (the A/T holds it).
+            ToggleAction::SpeedDown => {
+                mcp.nudge(crate::autopilot::McpWindow::Speed, -1.0, false)
+            }
+            ToggleAction::SpeedUp => {
+                mcp.nudge(crate::autopilot::McpWindow::Speed, 1.0, false)
+            }
             // The 737's speedbrake handle and reverse thrust. Reverse drops
             // the autothrottle so it cannot fight the back-up thrust (the pilot
             // retard the throttles to engage reverse on the real jet anyway).
