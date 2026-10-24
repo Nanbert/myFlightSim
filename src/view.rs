@@ -196,9 +196,13 @@ fn cockpit_spec(name: &str) -> Option<ModelSpec> {
             drop: 0.4,
             offset: [0.0; 3],
             yaw: std::f32::consts::PI,
-            eye: Some([0.2801, 2.06, 0.9355]),
+            // The eye sits a hand taller and the rest pose pitches down
+            // enough to hold the runway over the glare shield on the ground
+            // (the panel still fills the lower view); fine-tune live with
+            // `COCKPIT_EYE`/`COCKPIT_LOOK` and bake the numbers here.
+            eye: Some([0.2801, 2.14, 0.9355]),
             eye_yaw: -11.76_f32.to_radians(),
-            eye_pitch: -2.92_f32.to_radians(),
+            eye_pitch: -6.5_f32.to_radians(),
         }),
         _ => {
             let spec = model_spec(name);
