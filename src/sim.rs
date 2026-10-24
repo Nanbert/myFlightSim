@@ -176,6 +176,30 @@ impl Sim {
         self.origin_lon = self.model.get("position/long-gc-deg");
     }
 
+    /// Lined up on the numbers: the aircraft's own home field, runway 36
+    /// threshold, at rest, pointing north. The 737 M2 spawn — an explicit IC
+    /// seat like `reset_stand`, so the aerodrome frame stays anchored and the
+    /// nose sits on the piano keys (`threshold_z`), not wherever the previous
+    /// flight's IC offsets happened to point.
+    pub fn reset_threshold(&mut self) {
+        self.model.set("ic/vc-kts", 0.0);
+        self.model.set("ic/h-sl-ft", self.model.rest_h_ft());
+        self.model.set("ic/psi-true-deg", 0.0);
+        let spec = crate::airfield::spec_for(&self.name);
+        let north_m = spec.threshold_z as f64;
+        self.model
+            .set("ic/lat-gc-deg", -(north_m / 0.3048) / fdm::FT_PER_DEG_LAT);
+        self.model.set("ic/long-gc-deg", 0.0);
+        self.model.apply_ic();
+        self.model.set("gear/gear-cmd-norm", 1.0);
+        self.model.set("gear/gear-pos-norm", 1.0);
+        self.light_engine();
+        self.settle_gear();
+        self.reset_hud_memory();
+        self.origin_lat = 0.0;
+        self.origin_lon = 0.0;
+    }
+
     /// March the FDM a few seconds with the throttle pinned at idle so the
     /// gear springs take the weight and the attitude stops ringing *before*
     /// the first rendered frame. Seeding the IC at the rest height with a

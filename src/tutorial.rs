@@ -492,6 +492,22 @@ fn b737() -> Vec<String> {
     p.line("  pedal-only 7 deg by 40 kt - so slow down before the turns.");
     p.line("  Wheels on grass or a nose past the solid pair fails the run.");
 
+    p.heading("M2 TAKEOFF - FLY THE CALLOUTS (GAME)");
+    p.line("  PLAY > M2 TAKEOFF lines you up on ZSNM's numbers, engines");
+    p.line("  idling. The centre prompt plays the monitoring pilot: set");
+    p.line("  flaps 5 and full throttle, then 80 KT - THRUST SET, V1,");
+    p.line("  ROTATE ~179, POSITIVE RATE - GEAR UP (U). At the 1,500 ft");
+    p.line("  acceleration altitude bring the flaps up (hold V) and let the");
+    p.line("  speed build to the 250 kt class.");
+    p.line("  The takeoff ends at the handoff: A/P engaged (G) with the");
+    p.line("  aeroplane clean, held two quiet seconds - a stick tap drops");
+    p.line("  the A/P and reopens the window. Engage between 1,000 and");
+    p.line("  3,000 ft, LVL CHG (4) with the MCP altitude set above, the");
+    p.line("  heading bug on 360, the A/T on (5): a level-off handoff pays,");
+    p.line("  not collapses. Clean up and hand off by 5,000 ft or the run");
+    p.line("  fails. The card grades rotation, centreline, the clean-up,");
+    p.line("  the climb speed band and the automation handoff itself.");
+
     p.heading("GAME CONTROLS (fixed keys)");
     fixed_wing_rows(&mut p, &b);
     p.row("Landing gear", toggle(&b, ToggleAction::Gear));

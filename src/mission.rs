@@ -16,6 +16,9 @@
 //! - **M1 TAXI** (737) — warm at the ZSNM stand: the long taxi (lead-in,
 //!   1.6 km of parallel, the threshold stub) graded as one jet drill by the
 //!   jet taxi meter — centreline, speed band, thrust discipline, the stop.
+//! - **M2 TAKEOFF** (737) — lined up on ZSNM's numbers: the PM callout flow
+//!   (80 KT, V1, ROTATE, POSITIVE RATE), the acceleration-altitude clean-up,
+//!   and the handoff — A/P on and clean by 5,000 ft.
 //!
 //! The old M4 FINAL (a full cold-start-to-touchdown run) stayed on the
 //! drawing board: the landing lesson alone is the grind, and the full flight
@@ -27,7 +30,13 @@
 use bevy::prelude::*;
 
 /// The lesson HUD tags, in menu order (`Lesson::label`).
-const LESSON_LABELS: [&str; 4] = ["M1 TAXI", "M2 TAKEOFF", "M3 LANDING", "M1 TAXI"];
+const LESSON_LABELS: [&str; 5] = [
+    "M1 TAXI",
+    "M2 TAKEOFF",
+    "M3 LANDING",
+    "M1 TAXI",
+    "M2 TAKEOFF",
+];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lesson {
@@ -40,6 +49,9 @@ pub enum Lesson {
     /// The 737's own taxi drill: warm at the ZSNM stand, taxi out and hold
     /// short of runway 36.
     JetTaxi,
+    /// The 737's departure drill: lined up on ZSNM's numbers, the callout
+    /// flow to a clean A/P handoff.
+    JetTakeoff,
 }
 
 impl Lesson {
@@ -92,9 +104,9 @@ pub const PLAY_MENU: [PlayRow; 4] = [
     },
 ];
 
-/// The 737's PLAY page rows: free flight plus its own graded taxi lesson at
+/// The 737's PLAY page rows: free flight plus its own graded lessons at
 /// ZSNM.
-pub const PLAY_MENU_JET: [PlayRow; 2] = [
+pub const PLAY_MENU_JET: [PlayRow; 3] = [
     PlayRow {
         label: "FREE FLIGHT",
         lesson: None,
@@ -104,6 +116,11 @@ pub const PLAY_MENU_JET: [PlayRow; 2] = [
         label: "M1 TAXI",
         lesson: Some(Lesson::JetTaxi),
         hint: "warm at the stand: taxi out, hold short of RWY 36",
+    },
+    PlayRow {
+        label: "M2 TAKEOFF",
+        lesson: Some(Lesson::JetTakeoff),
+        hint: "lined up on ZSNM 36: fly the callouts, clean up, hand off to the A/P",
     },
 ];
 
@@ -164,20 +181,24 @@ mod tests {
         assert!(!Lesson::Takeoff.cold_start());
         assert!(!Lesson::Landing.cold_start());
         assert!(!Lesson::JetTaxi.cold_start(), "the jet taxi drill is warm");
+        assert!(!Lesson::JetTakeoff.cold_start(), "the jet departs warm");
     }
 
     #[test]
-    fn jet_play_menu_covers_free_flight_and_the_taxi_lesson() {
+    fn jet_play_menu_covers_free_flight_and_the_lessons() {
         assert_eq!(PLAY_MENU_JET[0].lesson, None, "row 0 is free flight");
         assert_eq!(PLAY_MENU_JET[1].lesson, Some(Lesson::JetTaxi));
         assert_eq!(PLAY_MENU_JET[1].label, "M1 TAXI");
+        assert_eq!(PLAY_MENU_JET[2].lesson, Some(Lesson::JetTakeoff));
+        assert_eq!(PLAY_MENU_JET[2].label, "M2 TAKEOFF");
     }
 
     #[test]
     fn rows_for_picks_the_aircrafts_own_menu() {
         assert_eq!(rows_for("c172p").len(), 4);
-        assert_eq!(rows_for("737").len(), 2);
+        assert_eq!(rows_for("737").len(), 3);
         assert_eq!(rows_for("737")[1].lesson, Some(Lesson::JetTaxi));
+        assert_eq!(rows_for("737")[2].lesson, Some(Lesson::JetTakeoff));
         // Anything else: free flight only.
         assert_eq!(rows_for("f22").len(), 1);
         assert_eq!(rows_for("f22")[0].lesson, None);

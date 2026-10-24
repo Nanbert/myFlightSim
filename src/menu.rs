@@ -1530,6 +1530,7 @@ fn start_flight(
         match active.0 {
             Some(Lesson::Taxi) | Some(Lesson::JetTaxi) => sim.reset_stand(),
             Some(Lesson::Takeoff) => sim.reset_ground(),
+            Some(Lesson::JetTakeoff) => sim.reset_threshold(),
             Some(Lesson::Landing) => sim.reset_final_c172(),
             None => sim.reset_ground(),
         }
@@ -1597,6 +1598,7 @@ fn dev_lesson() -> Option<Lesson> {
         "TAKEOFF" | "M2" => Some(Lesson::Takeoff),
         "LANDING" | "M3" => Some(Lesson::Landing),
         "JETTAXI" | "737TAXI" => Some(Lesson::JetTaxi),
+        "JETTAKEOFF" | "737TAKEOFF" => Some(Lesson::JetTakeoff),
         _ => None,
     }
 }

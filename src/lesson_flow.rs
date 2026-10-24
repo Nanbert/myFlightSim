@@ -16,6 +16,7 @@
 //! both flows rebuild through the standard chains), Esc returns to the menu
 //! (flight discarded), and Enter continues past a finals card.
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::airfield::AirfieldSpec;
@@ -99,16 +100,24 @@ const FAIL_INCURSION: &str = "FAIL - RUNWAY INCURSION\nThe nose passed the solid
 /// The landing lesson's pavement fail reads like a landing, not a taxi.
 const FAIL_OFF_RUNWAY: &str = "FAIL - OFF RUNWAY\nThe wheels settled off the pavement.";
 
+/// The lesson meters `watch` steers, bundled so the watcher stays inside
+/// Bevy's system-parameter limit (five `ResMut`s ride as one param).
+#[derive(SystemParam)]
+pub struct LessonMeters<'w> {
+    pub hs: ResMut<'w, HoldShort>,
+    pub tl: ResMut<'w, crate::takeoff_lesson::TakeoffLesson>,
+    pub ll: ResMut<'w, crate::landing_lesson::LandingLesson>,
+    pub jt: ResMut<'w, crate::jet_taxi::JetTaxiMeter>,
+    pub jtk: ResMut<'w, crate::jet_takeoff_lesson::JetTakeoffMeter>,
+}
+
 pub(crate) fn watch(
     keys: Res<ButtonInput<KeyCode>>,
     aircraft: Res<AircraftState>,
     map: Res<crate::map::ActiveMap>,
     airfield: Res<crate::airfield::Airfield>,
     lesson: Res<ActiveLesson>,
-    mut hs: ResMut<HoldShort>,
-    mut tl: ResMut<crate::takeoff_lesson::TakeoffLesson>,
-    mut ll: ResMut<crate::landing_lesson::LandingLesson>,
-    mut jt: ResMut<crate::jet_taxi::JetTaxiMeter>,
+    mut meters: LessonMeters,
     mut flow: ResMut<FlowCard>,
     paused: Option<Res<Paused>>,
     mut commands: Commands,
@@ -144,10 +153,11 @@ pub(crate) fn watch(
                 // lesson does the same (the card's attempt is consumed, the
                 // next touchdown grades again); the ground meter just drops
                 // its settled latch (its `done` stays for the debug report).
-                Lesson::Takeoff => tl.rearm(),
-                Lesson::Landing => ll.rearm(),
-                Lesson::JetTaxi => jt.rearm(),
-                _ => hs.settled = false,
+                Lesson::Takeoff => meters.tl.rearm(),
+                Lesson::Landing => meters.ll.rearm(),
+                Lesson::JetTaxi => meters.jt.rearm(),
+                Lesson::JetTakeoff => meters.jtk.rearm(),
+                _ => meters.hs.settled = false,
             }
         }
         return; // the modal holds the display; the prompt stays hidden
@@ -183,8 +193,8 @@ pub(crate) fn watch(
         _ => NOSE_LEAD,
     };
     let graded = match lesson {
-        Lesson::Taxi => hs.done.is_some(),
-        Lesson::JetTaxi => jt.done.is_some(),
+        Lesson::Taxi => meters.hs.done.is_some(),
+        Lesson::JetTaxi => meters.jt.done.is_some(),
         _ => false,
     };
     if no_popup
@@ -200,18 +210,18 @@ pub(crate) fn watch(
     // --- M2: the roll-and-climb lesson owns the triggers from here on.
     if matches!(lesson, Lesson::Takeoff) {
         if no_popup {
-            if let Some(reason) = tl.fail {
+            if let Some(reason) = meters.tl.fail {
                 open_fail(&mut flow, &mut commands, reason);
                 return;
             }
-            if tl.settled && tl.done.is_some() {
-                let body = tl.finals_text();
+            if meters.tl.settled && meters.tl.done.is_some() {
+                let body = meters.tl.finals_text();
                 flow.kind = Some(Card::Grade);
                 commands.insert_resource(Paused);
                 spawn_popup(&mut commands, "TAKEOFF - GRADED", body, true);
                 return;
             }
-            show_prompt(&mut prompt, tl.live.clone());
+            show_prompt(&mut prompt, meters.tl.live.clone());
         }
         return;
     }
@@ -220,18 +230,18 @@ pub(crate) fn watch(
     // through the always-on pavement check above.
     if matches!(lesson, Lesson::Landing) {
         if no_popup {
-            if let Some(reason) = ll.fail {
+            if let Some(reason) = meters.ll.fail {
                 open_fail(&mut flow, &mut commands, reason);
                 return;
             }
-            if ll.settled && ll.done.is_some() {
-                let body = ll.finals_text();
+            if meters.ll.settled && meters.ll.done.is_some() {
+                let body = meters.ll.finals_text();
                 flow.kind = Some(Card::Grade);
                 commands.insert_resource(Paused);
                 spawn_popup(&mut commands, "LANDING - GRADED", body, true);
                 return;
             }
-            show_prompt(&mut prompt, ll.live.clone());
+            show_prompt(&mut prompt, meters.ll.live.clone());
         }
         return;
     }
@@ -239,21 +249,41 @@ pub(crate) fn watch(
     // graded stop ends the lesson, so the card has no Continue row.
     if matches!(lesson, Lesson::JetTaxi) {
         if no_popup {
-            if jt.settled && jt.done.is_some() {
-                let body = jt.finals_text();
+            if meters.jt.settled && meters.jt.done.is_some() {
+                let body = meters.jt.finals_text();
                 flow.kind = Some(Card::Grade);
                 commands.insert_resource(Paused);
                 spawn_popup(&mut commands, "HOLD SHORT - GRADED", body, false);
                 return;
             }
-            show_prompt(&mut prompt, jt.live.clone());
+            show_prompt(&mut prompt, meters.jt.live.clone());
+        }
+        return;
+    }
+    // --- the 737's M2: the callout-flow takeoff owns the triggers here,
+    // like the C172's M2 before it. The handoff freezes the card; Enter
+    // continues past it to fly on.
+    if matches!(lesson, Lesson::JetTakeoff) {
+        if no_popup {
+            if let Some(reason) = meters.jtk.fail {
+                open_fail(&mut flow, &mut commands, reason);
+                return;
+            }
+            if meters.jtk.settled && meters.jtk.done.is_some() {
+                let body = meters.jtk.finals_text();
+                flow.kind = Some(Card::Grade);
+                commands.insert_resource(Paused);
+                spawn_popup(&mut commands, "TAKEOFF - GRADED", body, true);
+                return;
+            }
+            show_prompt(&mut prompt, meters.jtk.live.clone());
         }
         return;
     }
     // A graded stop in a ground lesson pins the finals card. M1 TAXI ends at
     // the hold short, so the card has no Continue row.
-    if no_popup && hs.settled && hs.done.is_some() {
-        let body = hs.finals_text();
+    if no_popup && meters.hs.settled && meters.hs.done.is_some() {
+        let body = meters.hs.finals_text();
         flow.kind = Some(Card::Grade);
         commands.insert_resource(Paused);
         spawn_popup(
@@ -266,7 +296,8 @@ pub(crate) fn watch(
     }
     // --- the live prompt while the flight runs.
     if no_popup {
-        let live = hs
+        let live = meters
+            .hs
             .live
             .map(|(dist, off)| format!("HOLD SHORT\nLINE {dist:+.1} m   TAXI Δ {off:+.1} m"));
         show_prompt(&mut prompt, live);
