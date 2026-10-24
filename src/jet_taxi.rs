@@ -20,9 +20,7 @@
 //! A 3 s stop on the departure stub freezes the finals; anything else (an
 //! en-route pause, a stop on the parallel) is just a pause.
 
-use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::airfield::{AirfieldSpec, CorridorSeg};
 use crate::app_state::{AppState, Paused, unpaused};
@@ -82,6 +80,10 @@ const LIVE_RANGE: f32 = 20.0;
 /// Inside this distance of the stub junction the arrow switches from
 /// straight-ahead to the right turn onto the stub.
 const TURN_NEAR: f32 = 60.0;
+
+/// Parked this long (after rolling) and the arrow comes back to point the
+/// way. Below it a creep's stop-and-go doesn't flash the display.
+const HINT_REST: f32 = 2.0;
 
 /// The route's next command, as the arrow card shows it. Pilot-relative: it
 /// says which way to turn the nose, not which way is north — the painted
@@ -176,6 +178,9 @@ pub struct JetTaxiMeter {
     pub(crate) live: Option<String>,
     /// The navigation arrow's state this frame; the arrow card shows it.
     pub(crate) arrow: Arrow,
+    /// Whether the arrow should stand up and be seen this frame: rolling on
+    /// route keeps it out of the view, a stop or a wrong way brings it back.
+    pub(crate) arrow_visible: bool,
     /// Frozen finals after the graded stop on the departure stub.
     pub(crate) done: Option<JetFinals>,
     /// A graded stop is parked: the lesson pins its card on this latch.
@@ -229,6 +234,7 @@ impl JetTaxiMeter {
             // owns the display.
             self.live = None;
             self.arrow = Arrow::Hidden;
+            self.arrow_visible = false;
             return;
         }
         let gs = gs_kts as f32;
@@ -241,6 +247,15 @@ impl JetTaxiMeter {
         self.arrow = corridor
             .map(|(seg, _)| arrow_state(seg, heading_deg, x, z, spec))
             .unwrap_or(Arrow::Hidden);
+        // The arrow is a nudge, not a fixture: up at the stand before the
+        // first move (pointing the way out), gone while she rolls on route,
+        // back after a stop or the instant the nose points back up the
+        // route.
+        self.arrow_visible = if gs > REST_MAX_GS {
+            self.arrow == Arrow::TurnRound
+        } else {
+            self.roll_secs == 0.0 || self.rest_for >= HINT_REST
+        };
         if gs > REST_MAX_GS {
             // Rolling — any taxi pace counts, creeping to the line included.
             self.rest_for = 0.0;
@@ -483,124 +498,116 @@ pub struct JetTaxiPlugin;
 impl Plugin for JetTaxiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<JetTaxiMeter>()
-            .add_systems(Startup, spawn_arrow_card)
+            .add_systems(Startup, spawn_nav_arrow)
             .add_systems(OnEnter(AppState::Flying), reset)
             .add_systems(Update, update.run_if(unpaused))
-            .add_systems(Update, update_arrow);
+            .add_systems(Update, update_nav_arrow);
     }
 }
 
-// --- the arrow card ------------------------------------------------------------
+// --- the navigation arrow ------------------------------------------------------
 //
-// The lesson's navigation display: one big arrow above the flow prompt, its
-// five glyphs pre-rendered as tiny procedural textures (no font dependency),
-// shown one at a time. The meter decides which; this card only shows it.
+// The lesson's guidance lives in the world, not on the screen: a big glowing
+// arrow 80 m ahead of the nose, near the ground. It appears when the pilot
+// needs a nudge — pointing the way out of the stand at the start, correcting
+// a wrong-way run, re-appearing after a stop — and vanishes the moment the
+// 737 rolls on route, so it never crowds the view while taxiing.
 
-/// One glyph of the arrow card.
+/// The in-world navigation arrow.
 #[derive(Component)]
-struct ArrowGlyph(Arrow);
+struct NavArrow;
 
-/// The rendered glyph size, pixels.
-const ARROW_PX: f32 = 44.0;
+/// How far ahead of the nose the arrow floats, metres.
+const AHEAD_M: f32 = 80.0;
+/// The arrow's height above the pavement, metres.
+const ARROW_Y: f32 = 1.5;
+/// The shaft length and the head's length/radius, metres.
+const SHAFT_LEN: f32 = 7.0;
+const HEAD_LEN: f32 = 3.5;
+const HEAD_R: f32 = 1.4;
 
-/// One 32-px RGBA texture per glyph: a taxi-yellow triangle pointing the way
-/// (down for the turn-around), a red square for the stop.
-fn arrow_texture(kind: Arrow) -> Image {
-    let s = 32usize;
-    let (w, h) = (s as f32, s as f32);
-    let c = w * 0.5;
-    let yellow = [255, 205, 40, 235];
-    let red = [255, 82, 60, 235];
-    let mut data = Vec::with_capacity(s * s * 4);
-    for y in 0..s {
-        for x in 0..s {
-            let (xf, yf) = (x as f32, y as f32);
-            let lit = match kind {
-                // Apex at the left edge, widening right.
-                Arrow::Left => (yf - c).abs() <= (xf + 2.0) / w * c,
-                // Apex at the right edge.
-                Arrow::Right => (yf - c).abs() <= (w - 1.0 - xf + 2.0) / w * c,
-                // Apex at the top.
-                Arrow::Straight => (xf - c).abs() <= (yf + 2.0) / h * c,
-                // Apex at the bottom — come about.
-                Arrow::TurnRound => (xf - c).abs() <= (h - 1.0 - yf + 2.0) / h * c,
-                Arrow::Stop => xf > 4.0 && xf < w - 4.0 && yf > 4.0 && yf < h - 4.0,
-                Arrow::Hidden => false,
-            };
-            let px = if kind == Arrow::Stop { red } else { yellow };
-            data.extend_from_slice(if lit { &px } else { &[0, 0, 0, 0] });
-        }
-    }
-    Image::new(
-        Extent3d {
-            width: s as u32,
-            height: s as u32,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        data,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    )
-}
-
-fn spawn_arrow_card(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    // Centring needs a flex wrapper — an absolute panel keeps its own insets
-    // (see `ui_theme::float_report`).
-    let wrapper = commands
+fn spawn_nav_arrow(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let yellow = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.8, 0.15),
+        emissive: LinearRgba::rgb(0.9, 0.65, 0.1) * 2.5,
+        ..default()
+    });
+    // The model points +X: a cuboid shaft with a cone head at its tip.
+    let shaft = meshes.add(Mesh::from(Cuboid::new(SHAFT_LEN, 0.6, 0.6)));
+    let head = meshes.add(Mesh::from(ConicalFrustum {
+        radius_top: 0.0,
+        radius_bottom: HEAD_R,
+        height: HEAD_LEN,
+    }));
+    commands
         .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                top: Val::Percent(30.0),
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            Pickable::IGNORE,
+            NavArrow,
+            Visibility::Hidden,
+            Transform::default(),
+            Mesh3d(shaft),
+            MeshMaterial3d(yellow.clone()),
         ))
-        .id();
-    for kind in [
-        Arrow::Left,
-        Arrow::Straight,
-        Arrow::Right,
-        Arrow::TurnRound,
-        Arrow::Stop,
-    ] {
-        commands.spawn((
-            ArrowGlyph(kind),
-            ImageNode::new(images.add(arrow_texture(kind))),
-            Node {
-                width: Val::Px(ARROW_PX),
-                height: Val::Px(ARROW_PX),
-                display: Display::None,
-                ..default()
-            },
-            Pickable::IGNORE,
-            ChildOf(wrapper),
-        ));
-    }
+        .with_children(|parent| {
+            // The cone's axis is +Y; lay it along +X at the shaft's tip.
+            parent.spawn((
+                Mesh3d(head),
+                MeshMaterial3d(yellow),
+                Transform::from_rotation(Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2))
+                    .with_translation(Vec3::new(SHAFT_LEN * 0.5 + HEAD_LEN * 0.5, 0.0, 0.0)),
+            ));
+        });
 }
 
-/// Show the meter's arrow, one glyph at a time. Outside the lesson, or under
-/// a pinned card (the grade/fail popup pauses the flight), the lot hide.
-fn update_arrow(
+/// Place and show the arrow: 80 m ahead of the nose, pointing the meter's
+/// command, swaying gently while it has the pilot's attention. Outside the
+/// lesson, under a pinned card, or rolling on route, it hides.
+fn update_nav_arrow(
+    time: Res<Time>,
+    aircraft: Res<AircraftState>,
     lesson: Res<ActiveLesson>,
     meter: Res<JetTaxiMeter>,
     paused: Option<Res<Paused>>,
-    mut glyphs: Query<(&ArrowGlyph, &mut Node), With<ArrowGlyph>>,
+    mut q: Query<(&mut Visibility, &mut Transform), With<NavArrow>>,
 ) {
-    let state = if lesson.0 == Some(Lesson::JetTaxi) && paused.is_none() {
-        meter.arrow
-    } else {
-        Arrow::Hidden
+    let Ok((mut vis, mut tf)) = q.single_mut() else {
+        return;
     };
-    for (glyph, mut node) in &mut glyphs {
-        node.display = if glyph.0 == state {
-            Display::Flex
-        } else {
-            Display::None
-        };
+    // Straight is the absence of a command and Stop belongs to the HOLD
+    // SHORT prompt; neither takes the arrow.
+    let directional = matches!(meter.arrow, Arrow::Left | Arrow::Right | Arrow::TurnRound);
+    let show =
+        directional && meter.arrow_visible && lesson.0 == Some(Lesson::JetTaxi) && paused.is_none();
+    *vis = if show {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    if !show {
+        return;
     }
+    // Ahead of the nose along the current heading (psi 0 = north = -Z): the
+    // ground plane is x/z.
+    let hdg = aircraft.heading_deg as f32;
+    let hdg_rad = hdg.to_radians();
+    let ground = Vec2::new(aircraft.pos.x, aircraft.pos.z);
+    let dir = Vec2::new(hdg_rad.sin(), -hdg_rad.cos());
+    let ahead = ground + dir * AHEAD_M;
+    // The command as a world heading, then as a yaw that parks +X on it.
+    let cmd_hdg = match meter.arrow {
+        Arrow::Left => hdg - 90.0,
+        Arrow::Right => hdg + 90.0,
+        Arrow::TurnRound => hdg + 180.0,
+        _ => hdg,
+    };
+    let t = time.elapsed_secs();
+    let sway = (t * std::f32::consts::TAU * 0.9).sin() * 10.0_f32.to_radians();
+    let bob = (t * std::f32::consts::TAU * 1.8).sin() * 0.25;
+    tf.rotation = Quat::from_rotation_y((90.0 - cmd_hdg).to_radians() + sway);
+    tf.translation = Vec3::new(ahead.x, ARROW_Y + bob, ahead.y);
 }
 
 #[cfg(test)]
@@ -683,6 +690,29 @@ mod tests {
         // Off the route: nothing to lead with.
         roll_hdg(&mut m, 1.0, 8.0, 0.02, 300.0, -1500.0, 270.0);
         assert_eq!(m.arrow, Arrow::Hidden);
+    }
+
+    #[test]
+    fn the_arrow_appears_only_when_nudged() {
+        let mut m = JetTaxiMeter::default();
+        // The stand, never rolled: the arrow points the way out, at once.
+        roll(&mut m, 0.5, 0.0, 0.0, 252.0, -1500.0);
+        assert_eq!(m.arrow, Arrow::Left);
+        assert!(m.arrow_visible, "the start shows the way out");
+        // Rolling on route: gone.
+        roll(&mut m, 1.0, 8.0, 0.30, 240.0, -1500.0);
+        assert!(!m.arrow_visible, "rolling hides the arrow");
+        // Rolling the wrong way: it stands up that instant.
+        roll_hdg(&mut m, 1.0, 10.0, 0.02, 130.0, -800.0, 0.0);
+        assert_eq!(m.arrow, Arrow::TurnRound);
+        assert!(m.arrow_visible, "the wrong way brings it back");
+        // A creep's pause stays quiet; a real stop brings it back.
+        roll_hdg(&mut m, 1.0, 10.0, 0.02, 130.0, -800.0, 180.0);
+        roll(&mut m, 1.0, 0.2, 0.0, 130.0, -800.0);
+        assert!(!m.arrow_visible, "a second's pause is nothing");
+        roll(&mut m, 2.5, 0.2, 0.0, 130.0, -800.0);
+        assert!(m.arrow_visible, "a stop asks for the way");
+        assert_eq!(m.arrow, Arrow::Straight, "and it is straight on route");
     }
 
     #[test]
