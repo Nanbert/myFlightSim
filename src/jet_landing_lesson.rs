@@ -466,7 +466,8 @@ fn compose_live(m: &JetLandingMeter, t: &Telem, now: f32) -> Option<String> {
             if coupled || t.alt_ft <= 1200.0 {
                 Some(config)
             } else {
-                Some(format!("COUPLE: 5 A/T - 3 V/S - 6 APP\n{config}"))
+                // G first: the mode keys are dead until the A/P is engaged.
+                Some(format!("COUPLE: G A/P - 5 A/T - 3 V/S - 6 APP\n{config}"))
             }
         }
         Phase::Rollout => {

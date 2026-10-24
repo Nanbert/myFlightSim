@@ -16,11 +16,11 @@ use crate::aircraft_profile;
 use crate::app_state::AppState;
 use crate::autopilot::{Autopilot, Mcp};
 use crate::config::{self, ConfigSink, FeelSetting, GameConfig};
-use crate::input::FeelBaseline;
 use crate::input::Bindings;
+use crate::input::FeelBaseline;
 use crate::map::{self, MapId, PendingMission};
-use crate::mission::{Lesson, PendingLesson};
 use crate::menu_page::{self, PageLine};
+use crate::mission::{Lesson, PendingLesson};
 use crate::sim::{RenderPose, Sim};
 use crate::tutorial;
 use crate::ui_theme;
@@ -423,12 +423,7 @@ fn auto_open_page(mut sel: ResMut<MenuSelection>) {
     // Sub-pages sit beneath the sub-menu card; initial cards stand alone.
     if matches!(
         opened,
-        Page::Tutorial
-            | Page::Info
-            | Page::Settings
-            | Page::Play
-            | Page::Missions
-            | Page::Feel
+        Page::Tutorial | Page::Info | Page::Settings | Page::Play | Page::Missions | Page::Feel
     ) {
         sel.page_stack = vec![Page::Submenu, opened];
     } else {
@@ -734,13 +729,18 @@ fn update_menu_ui(
     for mut node in &mut card {
         let narrow = matches!(
             sel.current_page(),
-            Some(Page::Exit)
-                | Some(Page::Submenu)
-                | Some(Page::Global)
-                | Some(Page::Settings)
+            Some(Page::Exit) | Some(Page::Submenu) | Some(Page::Global) | Some(Page::Settings)
         );
-        let want_width = if narrow { Val::Px(450.0) } else { Val::Percent(92.0) };
-        let want_max = if narrow { Val::Px(450.0) } else { Val::Px(1180.0) };
+        let want_width = if narrow {
+            Val::Px(450.0)
+        } else {
+            Val::Percent(92.0)
+        };
+        let want_max = if narrow {
+            Val::Px(450.0)
+        } else {
+            Val::Px(1180.0)
+        };
         if node.width != want_width {
             node.width = want_width;
         }
@@ -760,10 +760,9 @@ fn update_menu_ui(
             aircraft_settings_lines(sel.aircraft_id(), &config, &aircraft_settings)
         }
         Some(Page::Feel) => feel_lines(sel.aircraft_id(), &config, &feel_state),
-        Some(Page::Tutorial) => menu_page::freeform(&tutorial::render(
-            sel.aircraft_id(),
-            tutorial_state.scroll,
-        )),
+        Some(Page::Tutorial) => {
+            menu_page::freeform(&tutorial::render(sel.aircraft_id(), tutorial_state.scroll))
+        }
         Some(p) => menu_page::freeform(&page_text(p, &sel)),
         None => Vec::new(),
     };
@@ -773,7 +772,9 @@ fn update_menu_ui(
     if let Ok(mut text) = footer.single_mut() {
         let want = match sel.current_page().copied() {
             Some(Page::Feel) => "[,/.] ADJUST   [R] RESET   [ENTER]/[ESC] CLOSE   [LEFT/RIGHT] TAB",
-            Some(Page::Submenu) => "[UP/DOWN] SELECT   [ENTER] OPEN   [ESC] BACK   [LEFT/RIGHT] TAB",
+            Some(Page::Submenu) => {
+                "[UP/DOWN] SELECT   [ENTER] OPEN   [ESC] BACK   [LEFT/RIGHT] TAB"
+            }
             Some(Page::Exit) => "[ENTER] EXIT   [ESC] BACK   [LEFT/RIGHT] TAB",
             Some(Page::Play) | Some(Page::Missions) => {
                 "[UP/DOWN] SELECT   [ENTER] FLY   [ESC] BACK   [LEFT/RIGHT] TAB"
@@ -793,7 +794,11 @@ fn update_menu_ui(
 
 /// The aircraft's settings page rows: the Realistic/Arcade switch (AH-64D
 /// only) or the C172's keyboard assists. Bindings themselves are fixed.
-fn aircraft_settings_lines(id: &str, config: &GameConfig, settings: &AircraftSettings) -> Vec<PageLine> {
+fn aircraft_settings_lines(
+    id: &str,
+    config: &GameConfig,
+    settings: &AircraftSettings,
+) -> Vec<PageLine> {
     let n = settings_row_count(id).max(1);
     let cursor = settings.row.min(n - 1);
 
@@ -821,7 +826,9 @@ fn aircraft_settings_lines(id: &str, config: &GameConfig, settings: &AircraftSet
     }
 
     out.push(PageLine::blank());
-    out.push(PageLine::hint("[Up/Down] select   [,/.] change   [Esc] close   [Left/Right] tab"));
+    out.push(PageLine::hint(
+        "[Up/Down] select   [,/.] change   [Esc] close   [Left/Right] tab",
+    ));
     out
 }
 
@@ -857,20 +864,47 @@ struct FeelRow {
 fn feel_rows(id: &str) -> Vec<FeelRow> {
     let b = crate::input::Bindings::feel_baseline(id);
     let mut rows = vec![
-        FeelRow { label: "ELEVATOR TRAVEL", knob: FeelKnob::Travel(TravelAxis::Elevator) },
-        FeelRow { label: "AILERON TRAVEL", knob: FeelKnob::Travel(TravelAxis::Aileron) },
-        FeelRow { label: "RUDDER TRAVEL", knob: FeelKnob::Travel(TravelAxis::Rudder) },
-        FeelRow { label: "THROTTLE SWEEP", knob: FeelKnob::Travel(TravelAxis::Throttle) },
+        FeelRow {
+            label: "ELEVATOR TRAVEL",
+            knob: FeelKnob::Travel(TravelAxis::Elevator),
+        },
+        FeelRow {
+            label: "AILERON TRAVEL",
+            knob: FeelKnob::Travel(TravelAxis::Aileron),
+        },
+        FeelRow {
+            label: "RUDDER TRAVEL",
+            knob: FeelKnob::Travel(TravelAxis::Rudder),
+        },
+        FeelRow {
+            label: "THROTTLE SWEEP",
+            knob: FeelKnob::Travel(TravelAxis::Throttle),
+        },
     ];
     if b.tap_enabled {
-        rows.push(FeelRow { label: "TAP NUDGE", knob: FeelKnob::Tap });
+        rows.push(FeelRow {
+            label: "TAP NUDGE",
+            knob: FeelKnob::Tap,
+        });
     }
-    rows.push(FeelRow { label: "RELEASE LINGER", knob: FeelKnob::Linger });
-    rows.push(FeelRow { label: "RETURN SPEED", knob: FeelKnob::Return });
+    rows.push(FeelRow {
+        label: "RELEASE LINGER",
+        knob: FeelKnob::Linger,
+    });
+    rows.push(FeelRow {
+        label: "RETURN SPEED",
+        knob: FeelKnob::Return,
+    });
     if b.fine_enabled {
-        rows.push(FeelRow { label: "FINE RATE", knob: FeelKnob::Fine });
+        rows.push(FeelRow {
+            label: "FINE RATE",
+            knob: FeelKnob::Fine,
+        });
     }
-    rows.push(FeelRow { label: "RESTORE ALL", knob: FeelKnob::Restore });
+    rows.push(FeelRow {
+        label: "RESTORE ALL",
+        knob: FeelKnob::Restore,
+    });
     rows
 }
 
@@ -1022,7 +1056,9 @@ fn play_lines(id: &str, play: &PlayState) -> Vec<PageLine> {
         ));
         out.push(PageLine::blank());
     }
-    out.push(PageLine::hint("[Up/Down] select   [Enter] fly   [Esc] close"));
+    out.push(PageLine::hint(
+        "[Up/Down] select   [Enter] fly   [Esc] close",
+    ));
     out
 }
 
@@ -1037,7 +1073,9 @@ fn missions_lines(missions: &MissionState) -> Vec<PageLine> {
         "Arcade air combat over a bounded arena: drones and an escort.",
     ));
     out.push(PageLine::blank());
-    out.push(PageLine::hint("[Up/Down] select   [Enter] fly   [Esc] close"));
+    out.push(PageLine::hint(
+        "[Up/Down] select   [Enter] fly   [Esc] close",
+    ));
     out
 }
 
@@ -1052,7 +1090,9 @@ fn submenu_lines(top: usize, sub: usize) -> Vec<PageLine> {
         out.push(PageLine::option(*label, "", i == sub));
     }
     out.push(PageLine::blank());
-    out.push(PageLine::hint("[Up/Down] select   [Enter] open   [Esc] back   [Left/Right] tab"));
+    out.push(PageLine::hint(
+        "[Up/Down] select   [Enter] open   [Esc] back   [Left/Right] tab",
+    ));
     out
 }
 
@@ -1084,10 +1124,14 @@ fn page_text(page: Page, sel: &MenuSelection) -> String {
         // Folded through `menu_page::freeform`. Rendered by `tutorial::render`
         // and the `*_lines` builders, which need live state; `page_text` never
         // sees these.
-        Page::Tutorial | Page::Settings | Page::Global | Page::Play | Page::Feel
-        | Page::Missions | Page::Submenu | Page::Exit => {
-            String::new()
-        }
+        Page::Tutorial
+        | Page::Settings
+        | Page::Global
+        | Page::Play
+        | Page::Feel
+        | Page::Missions
+        | Page::Submenu
+        | Page::Exit => String::new(),
     }
 }
 
@@ -1340,8 +1384,12 @@ fn menu_input(
                 let id = sel.aircraft_id();
                 let rows = feel_rows(id);
                 let n = rows.len();
-                feel_state.row = cursor_nav(feel_state.row, n,
-                    keys.just_pressed(KeyCode::ArrowUp), keys.just_pressed(KeyCode::ArrowDown));
+                feel_state.row = cursor_nav(
+                    feel_state.row,
+                    n,
+                    keys.just_pressed(KeyCode::ArrowUp),
+                    keys.just_pressed(KeyCode::ArrowDown),
+                );
                 let dir = if keys.just_pressed(KeyCode::Comma) {
                     -1
                 } else if keys.just_pressed(KeyCode::Period) {
@@ -1599,10 +1647,13 @@ fn start_flight(
     // the 737's autopilot can be engaged once airborne.
     ap.reset();
     mcp.reset();
-    // The arrival's own speed plan in the window, so an A/T engage (5) holds
-    // the seat's 180 instead of the 250 default.
+    // The arrival's own plan in the windows: A/T (5) holds the seat's 180
+    // instead of the 250 default, and V/S (3) descends at the beam's own
+    // rate instead of sitting level on the 0 default (and never letting the
+    // glideslope capture).
     if matches!(active.0, Some(Lesson::JetLanding)) {
         mcp.ias_kts = 180.0;
+        mcp.vs_fpm = -700.0;
     }
     rp.init = false;
 }
@@ -1700,9 +1751,7 @@ mod tests {
     fn option_row<'a>(lines: &'a [PageLine], label: &str) -> &'a PageLine {
         lines
             .iter()
-            .find(
-                |l| l.kind == menu_page::LineKind::Option && l.left == label,
-            )
+            .find(|l| l.kind == menu_page::LineKind::Option && l.left == label)
             .unwrap_or_else(|| panic!("no option row {label}"))
     }
 
@@ -1729,9 +1778,11 @@ mod tests {
     #[test]
     fn the_play_page_text_marks_the_cursor_and_hides_lessons_off_the_graded_two() {
         let out = play_lines("c172p", &PlayState { row: 2 });
-        assert!(out.iter().any(|l| l.kind == menu_page::LineKind::Heading
-            && l.left.contains("SELECT START")),
-            "{out:?}");
+        assert!(
+            out.iter()
+                .any(|l| l.kind == menu_page::LineKind::Heading && l.left.contains("SELECT START")),
+            "{out:?}"
+        );
         assert!(option_row(&out, "M1 TAXI").right.is_empty());
         assert!(option_row(&out, "M3 LANDING").right.is_empty());
         assert!(option_row(&out, "M2 TAKEOFF").active, "cursor on row 2");
@@ -1739,14 +1790,19 @@ mod tests {
         assert!(option_row(&other, "FREE FLIGHT").active);
         assert!(other.iter().all(|l| !l.left.starts_with('M')), "{other:?}");
         assert!(
-            other.iter().any(|l| l.left.contains("Cessna 172 and the 737")),
+            other
+                .iter()
+                .any(|l| l.left.contains("Cessna 172 and the 737")),
             "{other:?}"
         );
         // The 737's own PLAY page: free flight plus its taxi lesson, no note.
         let jet = play_lines("737", &PlayState { row: 1 });
         assert!(option_row(&jet, "M1 TAXI").active, "cursor on the lesson");
         assert!(option_row(&jet, "FREE FLIGHT").right.is_empty());
-        assert!(!jet.iter().any(|l| l.left.contains("Cessna 172")), "{jet:?}");
+        assert!(
+            !jet.iter().any(|l| l.left.contains("Cessna 172")),
+            "{jet:?}"
+        );
     }
 
     #[test]
@@ -1820,10 +1876,26 @@ mod tests {
     #[test]
     fn feel_baselines_show_the_stock_numbers() {
         let b = Bindings::feel_baseline("c172p");
-        assert!((b.travel_elevator - 1.0).abs() < 1e-9, "{}", b.travel_elevator);
-        assert!((b.travel_aileron - 0.5).abs() < 1e-9, "{}", b.travel_aileron);
-        assert!((b.travel_rudder - 1.0 / 1.5).abs() < 1e-9, "{}", b.travel_rudder);
-        assert!((b.travel_throttle - 2.0).abs() < 1e-9, "{}", b.travel_throttle);
+        assert!(
+            (b.travel_elevator - 1.0).abs() < 1e-9,
+            "{}",
+            b.travel_elevator
+        );
+        assert!(
+            (b.travel_aileron - 0.5).abs() < 1e-9,
+            "{}",
+            b.travel_aileron
+        );
+        assert!(
+            (b.travel_rudder - 1.0 / 1.5).abs() < 1e-9,
+            "{}",
+            b.travel_rudder
+        );
+        assert!(
+            (b.travel_throttle - 2.0).abs() < 1e-9,
+            "{}",
+            b.travel_throttle
+        );
         assert!((b.tap_step - 0.04).abs() < 1e-9);
         assert!((b.release_hold - 0.35).abs() < 1e-9);
         assert!((b.release_scale - 0.8).abs() < 1e-9);
@@ -1832,7 +1904,11 @@ mod tests {
 
         // The 737's hydraulic feel: slower surfaces, no tap/fine.
         let j = Bindings::feel_baseline("737");
-        assert!((j.travel_elevator - 1.0 / 0.85).abs() < 1e-9, "{}", j.travel_elevator);
+        assert!(
+            (j.travel_elevator - 1.0 / 0.85).abs() < 1e-9,
+            "{}",
+            j.travel_elevator
+        );
         assert!((j.travel_aileron - 1.0).abs() < 1e-9);
         assert!(!j.tap_enabled && !j.fine_enabled);
         assert!((j.release_hold - 0.2).abs() < 1e-9);
@@ -1846,15 +1922,16 @@ mod tests {
             f.tap = 2.0;
         });
         let lines = feel_lines("c172p", &config, &FeelState { row: 2 });
-        assert!(lines[0].left.ends_with("- CONTROL FEEL"), "{}", lines[0].left);
+        assert!(
+            lines[0].left.ends_with("- CONTROL FEEL"),
+            "{}",
+            lines[0].left
+        );
         assert_eq!(
             option_row(&lines, "ELEVATOR TRAVEL").right,
             "1.10 s   [stock 1.00 s]"
         );
-        assert_eq!(
-            option_row(&lines, "TAP NUDGE").right,
-            "8 %   [stock 4 %]"
-        );
+        assert_eq!(option_row(&lines, "TAP NUDGE").right, "8 %   [stock 4 %]");
         // The untouched knobs show their defaults, and the cursor sits on row
         // 2 (rudder travel).
         assert_eq!(
@@ -1873,7 +1950,12 @@ mod tests {
         // Right on elevator travel: +0.1 s, straight into the persisted
         // multiplier (1.1, i.e. display 1.10 s). The on-disk format itself is
         // covered by the config round-trip tests.
-        feel_change(&mut config, "c172p", FeelKnob::Travel(TravelAxis::Elevator), 1);
+        feel_change(
+            &mut config,
+            "c172p",
+            FeelKnob::Travel(TravelAxis::Elevator),
+            1,
+        );
         assert!((config.feel("c172p").travel_elevator - 1.1).abs() < 1e-9);
 
         // Left twice on tap: 4 % -> 2 %.
