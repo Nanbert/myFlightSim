@@ -94,9 +94,17 @@ const PASSED_M: f32 = 5.0;
 /// This far onto the stub, x-wise, the turn reads as flown.
 const TURNED_IN_M: f32 = 15.0;
 
-/// The guidance arrow's cue for a frame: `(x, z, world heading)` of a fixed
-/// post. `None` — the route between posts says nothing.
-pub(crate) type ArrowHint = (f32, f32, f32);
+/// The guidance arrow's cue for a frame: `(x, z, world heading, nose-up)` of
+/// a fixed post. `None` — the route between posts says nothing.
+///
+/// Only CP2 tilts: it points along the viewer's own travel, and an end-on
+/// arrow reads as a dot. CP1 and CP3 stand perpendicular to the approach and
+/// stay level.
+pub(crate) type ArrowHint = (f32, f32, f32, f32);
+
+/// The mid-field post's nose-up tilt, degrees — the one that points along
+/// the approach.
+const TILT_DEG: f32 = 45.0;
 
 /// The three posts of the guidance script, evaluated off the live geometry:
 ///
@@ -105,7 +113,8 @@ pub(crate) type ArrowHint = (f32, f32, f32);
 ///   The first movement retires it.
 /// - **CP2 — the mid-field junction**: approaching the connector between the
 ///   stand and the departure stub, the arrow stands at the crossroads
-///   pointing south — *straight on, this is not the hold* — until passed.
+///   pointing south, tilted nose-up — *straight on, this is not the hold* —
+///   until passed.
 /// - **CP3 — the destination**: approaching the stub junction, the arrow
 ///   stands at the mouth pointing west — the right turn — until the turn
 ///   reads as flown.
@@ -124,15 +133,15 @@ fn checkpoint_hint(
         .map(|c| c.z)
         .find(|cz| stand.z < *cz && *cz < stub_z);
     if never_moved && gs <= MOVE_GS {
-        return Some((stand.x - STAND_AHEAD_M, stand.z, 180.0));
+        return Some((stand.x - STAND_AHEAD_M, stand.z, 180.0, 0.0));
     }
     if let Some(mz) = mid_z {
         if (mz - APPROACH_M..mz + PASSED_M).contains(&z) {
-            return Some((spec.taxi_x, mz, 180.0));
+            return Some((spec.taxi_x, mz, 180.0, TILT_DEG));
         }
     }
     if (stub_z - APPROACH_M..=stub_z + 10.0).contains(&z) && x >= spec.taxi_x - TURNED_IN_M {
-        return Some((spec.taxi_x, stub_z, 270.0));
+        return Some((spec.taxi_x, stub_z, 270.0, 0.0));
     }
     None
 }
@@ -492,9 +501,11 @@ impl Plugin for JetTaxiPlugin {
 #[derive(Component)]
 struct NavArrow;
 
-/// The arrow post's height, metres. High enough that the 10.5 m arrow,
-/// tilted 45° nose-up, keeps its tail clear of the pavement.
-const ARROW_Y: f32 = 4.5;
+/// A level post's height, metres.
+const LEVEL_Y: f32 = 1.5;
+/// A tilted post's height, metres — high enough that the 10.5 m arrow at
+/// 45° nose-up keeps its tail clear of the pavement.
+const TILT_Y: f32 = 4.5;
 /// The shaft length and the head's length/radius, metres.
 const SHAFT_LEN: f32 = 7.0;
 const HEAD_LEN: f32 = 3.5;
@@ -559,7 +570,7 @@ fn update_nav_arrow(
     } else {
         Visibility::Hidden
     };
-    let Some((x, z, hdg)) = hint else {
+    let Some((x, z, hdg, tilt)) = hint else {
         return;
     };
     // The post is fixed in the world; the animation slides the arrow along
@@ -569,13 +580,18 @@ fn update_nav_arrow(
     let hdg_rad = hdg.to_radians();
     let dir = Vec2::new(hdg_rad.sin(), -hdg_rad.cos());
     let post = Vec2::new(x, z) + dir * slide;
-    // A yaw that parks the model's +X on the world heading (psi 0 = -Z),
-    // then the post tilt: 45° nose-up, so an arrow pointing along the
-    // viewer's own travel (CP2 from the approach) still reads as an arrow
-    // and not a dot.
-    tf.rotation = Quat::from_rotation_y((90.0 - hdg).to_radians())
-        * Quat::from_rotation_z(std::f32::consts::FRAC_PI_4);
-    tf.translation = Vec3::new(post.x, ARROW_Y, post.y);
+    // A yaw that parks the model's +X on the world heading (psi 0 = -Z).
+    // The tilt is the post's own: only CP2, which points along the viewer's
+    // travel, stands nose-up — the end-on arrow would read as a dot.
+    let mut rotation = Quat::from_rotation_y((90.0 - hdg).to_radians());
+    let y = if tilt > 0.0 {
+        rotation *= Quat::from_rotation_z(tilt.to_radians());
+        TILT_Y
+    } else {
+        LEVEL_Y
+    };
+    tf.rotation = rotation;
+    tf.translation = Vec3::new(post.x, y, post.y);
 }
 
 #[cfg(test)]
@@ -628,24 +644,26 @@ mod tests {
     fn the_arrow_plays_the_three_checkpoints() {
         let mut m = JetTaxiMeter::default();
         // CP1 — the stand, before the first move: the post on the lead-in
-        // 80 m out, pointing south (the left turn out).
+        // 80 m out, pointing south (the left turn out), level.
         roll(&mut m, 1.0, 0.0, 0.0, 252.0, -1500.0);
-        assert_eq!(m.arrow_hint, Some((172.0, -1500.0, 180.0)));
+        assert_eq!(m.arrow_hint, Some((172.0, -1500.0, 180.0, 0.0)));
         // Moving: the post has said its piece.
         roll(&mut m, 0.5, 8.0, 0.30, 240.0, -1500.0);
         assert_eq!(m.arrow_hint, None);
         // Rolling the parallel between junctions: quiet.
         roll(&mut m, 2.0, 15.0, 0.02, 130.0, -800.0);
         assert_eq!(m.arrow_hint, None);
-        // CP2 — approaching the mid-field junction: straight on through.
+        // CP2 — approaching the mid-field junction: straight on through,
+        // and nose-up — it points along the viewer's own travel.
         roll(&mut m, 1.0, 12.0, 0.02, 130.0, -420.0);
-        assert_eq!(m.arrow_hint, Some((130.0, -360.0, 180.0)));
+        assert_eq!(m.arrow_hint, Some((130.0, -360.0, 180.0, 45.0)));
         // Past it: gone.
         roll(&mut m, 1.0, 12.0, 0.02, 130.0, -300.0);
         assert_eq!(m.arrow_hint, None);
-        // CP3 — approaching the destination junction: the right turn.
+        // CP3 — approaching the destination junction: the right turn,
+        // level like CP1 (perpendicular to the approach).
         roll(&mut m, 1.0, 10.0, 0.02, 130.0, 60.0);
-        assert_eq!(m.arrow_hint, Some((130.0, 134.0, 270.0)));
+        assert_eq!(m.arrow_hint, Some((130.0, 134.0, 270.0, 0.0)));
         // Through the turn, tracking the stub: the script is done.
         roll(&mut m, 1.0, 8.0, 0.02, 110.0, 134.0);
         assert_eq!(m.arrow_hint, None);
