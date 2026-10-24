@@ -42,7 +42,7 @@ const ROLL_KD: f64 = 0.02;
 // out.
 const ALT_VS_GAIN: f64 = 3.0;
 const VS_COMMAND_MAX_FPM: f64 = 1500.0;
-const VS_TO_PITCH_GAIN: f64 = 0.012;
+const VS_TO_PITCH_GAIN: f64 = 0.009;
 const VS_PITCH_KI: f64 = 0.002;
 const SPD_TO_PITCH_GAIN: f64 = 0.35;
 const SPD_PITCH_KI: f64 = 0.05;
