@@ -111,11 +111,14 @@ impl Sim {
             engine_cold: false,
         };
         // Hard sea floor for gear-up flight: the model has no belly contact, so
-        // without it a dive can pass through the water plane. Enforced by the
-        // FDM only while the gear is retracted, so landings still settle.
+        // without it a dive can pass through the water plane. It sits 500 m
+        // BELOW sea level (a positive value would arm a floor above the field
+        // and snap every gear-up aircraft up to it — the U-key "teleport").
+        // Enforced by the FDM only while the gear is retracted, so landings
+        // still settle.
         sim.model.set(
             "environment/floor-ft",
-            crate::map::SEA_FLOOR_M as f64 / FT_TO_M,
+            -(crate::map::SEA_FLOOR_M as f64) / FT_TO_M,
         );
         sim.reset_ground();
         sim

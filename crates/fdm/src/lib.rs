@@ -1837,13 +1837,13 @@ impl FlightModel for Fdm {
             // of JSBSim's writable set, but harmless on the fixed-gear paths
             // (`step_gear` overwrites it next step).
             "gear/gear-pos-norm" => self.gear_pos = value.clamp(0.0, 1.0),
-            // Sea-surface stop (ft above sea level); zero or negative disables.
+            // Hard-floor stop altitude, feet — any elevation, negative meaning
+            // below sea level (the sea floor). The unset default disables.
+            // The old "> 0 to arm" convention silently ate the app's negative
+            // sea floor, and the app passed it positive instead: a floor at
+            // +1,640 ft that teleported every gear-up aircraft up to it.
             "environment/floor-ft" => {
-                self.floor_ft = if value.is_finite() && value > 0.0 {
-                    Some(value)
-                } else {
-                    None
-                };
+                self.floor_ft = value.is_finite().then_some(value);
             }
             "fcs/left-brake-cmd-norm" => self.left_brake_cmd = value,
             "fcs/right-brake-cmd-norm" => self.right_brake_cmd = value,
@@ -2941,6 +2941,62 @@ mod tests {
         }
         let kt = m.get("velocities/vg-fps") / KT_TO_FPS;
         assert!(kt > 3.0, "a 30% bump gets her rolling, got {kt:.2} kt");
+    }
+
+    #[test]
+    fn retracting_at_pattern_altitude_stays_put() {
+        // The reported bug: the sea floor was wired with the wrong sign,
+        // arming a hard floor at +1,640 ft that snapped every gear-up
+        // aircraft up to it the moment the wheels stowed.
+        let mut m = Fdm::new("737");
+        m.set("ic/vc-kts", 180.0);
+        m.set("ic/h-sl-ft", 500.0);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        m.set("gear/gear-cmd-norm", 0.0);
+        m.set("gear/gear-pos-norm", 0.0);
+        m.trim(180.0, 500.0);
+        m.set("environment/floor-ft", -500.0 / 0.3048);
+        // The buggy floor clamped on the very first step after the wheels
+        // stowed; three seconds is plenty to catch that, short enough that
+        // the jet's (known, see b737_cruise_trim_holds) trim sag stays out
+        // of the assertion's way.
+        for i in 0..120 * 3 {
+            m.step();
+            if i == 0 {
+                let alt = m.get("position/h-sl-ft");
+                assert!(alt < 1000.0, "the first step must not snap: {alt:.0} ft");
+            }
+        }
+        let alt = m.get("position/h-sl-ft");
+        assert!(alt < 1200.0, "no snap to a +1,640 ft floor: {alt:.0} ft");
+        assert!(alt > 0.0, "and no fall through the world: {alt:.0} ft");
+    }
+
+    #[test]
+    fn the_sea_floor_still_catches_a_gear_up_descent() {
+        // The floor's real job, with the correct sign: 500 m below sea level,
+        // it stops a gear-up descent through the water instead of letting
+        // the dive run away.
+        let mut m = Fdm::new("737");
+        m.set("ic/vc-kts", 250.0);
+        m.set("ic/h-sl-ft", -1700.0);
+        m.set("ic/psi-true-deg", 0.0);
+        m.apply_ic();
+        m.set("propulsion/set-running", -1.0);
+        m.set("fcs/throttle-cmd-norm", 0.0);
+        m.set("gear/gear-cmd-norm", 0.0);
+        m.set("gear/gear-pos-norm", 0.0);
+        m.set("environment/floor-ft", -500.0 / 0.3048);
+        for _ in 0..120 * 10 {
+            m.step();
+        }
+        let alt = m.get("position/h-sl-ft");
+        assert!(
+            (alt - (-500.0 / 0.3048)).abs() < 10.0,
+            "caught at the sea floor: {alt:.0} ft"
+        );
     }
 
     /// A 737 at a cruise condition, trimmed and holding. Installs the engines
