@@ -20,10 +20,12 @@
 //! A 3 s stop on the departure stub freezes the finals; anything else (an
 //! en-route pause, a stop on the parallel) is just a pause.
 
+use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::airfield::{AirfieldSpec, CorridorSeg};
-use crate::app_state::{AppState, unpaused};
+use crate::app_state::{AppState, Paused, unpaused};
 use crate::mission::{ActiveLesson, Lesson};
 use crate::sim::AircraftState;
 
@@ -77,6 +79,70 @@ const W_LINE: f32 = 0.40;
 /// The live HOLD SHORT prompt wakes inside this distance of the pair.
 const LIVE_RANGE: f32 = 20.0;
 
+/// Inside this distance of the stub junction the arrow switches from
+/// straight-ahead to the right turn onto the stub.
+const TURN_NEAR: f32 = 60.0;
+
+/// The route's next command, as the arrow card shows it. Pilot-relative: it
+/// says which way to turn the nose, not which way is north — the painted
+/// lines confirm, the arrow leads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Arrow {
+    #[default]
+    Hidden,
+    /// The next turn is off the left wing.
+    Left,
+    /// Tracking the route; roll on.
+    Straight,
+    /// The next turn is off the right wing.
+    Right,
+    /// Pointing back up the route — come about.
+    TurnRound,
+    /// The hold-short pair is at hand: the HOLD SHORT prompt owns it now.
+    Stop,
+}
+
+/// Signed heading difference wrapped to ±180°, degrees.
+fn hdg_delta(hdg: f32, reference: f32) -> f32 {
+    (hdg - reference + 180.0).rem_euclid(360.0) - 180.0
+}
+
+/// The route's next command for a frame on `seg` at `heading_deg`.
+fn arrow_state(seg: CorridorSeg, heading_deg: f64, x: f32, z: f32, spec: &AirfieldSpec) -> Arrow {
+    if seg == CorridorSeg::Stub && (x - spec.hold_line_x).abs() <= LIVE_RANGE {
+        return Arrow::Stop;
+    }
+    match seg {
+        // The lead-in's mouth meets the parallel: from the west-facing
+        // roll-out, south is off the left wing.
+        CorridorSeg::LeadIn => Arrow::Left,
+        CorridorSeg::Parallel => {
+            let stub_z = spec.lesson_stub_z().unwrap_or(z);
+            if (z - stub_z).abs() < TURN_NEAR {
+                // The last junction: from the southbound roll, the stub's
+                // west is off the right wing.
+                if hdg_delta(heading_deg as f32, 270.0).abs() <= 45.0 {
+                    Arrow::Straight
+                } else {
+                    Arrow::Right
+                }
+            } else {
+                // Keep turning left until the nose is south; pointed north,
+                // the route is behind.
+                let south = hdg_delta(heading_deg as f32, 180.0).abs();
+                if south <= 45.0 {
+                    Arrow::Straight
+                } else if south >= 135.0 {
+                    Arrow::TurnRound
+                } else {
+                    Arrow::Left
+                }
+            }
+        }
+        CorridorSeg::Stub => Arrow::Straight,
+    }
+}
+
 /// Whether a frame on `seg` sits in the junction with the parallel — the arc
 /// between two painted lines, where neither offset nor speed is a mark.
 fn in_joint(seg: CorridorSeg, x: f32, z: f32, spec: &AirfieldSpec) -> bool {
@@ -103,19 +169,13 @@ fn speed_cap(corridor: Option<(CorridorSeg, f32)>, x: f32, z: f32, spec: &Airfie
     }
 }
 
-fn seg_label(seg: CorridorSeg) -> &'static str {
-    match seg {
-        CorridorSeg::LeadIn => "LEAD-IN LINE",
-        CorridorSeg::Parallel => "PARALLEL TAXIWAY",
-        CorridorSeg::Stub => "DEPARTURE STUB",
-    }
-}
-
 #[derive(Resource, Default)]
 pub struct JetTaxiMeter {
     /// The flow prompt's live text while rolling; `None` while parked (the
     /// metre has nothing to say until the grade or the next rollout).
     pub(crate) live: Option<String>,
+    /// The navigation arrow's state this frame; the arrow card shows it.
+    pub(crate) arrow: Arrow,
     /// Frozen finals after the graded stop on the departure stub.
     pub(crate) done: Option<JetFinals>,
     /// A graded stop is parked: the lesson pins its card on this latch.
@@ -158,6 +218,7 @@ impl JetTaxiMeter {
         on_ground: bool,
         gs_kts: f64,
         throttle: f64,
+        heading_deg: f64,
         x: f32,
         z: f32,
         spec: &AirfieldSpec,
@@ -167,6 +228,7 @@ impl JetTaxiMeter {
             // A graded stop is parked: the finals are frozen and the lesson
             // owns the display.
             self.live = None;
+            self.arrow = Arrow::Hidden;
             return;
         }
         let gs = gs_kts as f32;
@@ -176,6 +238,9 @@ impl JetTaxiMeter {
         } else {
             None
         };
+        self.arrow = corridor
+            .map(|(seg, _)| arrow_state(seg, heading_deg, x, z, spec))
+            .unwrap_or(Arrow::Hidden);
         if gs > REST_MAX_GS {
             // Rolling — any taxi pace counts, creeping to the line included.
             self.rest_for = 0.0;
@@ -198,11 +263,19 @@ impl JetTaxiMeter {
             }
         } else {
             // Parked. Before the first move the prompt is the break-away
-            // brief (the checklist panel is suppressed for this lesson);
-            // afterwards a stop is just a stop until the stub grades it.
-            self.live = (self.roll_secs == 0.0).then(|| {
-                "TAXI CHECK\nBUMP THE THRUST (SHIFT) TO BREAK AWAY\nTHEN IDLE - FOLLOW THE YELLOW LINE".to_owned()
-            });
+            // brief (the checklist panel is suppressed for this lesson). A
+            // stop that is not the lesson's climax says so — the arrow keeps
+            // leading while the text explains.
+            self.live = if self.roll_secs == 0.0 {
+                Some(
+                    "TAXI CHECK\nBUMP THE THRUST (SHIFT) TO BREAK AWAY\nTHEN IDLE - FOLLOW THE ARROW"
+                        .to_owned(),
+                )
+            } else if !matches!(corridor, Some((CorridorSeg::Stub, _))) {
+                Some("NOT THE HOLD - KEEP TAXIING".to_owned())
+            } else {
+                None
+            };
             self.rest_for += dt;
             if self.rest_for >= REST_SECONDS && matches!(corridor, Some((CorridorSeg::Stub, _))) {
                 self.done = Some(self.grade(x, corridor, spec));
@@ -233,7 +306,9 @@ impl JetTaxiMeter {
                     x - spec.hold_line_x
                 ))
             }
-            Some((seg, off)) => Some(format!("{}\nΔ {off:+.1} m   {pace}", seg_label(seg))),
+            // The arrow carries the navigation; the rolling line is just the
+            // numbers.
+            Some((_, off)) => Some(format!("Δ {off:+.1} m   {pace}")),
             None => Some(format!("REJOIN THE CENTRELINE\n{pace}")),
         }
     }
@@ -363,6 +438,7 @@ fn update(
         aircraft.on_ground,
         aircraft.gs_kts,
         aircraft.throttle,
+        aircraft.heading_deg,
         aircraft.pos.x,
         aircraft.pos.z,
         spec,
@@ -407,14 +483,129 @@ pub struct JetTaxiPlugin;
 impl Plugin for JetTaxiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<JetTaxiMeter>()
+            .add_systems(Startup, spawn_arrow_card)
             .add_systems(OnEnter(AppState::Flying), reset)
-            .add_systems(Update, update.run_if(unpaused));
+            .add_systems(Update, update.run_if(unpaused))
+            .add_systems(Update, update_arrow);
+    }
+}
+
+// --- the arrow card ------------------------------------------------------------
+//
+// The lesson's navigation display: one big arrow above the flow prompt, its
+// five glyphs pre-rendered as tiny procedural textures (no font dependency),
+// shown one at a time. The meter decides which; this card only shows it.
+
+/// One glyph of the arrow card.
+#[derive(Component)]
+struct ArrowGlyph(Arrow);
+
+/// The rendered glyph size, pixels.
+const ARROW_PX: f32 = 44.0;
+
+/// One 32-px RGBA texture per glyph: a taxi-yellow triangle pointing the way
+/// (down for the turn-around), a red square for the stop.
+fn arrow_texture(kind: Arrow) -> Image {
+    let s = 32usize;
+    let (w, h) = (s as f32, s as f32);
+    let c = w * 0.5;
+    let yellow = [255, 205, 40, 235];
+    let red = [255, 82, 60, 235];
+    let mut data = Vec::with_capacity(s * s * 4);
+    for y in 0..s {
+        for x in 0..s {
+            let (xf, yf) = (x as f32, y as f32);
+            let lit = match kind {
+                // Apex at the left edge, widening right.
+                Arrow::Left => (yf - c).abs() <= (xf + 2.0) / w * c,
+                // Apex at the right edge.
+                Arrow::Right => (yf - c).abs() <= (w - 1.0 - xf + 2.0) / w * c,
+                // Apex at the top.
+                Arrow::Straight => (xf - c).abs() <= (yf + 2.0) / h * c,
+                // Apex at the bottom — come about.
+                Arrow::TurnRound => (xf - c).abs() <= (h - 1.0 - yf + 2.0) / h * c,
+                Arrow::Stop => xf > 4.0 && xf < w - 4.0 && yf > 4.0 && yf < h - 4.0,
+                Arrow::Hidden => false,
+            };
+            let px = if kind == Arrow::Stop { red } else { yellow };
+            data.extend_from_slice(if lit { &px } else { &[0, 0, 0, 0] });
+        }
+    }
+    Image::new(
+        Extent3d {
+            width: s as u32,
+            height: s as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+fn spawn_arrow_card(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    // Centring needs a flex wrapper — an absolute panel keeps its own insets
+    // (see `ui_theme::float_report`).
+    let wrapper = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                top: Val::Percent(30.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Pickable::IGNORE,
+        ))
+        .id();
+    for kind in [
+        Arrow::Left,
+        Arrow::Straight,
+        Arrow::Right,
+        Arrow::TurnRound,
+        Arrow::Stop,
+    ] {
+        commands.spawn((
+            ArrowGlyph(kind),
+            ImageNode::new(images.add(arrow_texture(kind))),
+            Node {
+                width: Val::Px(ARROW_PX),
+                height: Val::Px(ARROW_PX),
+                display: Display::None,
+                ..default()
+            },
+            Pickable::IGNORE,
+            ChildOf(wrapper),
+        ));
+    }
+}
+
+/// Show the meter's arrow, one glyph at a time. Outside the lesson, or under
+/// a pinned card (the grade/fail popup pauses the flight), the lot hide.
+fn update_arrow(
+    lesson: Res<ActiveLesson>,
+    meter: Res<JetTaxiMeter>,
+    paused: Option<Res<Paused>>,
+    mut glyphs: Query<(&ArrowGlyph, &mut Node), With<ArrowGlyph>>,
+) {
+    let state = if lesson.0 == Some(Lesson::JetTaxi) && paused.is_none() {
+        meter.arrow
+    } else {
+        Arrow::Hidden
+    };
+    for (glyph, mut node) in &mut glyphs {
+        node.display = if glyph.0 == state {
+            Display::Flex
+        } else {
+            Display::None
+        };
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::JetTaxiMeter;
+    use super::{Arrow, JetTaxiMeter};
     use crate::airfield::AirfieldSpec;
 
     const DT: f32 = 1.0 / 60.0;
@@ -426,10 +617,15 @@ mod tests {
     }
 
     fn roll(m: &mut JetTaxiMeter, secs: f32, gs: f64, thr: f64, x: f32, z: f32) {
+        roll_hdg(m, secs, gs, thr, x, z, 180.0);
+    }
+
+    /// Like `roll`, with the nose heading the frames carry.
+    fn roll_hdg(m: &mut JetTaxiMeter, secs: f32, gs: f64, thr: f64, x: f32, z: f32, hdg: f64) {
         let s = spec();
         let steps = (secs / DT).ceil() as usize;
         for _ in 0..steps {
-            m.step(true, gs, thr, x, z, &s, DT);
+            m.step(true, gs, thr, hdg, x, z, &s, DT);
         }
     }
 
@@ -451,10 +647,55 @@ mod tests {
         let live = m.live.clone().expect("the brief");
         assert!(live.contains("TAXI CHECK"), "{live}");
         assert!(live.contains("BREAK AWAY"), "{live}");
-        // Once rolling, the leg prompt takes over.
+        assert!(live.contains("ARROW"), "{live}");
+        // Once rolling, the numbers line and the left arrow carry the frame.
         roll(&mut m, 1.0, 8.0, 0.30, 240.0, -1500.0);
         let live = m.live.expect("the leg prompt");
-        assert!(live.contains("LEAD-IN LINE"), "{live}");
+        assert!(live.contains('Δ'), "{live}");
+        assert_eq!(m.arrow, Arrow::Left);
+    }
+
+    #[test]
+    fn the_arrow_leads_the_route() {
+        let mut m = JetTaxiMeter::default();
+        // Out of the stand, nose west: the parallel's south is off the left
+        // wing.
+        roll_hdg(&mut m, 1.0, 8.0, 0.02, 200.0, -1500.0, 270.0);
+        assert_eq!(m.arrow, Arrow::Left);
+        // Established southbound on the parallel: roll on.
+        roll_hdg(&mut m, 1.0, 15.0, 0.02, 130.0, -800.0, 180.0);
+        assert_eq!(m.arrow, Arrow::Straight);
+        // Pointed back up the route: come about.
+        roll_hdg(&mut m, 1.0, 10.0, 0.02, 130.0, -800.0, 0.0);
+        assert_eq!(m.arrow, Arrow::TurnRound);
+        // Still swinging the left turn onto south: keep coming left.
+        roll_hdg(&mut m, 1.0, 8.0, 0.02, 140.0, -1495.0, 240.0);
+        assert_eq!(m.arrow, Arrow::Left);
+        // The last junction: from the southbound roll, the stub is a right.
+        roll_hdg(&mut m, 1.0, 8.0, 0.02, 130.0, 100.0, 180.0);
+        assert_eq!(m.arrow, Arrow::Right);
+        // On the stub, tracking the line west.
+        roll_hdg(&mut m, 1.0, 8.0, 0.02, 80.0, 134.0, 270.0);
+        assert_eq!(m.arrow, Arrow::Straight);
+        // The pair at hand: the stop takes the card.
+        roll_hdg(&mut m, 1.0, 4.0, 0.02, 45.0, 134.0, 270.0);
+        assert_eq!(m.arrow, Arrow::Stop);
+        // Off the route: nothing to lead with.
+        roll_hdg(&mut m, 1.0, 8.0, 0.02, 300.0, -1500.0, 270.0);
+        assert_eq!(m.arrow, Arrow::Hidden);
+    }
+
+    #[test]
+    fn a_stop_off_the_stub_says_so() {
+        let mut m = JetTaxiMeter::default();
+        roll(&mut m, 4.0, 12.0, 0.02, 200.0, -1500.0);
+        // Parked on the apron connector — not the hold: the prompt explains
+        // and the arrow keeps leading.
+        roll(&mut m, PARK, 0.2, 0.0, 200.0, -1500.0);
+        let live = m.live.clone().expect("the hint");
+        assert!(live.contains("NOT THE HOLD"), "{live}");
+        assert_eq!(m.done, None, "no card out here");
+        assert_eq!(m.arrow, Arrow::Left);
     }
 
     #[test]
@@ -481,7 +722,9 @@ mod tests {
         roll(&mut m, 10.0, 16.0, 0.02, 130.0, -800.0);
         roll(&mut m, PARK, 0.2, 0.0, 130.0, -800.0);
         assert_eq!(m.done, None, "a stop on the parallel grades nothing");
-        assert_eq!(m.live, None);
+        // It does say so now — the silence was the trap.
+        let live = m.live.clone().expect("the not-the-hold hint");
+        assert!(live.contains("NOT THE HOLD"), "{live}");
         // And the route continues: the stats still hold the leg so far.
         roll(&mut m, 6.0, 8.0, 0.02, 80.0, 134.0);
         roll(&mut m, PARK, 0.2, 0.0, 40.0, 134.0);
@@ -533,7 +776,7 @@ mod tests {
         // Rolling through the lead-in's mouth (within 25 m of the parallel):
         // the prompt caps at 10 kt and the frame stays off the sampler.
         let mut m = JetTaxiMeter::default();
-        m.step(true, 12.0, 0.02, 140.0, -1500.0, &s, DT);
+        m.step(true, 12.0, 0.02, 180.0, 140.0, -1500.0, &s, DT);
         assert!(
             m.live.as_deref().unwrap_or("").contains("SLOW"),
             "the junction prompts the slow band: {:?}",
@@ -542,7 +785,7 @@ mod tests {
         assert_eq!(m.samples, 0, "the junction arc is not a centreline mark");
         // The same speed on the clean parallel is inside the cruise band and
         // on the sampler.
-        m.step(true, 12.0, 0.02, 130.0, -800.0, &s, DT);
+        m.step(true, 12.0, 0.02, 180.0, 130.0, -800.0, &s, DT);
         assert!(
             !m.live.as_deref().unwrap_or("").contains("SLOW"),
             "the straight parallel is in band at 12 kt: {:?}",
@@ -585,10 +828,10 @@ mod tests {
             "{:?}",
             m.live
         );
-        // Wide of the pair the leg prompt carries the frame instead.
+        // Wide of the pair the numbers line carries the frame instead.
         roll(&mut m, 1.0, 8.0, 0.02, 90.0, 134.0);
         assert!(
-            m.live.as_deref().unwrap_or("").contains("DEPARTURE STUB"),
+            m.live.as_deref().unwrap_or("").contains('Δ'),
             "{:?}",
             m.live
         );
