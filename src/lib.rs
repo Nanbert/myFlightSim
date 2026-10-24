@@ -24,6 +24,7 @@ pub mod hop;
 pub mod hud;
 pub mod ils;
 pub mod input;
+pub mod jet_landing_lesson;
 pub mod jet_takeoff_lesson;
 pub mod jet_taxi;
 pub mod lesson_flow;
@@ -113,6 +114,7 @@ pub fn run() {
         .add_plugins(takeoff::TakeoffPlugin)
         .add_plugins(takeoff_lesson::TakeoffLessonPlugin)
         .add_plugins(jet_takeoff_lesson::JetTakeoffLessonPlugin)
+        .add_plugins(jet_landing_lesson::JetLandingLessonPlugin)
         .add_plugins(landing_lesson::LandingLessonPlugin)
         .add_plugins(approach::ApproachPlugin)
         .add_plugins(hop::HopPlugin)

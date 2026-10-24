@@ -102,6 +102,7 @@ fn update_approach(
     time: Res<Time>,
     sim: Res<Sim>,
     map: Res<ActiveMap>,
+    lesson: Res<crate::mission::ActiveLesson>,
     aircraft: Res<AircraftState>,
     mut state: ResMut<ApproachState>,
     mut banner: Query<(&mut Text, &mut Node), With<ApproachBanner>>,
@@ -109,7 +110,12 @@ fn update_approach(
     let Ok((mut text, mut node)) = banner.single_mut() else {
         return;
     };
-    if aircraft_profile::normalized(&sim.name) != "737" || map.0.is_some() {
+    // The jet's landing lesson owns its gate: its FAIL card and PM prompt
+    // carry the verdict, and the free-flight banner would double them up.
+    if aircraft_profile::normalized(&sim.name) != "737"
+        || map.0.is_some()
+        || lesson.0 == Some(crate::mission::Lesson::JetLanding)
+    {
         node.display = Display::None;
         return;
     }

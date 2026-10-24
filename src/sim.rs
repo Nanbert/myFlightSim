@@ -309,6 +309,29 @@ impl Sim {
         self.origin_lon = 0.0;
     }
 
+    /// The 737 M3 seat: a mid-range final for ZSNM's ILS 36 — 9 km out at
+    /// 1,650 ft, 180 kt, flaps 5, gear UP (the config ladder is the lesson).
+    /// Just above the 3° beam, so it captures at once; trimmed on the
+    /// gear-up, flaps-5 wing so the seat holds from the first frame.
+    pub fn reset_final_jet(&mut self) {
+        let dlat = -(9000.0 / 0.3048) / fdm::FT_PER_DEG_LAT;
+        self.model.set("ic/lat-gc-deg", dlat);
+        self.model.set("ic/long-gc-deg", 0.0);
+        self.model.set("ic/vc-kts", 180.0);
+        self.model.set("ic/h-sl-ft", 1650.0);
+        self.model.set("ic/psi-true-deg", 0.0);
+        self.model.set("gear/gear-cmd-norm", 0.0);
+        self.model.apply_ic();
+        self.model.set("fcs/flap-cmd-norm", 5.0 / 40.0);
+        self.model.set("fcs/flap-pos-norm", 5.0 / 40.0);
+        self.model.set("gear/gear-pos-norm", 0.0);
+        self.light_engine();
+        self.model.trim(180.0, 1650.0);
+        self.reset_hud_memory();
+        self.origin_lat = 0.0;
+        self.origin_lon = 0.0;
+    }
+
     /// Spawn the engine per the flight's engine plan: running (the tutorial
     /// flow's 60 %-throttle hands-on start) or cold and dark for the cold
     /// lessons — spark off, prop stopped, and the start flow is the pilot's.

@@ -30,12 +30,13 @@
 use bevy::prelude::*;
 
 /// The lesson HUD tags, in menu order (`Lesson::label`).
-const LESSON_LABELS: [&str; 5] = [
+const LESSON_LABELS: [&str; 6] = [
     "M1 TAXI",
     "M2 TAKEOFF",
     "M3 LANDING",
     "M1 TAXI",
     "M2 TAKEOFF",
+    "M3 LANDING",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -52,6 +53,9 @@ pub enum Lesson {
     /// The 737's departure drill: lined up on ZSNM's numbers, the callout
     /// flow to a clean A/P handoff.
     JetTakeoff,
+    /// The 737's arrival drill: a mid-range ILS final, the stabilized gate,
+    /// the touchdown and the full stop.
+    JetLanding,
 }
 
 impl Lesson {
@@ -106,7 +110,7 @@ pub const PLAY_MENU: [PlayRow; 4] = [
 
 /// The 737's PLAY page rows: free flight plus its own graded lessons at
 /// ZSNM.
-pub const PLAY_MENU_JET: [PlayRow; 3] = [
+pub const PLAY_MENU_JET: [PlayRow; 4] = [
     PlayRow {
         label: "FREE FLIGHT",
         lesson: None,
@@ -121,6 +125,11 @@ pub const PLAY_MENU_JET: [PlayRow; 3] = [
         label: "M2 TAKEOFF",
         lesson: Some(Lesson::JetTakeoff),
         hint: "lined up on ZSNM 36: fly the callouts, clean up, hand off to the A/P",
+    },
+    PlayRow {
+        label: "M3 LANDING",
+        lesson: Some(Lesson::JetLanding),
+        hint: "4.9 NM final: config, the 1000 ft gate, grease it, full stop",
     },
 ];
 
@@ -182,6 +191,7 @@ mod tests {
         assert!(!Lesson::Landing.cold_start());
         assert!(!Lesson::JetTaxi.cold_start(), "the jet taxi drill is warm");
         assert!(!Lesson::JetTakeoff.cold_start(), "the jet departs warm");
+        assert!(!Lesson::JetLanding.cold_start(), "the jet arrives warm");
     }
 
     #[test]
@@ -191,14 +201,17 @@ mod tests {
         assert_eq!(PLAY_MENU_JET[1].label, "M1 TAXI");
         assert_eq!(PLAY_MENU_JET[2].lesson, Some(Lesson::JetTakeoff));
         assert_eq!(PLAY_MENU_JET[2].label, "M2 TAKEOFF");
+        assert_eq!(PLAY_MENU_JET[3].lesson, Some(Lesson::JetLanding));
+        assert_eq!(PLAY_MENU_JET[3].label, "M3 LANDING");
     }
 
     #[test]
     fn rows_for_picks_the_aircrafts_own_menu() {
         assert_eq!(rows_for("c172p").len(), 4);
-        assert_eq!(rows_for("737").len(), 3);
+        assert_eq!(rows_for("737").len(), 4);
         assert_eq!(rows_for("737")[1].lesson, Some(Lesson::JetTaxi));
         assert_eq!(rows_for("737")[2].lesson, Some(Lesson::JetTakeoff));
+        assert_eq!(rows_for("737")[3].lesson, Some(Lesson::JetLanding));
         // Anything else: free flight only.
         assert_eq!(rows_for("f22").len(), 1);
         assert_eq!(rows_for("f22")[0].lesson, None);

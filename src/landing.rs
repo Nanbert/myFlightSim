@@ -128,6 +128,7 @@ fn update_landing(
         "c172p" | "737"
     ) || map.0.is_some()
         || lesson.0 == Some(Lesson::Landing)
+        || lesson.0 == Some(Lesson::JetLanding)
     {
         node.display = Display::None;
         return;

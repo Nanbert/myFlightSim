@@ -109,6 +109,7 @@ pub struct LessonMeters<'w> {
     pub ll: ResMut<'w, crate::landing_lesson::LandingLesson>,
     pub jt: ResMut<'w, crate::jet_taxi::JetTaxiMeter>,
     pub jtk: ResMut<'w, crate::jet_takeoff_lesson::JetTakeoffMeter>,
+    pub jll: ResMut<'w, crate::jet_landing_lesson::JetLandingMeter>,
 }
 
 pub(crate) fn watch(
@@ -157,6 +158,7 @@ pub(crate) fn watch(
                 Lesson::Landing => meters.ll.rearm(),
                 Lesson::JetTaxi => meters.jt.rearm(),
                 Lesson::JetTakeoff => meters.jtk.rearm(),
+                Lesson::JetLanding => meters.jll.rearm(),
                 _ => meters.hs.settled = false,
             }
         }
@@ -277,6 +279,25 @@ pub(crate) fn watch(
                 return;
             }
             show_prompt(&mut prompt, meters.jtk.live.clone());
+        }
+        return;
+    }
+    // --- the 737's M3: the arrival meter owns the triggers here, like the
+    // C172's M3 before it. The stop freezes the card; Enter continues.
+    if matches!(lesson, Lesson::JetLanding) {
+        if no_popup {
+            if let Some(reason) = meters.jll.fail {
+                open_fail(&mut flow, &mut commands, reason);
+                return;
+            }
+            if meters.jll.settled && meters.jll.done.is_some() {
+                let body = meters.jll.finals_text();
+                flow.kind = Some(Card::Grade);
+                commands.insert_resource(Paused);
+                spawn_popup(&mut commands, "LANDING - GRADED", body, true);
+                return;
+            }
+            show_prompt(&mut prompt, meters.jll.live.clone());
         }
         return;
     }

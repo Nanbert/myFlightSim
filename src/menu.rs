@@ -1531,6 +1531,7 @@ fn start_flight(
             Some(Lesson::Taxi) | Some(Lesson::JetTaxi) => sim.reset_stand(),
             Some(Lesson::Takeoff) => sim.reset_ground(),
             Some(Lesson::JetTakeoff) => sim.reset_threshold(),
+            Some(Lesson::JetLanding) => sim.reset_final_jet(),
             Some(Lesson::Landing) => sim.reset_final_c172(),
             None => sim.reset_ground(),
         }
@@ -1579,6 +1580,17 @@ fn start_flight(
             b.value = 0.0;
         }
     }
+    // The jet landing lesson arrives at flaps 5 with the trim's own descent
+    // power: pin the lever pair so the first frame holds the seat.
+    if matches!(active.0, Some(Lesson::JetLanding)) {
+        for b in controls.list.iter_mut() {
+            match b.action {
+                crate::aircraft_profile::Action::Flap => b.value = 5.0 / 40.0,
+                crate::aircraft_profile::Action::Throttle => b.value = 0.5,
+                _ => {}
+            }
+        }
+    }
     *bindings = controls;
     // Every flight starts under manual control with the MCP at its defaults;
     // the 737's autopilot can be engaged once airborne.
@@ -1599,6 +1611,7 @@ fn dev_lesson() -> Option<Lesson> {
         "LANDING" | "M3" => Some(Lesson::Landing),
         "JETTAXI" | "737TAXI" => Some(Lesson::JetTaxi),
         "JETTAKEOFF" | "737TAKEOFF" => Some(Lesson::JetTakeoff),
+        "JETLANDING" | "737LANDING" => Some(Lesson::JetLanding),
         _ => None,
     }
 }
