@@ -51,12 +51,12 @@ impl Plugin for PausePlugin {
 }
 
 /// `PAUSE=1` opens the pause dialog as soon as a flight stages.
-fn dev_pause(mut commands: Commands) {
+fn dev_pause(mut commands: Commands, active: Res<crate::mission::ActiveLesson>) {
     if std::env::var("PAUSE").is_err() {
         return;
     }
     commands.insert_resource(Paused);
-    spawn_card(&mut commands);
+    spawn_card(&mut commands, active.0);
 }
 
 /// Escape owns the pause state machine: open on Esc, resume on Esc, confirm
@@ -66,6 +66,8 @@ fn toggle_pause(
     keys: Res<ButtonInput<KeyCode>>,
     state: Res<State<AppState>>,
     paused: Option<Res<Paused>>,
+    active: Res<crate::mission::ActiveLesson>,
+    mut pending: ResMut<crate::mission::PendingLesson>,
     card: Query<Entity, With<PauseCard>>,
     mut next: ResMut<NextState<AppState>>,
     mut commands: Commands,
@@ -74,13 +76,14 @@ fn toggle_pause(
         return;
     }
     let esc = keys.just_pressed(KeyCode::Escape);
+    let retry = keys.just_pressed(KeyCode::KeyR);
     let enter = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
     let open = paused.is_some();
     let mut card = card.single().ok();
 
     if esc && !open {
         commands.insert_resource(Paused);
-        spawn_card(&mut commands);
+        spawn_card(&mut commands, active.0);
         return;
     }
     if !open {
@@ -91,6 +94,18 @@ fn toggle_pause(
         if let Some(e) = card.take() {
             commands.entity(e).despawn();
         }
+    } else if retry {
+        if let Some(lesson) = active.0 {
+            // The lesson cards' own retry, opened up to the pause plate: the
+            // lesson rides pending through the hangar, whose `OnEnter`
+            // chains rebuild the flight exactly as a menu start does.
+            pending.0 = Some(lesson);
+            commands.remove_resource::<Paused>();
+            if let Some(e) = card.take() {
+                commands.entity(e).despawn();
+            }
+            next.set(AppState::Menu);
+        }
     } else if enter {
         // Reaching the hangar is the flight-ending path: `clear_pause`
         // (OnExitFlying) drops the flag, `DespawnOnExit` removes the card.
@@ -99,8 +114,9 @@ fn toggle_pause(
 }
 
 /// The confirmation card: the hangar page's avionics look, sized like a
-/// caution plate instead of a full page.
-fn spawn_card(commands: &mut Commands) {
+/// caution plate instead of a full page. A lesson in progress offers its R
+/// retry on the footer; free flight keeps the plain two-key plate.
+fn spawn_card(commands: &mut Commands, retry: Option<crate::mission::Lesson>) {
     let root = commands
         .spawn((
             Node {
@@ -149,7 +165,7 @@ fn spawn_card(commands: &mut Commands) {
         ))
         .id();
     for line in [
-        CardLine { text: "EXIT TO MENU ?", color: ui_theme::accent(), size: 26.0, gap: 0.0 },
+        CardLine { text: "PAUSED", color: ui_theme::accent(), size: 26.0, gap: 0.0 },
         CardLine { text: "The flight stays where it is; Enter discards it.", color: ui_theme::dim(), size: 18.0, gap: 8.0 },
     ] {
         commands.spawn((
@@ -168,7 +184,11 @@ fn spawn_card(commands: &mut Commands) {
     }
     // The hint footer, the same dim style as every other key row
     // (`ui_theme::key_footer`): no lit bar, just the keys.
-    ui_theme::key_footer(commands, card, 20.0, &[("Enter", "Back to menu"), ("Esc", "Back to game")]);
+    let mut rows = vec![("Enter", "Back to menu"), ("Esc", "Back to game")];
+    if retry.is_some() {
+        rows.insert(0, ("R", "Retry lesson"));
+    }
+    ui_theme::key_footer(commands, card, 20.0, &rows);
 }
 
 /// There is no pause without a flight.
