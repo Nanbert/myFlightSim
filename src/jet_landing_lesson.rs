@@ -24,6 +24,7 @@ use bevy::prelude::*;
 
 use crate::airfield::AirfieldSpec;
 use crate::app_state::{AppState, unpaused};
+use crate::autopilot::VertMode;
 use crate::mission::{ActiveLesson, Lesson};
 use crate::scoring::{score, word};
 use crate::sim::AircraftState;
@@ -140,6 +141,9 @@ pub struct Telem {
     gear_pos: f64,
     flap_deg: f64,
     reverse_pos: f64,
+    /// The A/P's vertical mode - the coupling recipe stays up until the
+    /// beams are flying.
+    vert: VertMode,
 }
 
 #[derive(Resource, Default)]
@@ -438,22 +442,31 @@ fn compose_live(m: &JetLandingMeter, t: &Telem, now: f32) -> Option<String> {
                 ));
             }
             // The config ladder: the first item not yet done is the call.
-            if t.flap_deg < 4.5 {
-                Some("ILS 36 CLEARED\nFLAPS 5 (F) — SLOW 180".to_owned())
+            let config = if t.flap_deg < 4.5 {
+                "FLAPS 5 (F) — SLOW 180".to_owned()
             } else if t.flap_deg < 14.5 {
-                Some("TRACK THE NEEDLES\nFLAPS 15 (F) — SLOW 160".to_owned())
+                "FLAPS 15 (F) — SLOW 160".to_owned()
             } else if t.gear_pos < 0.95 {
-                Some("FLAPS 15 SET — GEAR DOWN (U)".to_owned())
+                "FLAPS 15 SET — GEAR DOWN (U)".to_owned()
             } else if t.flap_deg < 29.5 {
-                Some(format!(
+                format!(
                     "GEAR DOWN — FLAPS 30 (F)\nSLOW TO {:.0} KT",
                     crate::landing::vref(LAND_FLAP_NORM) + 5.0
-                ))
+                )
             } else {
-                Some(format!(
+                format!(
                     "CLEAN CONFIG — STABLE BY 1000\n{:.0} KT    {:.0} ft",
                     t.cas_kts, t.alt_ft
-                ))
+                )
+            };
+            // Until the beams fly (and there is room above the gate), the
+            // coupling recipe rides on top - the SOP the real crew runs off
+            // procedure, not instruments.
+            let coupled = matches!(t.vert, VertMode::Gs | VertMode::Flare);
+            if coupled || t.alt_ft <= 1200.0 {
+                Some(config)
+            } else {
+                Some(format!("COUPLE: 5 A/T - 3 V/S - 6 APP\n{config}"))
             }
         }
         Phase::Rollout => {
@@ -550,6 +563,7 @@ fn finals(m: &JetLandingMeter) -> Finals {
 /// The update system: only the jet landing lesson, only the home field.
 fn step_m3(
     aircraft: Res<AircraftState>,
+    ap: Res<crate::autopilot::Autopilot>,
     ils: Res<crate::ils::Ils>,
     airfield: Res<crate::airfield::Airfield>,
     map: Res<crate::map::ActiveMap>,
@@ -581,6 +595,7 @@ fn step_m3(
             gear_pos: aircraft.gear_pos,
             flap_deg: aircraft.flap_deg,
             reverse_pos: aircraft.reverse_pos,
+            vert: ap.vert,
         },
         time.elapsed_secs(),
         time.delta_secs(),
@@ -614,6 +629,7 @@ mod tests {
     use super::{
         FAIL_GO_AROUND, FAIL_HARD, FLARE_AGL, FLARE_M, GATE_AGL, JetLandingMeter, Telem, tick,
     };
+    use crate::autopilot::VertMode;
     use bevy::prelude::*;
 
     const DT: f32 = 1.0 / 30.0;
@@ -636,6 +652,7 @@ mod tests {
             gear_pos: gear,
             flap_deg: flap,
             reverse_pos: 0.0,
+            vert: VertMode::Off,
         }
     }
 
@@ -732,10 +749,17 @@ mod tests {
     #[test]
     fn the_stable_gate_callout_and_the_ladder_play() {
         let mut m = JetLandingMeter::default();
-        // Pre-config: the ladder coaches the next step.
+        // Pre-config, beams not flying: the coupling recipe rides on top.
         tick_at(&mut m, frame(1600.0, 8900.0, 180.0, 5.0, 0.0), 0.0);
         let live = m.live.clone().expect("the ladder");
+        assert!(live.contains("COUPLE"), "the SOP recipe: {live}");
         assert!(live.contains("FLAPS 15"), "{live}");
+        // Beams flying: the recipe retires.
+        let mut coupled = frame(1500.0, 8300.0, 170.0, 5.0, 0.0);
+        coupled.vert = VertMode::Gs;
+        tick_at(&mut m, coupled, 0.05);
+        let live = m.live.clone().expect("config only");
+        assert!(!live.contains("COUPLE"), "{live}");
         tick_at(&mut m, frame(1500.0, 8300.0, 170.0, 15.0, 0.0), 0.1);
         let live = m.live.clone().expect("gear next");
         assert!(live.contains("GEAR DOWN"), "{live}");
