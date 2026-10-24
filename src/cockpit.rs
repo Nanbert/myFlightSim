@@ -3,10 +3,11 @@
 //! The cockpit view locks the mouse for free-look (see `view::cockpit_cursor`),
 //! so there is no cursor to click with. A fixed crosshair sits at the centre of
 //! the view, and a red frame tracks the modelled MCP board. Line the crosshair
-//! up with the board and click: `mcp_ui` then floats the 2D MCP panel over a
-//! dimmed scene, releases the mouse and lets the individual controls be clicked
-//! and hovered directly. Both paths drive the same `Mcp`/`Autopilot` resources,
-//! so the cockpit and the chase-view panel stay in sync.
+//! up with the board and click: `mcp_panel` then raises the MCP as a centred
+//! 2D panel in front of the blurred, dimmed cockpit, releases the mouse and
+//! lets the individual controls be clicked and hovered directly. Both paths
+//! drive the same `Mcp`/`Autopilot` resources, so the cockpit panel and the
+//! chase-view strip stay in sync.
 
 use bevy::prelude::*;
 use bevy::text::FontSize;

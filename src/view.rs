@@ -524,9 +524,10 @@ pub struct Ui {
     /// Drop the first non-zero mouse delta after the lock, too; some compositors
     /// deliver the warp a little later than the grab.
     pub look_ignore: bool,
-    /// Cockpit only: the 2D MCP panel is floating over a dimmed scene, with
-    /// the mouse released for direct clicks. Free-look and the crosshair are
-    /// suspended while this is set.
+    /// Cockpit only: the MCP panel is raised over the cockpit, which `mcp_panel`
+    /// dims (not cleared) so the PFDs stay readable. The mouse is released for
+    /// direct clicks, and free-look and the crosshair are suspended while this
+    /// is set.
     pub mcp_focus: bool,
     /// Cockpit only, C172: the head-look is held still while an instrument is
     /// zoomed in, so the close-up stays exactly on the dial.
@@ -801,6 +802,9 @@ fn sync_view_models(
         };
     }
     for mut visibility in &mut cockpit {
+        // The cockpit stays on screen while the MCP panel is up: `mcp_panel`
+        // dims it with a translucent scrim, so the PFDs stay readable behind
+        // the panel rather than swapping to a black room.
         *visibility = if ui.cockpit {
             Visibility::Inherited
         } else {
@@ -1170,6 +1174,12 @@ fn apply_look_delta(ui: &mut Ui, delta: Vec2) {
     let k = LOOK_DEG_PER_PX.to_radians();
     ui.look_yaw -= delta.x * k;
     ui.look_pitch = (ui.look_pitch - delta.y * k).clamp(-LOOK_PITCH_LIMIT, LOOK_PITCH_LIMIT);
+}
+
+/// True while the cockpit MCP panel is focused: Esc belongs to the panel, so
+/// the pause menu stands aside until it closes.
+pub fn mcp_focused(ui: Option<&Ui>) -> bool {
+    ui.is_some_and(|ui| ui.mcp_focus)
 }
 
 /// Cockpit free-look: mouse motion turns the pilot's head relative to the

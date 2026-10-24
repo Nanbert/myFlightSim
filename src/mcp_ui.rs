@@ -1,10 +1,15 @@
-//! Clickable Mode Control Panel for the 737, drawn as a photo strip along the
-//! bottom of the screen. The four live setpoint windows are masked and redrawn
-//! with seven-segment glyphs; invisible hotspots over the photographed knobs
-//! and buttons carry the same `Mcp`/`Autopilot` wiring as before.
+//! Clickable Mode Control Panel for the 737, drawn as a baked-image strip along
+//! the bottom of the screen. The four live setpoint windows are redrawn with
+//! seven-segment glyphs; invisible UI hotspots over the baked knobs and buttons
+//! carry the `Mcp`/`Autopilot` wiring.
 //!
-//! The panel art is a JetEx 737 cockpit photo, cropped to the MCP. It is fine
-//! for personal use but is not ours to redistribute.
+//! The strip is the chase-view instrument. In the cockpit the pilot clicks the
+//! modelled board instead, and `mcp_panel` raises the same baked image as a
+//! centred 2D panel. This module owns the shared wiring: the `Mcp` setpoints,
+//! the hotspot components, the press/hold/scroll systems, and the shared
+//! `spawn_panel_contents` that lays windows, labels and hotspots over the image
+//! at any scale. `mcp_layout` owns the asset-pixel coordinates; `mcp_bake`
+//! produced the PNG from the old 3D model.
 
 use bevy::input::mouse::MouseWheel;
 use bevy::picking::hover::Hovered;
@@ -17,34 +22,22 @@ use bevy::window::PrimaryWindow;
 use crate::aircraft_profile::{self, ToggleAction};
 use crate::app_state::{unpaused, AppState};
 use crate::autopilot::{AtMode, Autopilot, LatMode, Mcp, McpWindow, SpeedUnit, VertMode};
+use crate::mcp_layout::{
+    cap_font, glass, slots, McpPress, PRect, AT_SWITCH, BUTTONS, COURSE_L_WINDOW, COURSE_R_WINDOW,
+    CROP_W, DECOR_CAPS, DECOR_ROUND, DISENGAGE, EXTRA_LABELS, KNOBS, LABEL, PANEL_H, PANEL_W,
+    VS_WHEEL, WINDOWS,
+};
 use crate::sim::Sim;
 use crate::ui_theme;
 use crate::view::Ui;
 
-/// Panel size on screen. The texture is 2470×449, i.e. the same 5.5:1 ratio.
-pub const PANEL_W: f32 = 1100.0;
-const PANEL_H: f32 = 200.0;
-
-/// The chase-view strip sits this far off the bottom edge, and is the FMA bar
-/// plus a gap plus the photo tall. Focus mode lifts its centre to mid-screen.
-const STRIP_BOTTOM: f32 = 12.0;
-const STRIP_H: f32 = 22.0 + 4.0 + PANEL_H;
-
-/// Red used for the focus outline on the panel and its hotspots.
+/// Red used for the focus tooltip's outline.
 const FOCUS_RED: Color = Color::srgba(1.0, 0.30, 0.20, 1.0);
 
-/// Region of the source photo baked into `assets/ui/737_mcp.jpg`.
-const CROP_X: f32 = 745.0;
-const CROP_Y: f32 = 40.0;
-const CROP_W: f32 = 2470.0;
-const CROP_H: f32 = 449.0;
-
-const FMA_BG: Color = Color::srgb(0.01, 0.01, 0.01);
-const FMA_GREEN: Color = Color::srgb(0.25, 0.90, 0.30);
+pub(crate) const FMA_BG: Color = Color::srgb(0.01, 0.01, 0.01);
+pub(crate) const FMA_GREEN: Color = Color::srgb(0.25, 0.90, 0.30);
 const FMA_AMBER: Color = Color::srgb(0.95, 0.66, 0.16);
 const FMA_GREY: Color = Color::srgb(0.62, 0.65, 0.67);
-/// Matches the warm near-black of the photographed window glass.
-const GLASS: Color = Color::srgb(0.11, 0.063, 0.027);
 const LED: Color = Color::srgb(0.86, 0.93, 1.0);
 const LED_GLOW: Color = Color::srgba(0.45, 0.65, 1.0, 0.35);
 const AMBER: Color = Color::srgb(1.0, 0.62, 0.12);
@@ -54,37 +47,20 @@ const AMBER: Color = Color::srgb(1.0, 0.62, 0.12);
 const HOLD_DELAY_S: f64 = 0.40;
 const HOLD_INTERVAL_S: f64 = 0.05;
 
-/// A clickable control that is not a setpoint knob.
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-enum McpPress {
-    AtArm,
-    Cmd,
-    HdgSel,
-    AltHold,
-    Vs,
-    LvlChg,
-    /// APP: arm the ILS beams (LOC + GS). On the photo this sits one row below
-    /// the LNAV/VNAV column, left of ALT HOLD.
-    Approach,
-    /// The speed window itself switches between kt and Mach, like pushing the
-    /// speed knob on the real MCP.
-    SpeedUnit,
-}
-
 /// One half of a knob (or the upper/lower half of the V/S wheel).
 #[derive(Component, Clone, Copy)]
-struct McpArrow {
-    window: McpWindow,
-    dir: f64,
+pub(crate) struct McpArrow {
+    pub(crate) window: McpWindow,
+    pub(crate) dir: f64,
 }
 
 /// The clickable window body (wheel target).
 #[derive(Component, Clone, Copy)]
-struct McpWindowBox(McpWindow);
+pub(crate) struct McpWindowBox(pub(crate) McpWindow);
 
 /// Which bar of a seven-segment glyph a node draws.
 #[derive(Clone, Copy)]
-enum Seg {
+pub(crate) enum Seg {
     A,
     B,
     C,
@@ -96,7 +72,7 @@ enum Seg {
 
 /// One light-emitting node inside a window.
 #[derive(Component, Clone, Copy)]
-enum LedPart {
+pub(crate) enum LedPart {
     Seg {
         window: McpWindow,
         slot: usize,
@@ -113,29 +89,20 @@ enum LedPart {
 }
 
 #[derive(Component)]
-struct FmaLabel;
+pub(crate) struct FmaLabel;
 
-/// The 2D photo panel — the chase-view strip, and the focused overlay in the
-/// cockpit.
+/// The 2D baked-image panel — the chase-view strip.
 #[derive(Component)]
 struct McpPanel;
 
-/// Every clickable hotspot, so focus mode can outline them in red.
-#[derive(Component)]
-struct McpHotspot;
-
 /// Hover text for one hotspot.
 #[derive(Component, Clone, Copy)]
-struct McpHelp {
+pub(crate) struct McpHelp {
     title: &'static str,
     body: &'static str,
 }
 
-/// Full-screen dim layer behind the focused panel; clicking it closes focus.
-#[derive(Component)]
-struct FocusDim;
-
-/// "MCP focus" hint shown above the floating panel.
+/// "MCP focus" hint shown above the cockpit panel.
 #[derive(Component)]
 struct FocusHint;
 
@@ -148,16 +115,17 @@ struct TooltipText;
 
 /// Which arrow is currently held, for click-and-hold repeating.
 #[derive(Resource, Default)]
-struct ArrowHold {
+pub(crate) struct ArrowHold {
     entity: Option<Entity>,
     held_s: f64,
 }
 
-/// Eased 0..1 focus transition: 0 = bottom photo strip, 1 = floating over a
-/// dimmed cockpit.
+/// Eased 0..1 focus transition: 0 = chase strip / cockpit, 1 = the cockpit
+/// panel is fully raised. `mcp_panel` drives it; the tooltip uses it to wait
+/// for the panel.
 #[derive(Resource, Default)]
-struct FocusAnim {
-    e: f32,
+pub(crate) struct FocusAnim {
+    pub(crate) e: f32,
 }
 
 pub struct McpUiPlugin;
@@ -167,7 +135,6 @@ impl Plugin for McpUiPlugin {
         app.init_resource::<ArrowHold>()
             .init_resource::<FocusAnim>()
             .add_observer(on_mcp_activate)
-            .add_observer(on_focus_dim)
             .add_systems(
                 OnEnter(AppState::Flying),
                 spawn_panel.after(crate::sim::StartFlight),
@@ -178,8 +145,7 @@ impl Plugin for McpUiPlugin {
                     press_arrows,
                     scroll_windows,
                     focus_input,
-                    focus_anim,
-                    focus_hotspots,
+                    focus_hint,
                     focus_tooltip,
                     sync_panel,
                     cockpit_visibility,
@@ -190,57 +156,11 @@ impl Plugin for McpUiPlugin {
     }
 }
 
-/// A rectangle in source-photo pixels.
-#[derive(Clone, Copy)]
-struct Area {
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-}
-
-impl Area {
-    const fn new(x0: f32, y0: f32, x1: f32, y1: f32) -> Self {
-        Area { x0, y0, x1, y1 }
-    }
-
-    /// `left, top, width, height` in panel pixels.
-    fn px(self) -> (f32, f32, f32, f32) {
-        let sx = PANEL_W / CROP_W;
-        let sy = PANEL_H / CROP_H;
-        (
-            (self.x0 - CROP_X) * sx,
-            (self.y0 - CROP_Y) * sy,
-            (self.x1 - self.x0) * sx,
-            (self.y1 - self.y0) * sy,
-        )
-    }
-}
-
-/// The lit glass of a window, excluding its bezel.
-fn glass(window: McpWindow) -> Area {
-    match window {
-        McpWindow::Speed => Area::new(1211.0, 152.0, 1479.0, 220.0),
-        McpWindow::Heading => Area::new(1673.0, 150.0, 1816.0, 220.0),
-        McpWindow::Altitude => Area::new(2011.0, 147.0, 2277.0, 218.0),
-        McpWindow::VerticalSpeed => Area::new(2340.0, 144.0, 2611.0, 216.0),
-    }
-}
-
-fn slots(window: McpWindow) -> usize {
-    match window {
-        McpWindow::Speed => 4,
-        McpWindow::Heading => 3,
-        McpWindow::Altitude => 5,
-        McpWindow::VerticalSpeed => 5,
-    }
-}
-
 fn spawn_panel(mut commands: Commands, sim: Res<Sim>, assets: Res<AssetServer>) {
     if !aircraft_profile::profile(&sim.name).has_autopilot {
         return;
     }
-    let mcp_image = assets.load("ui/737_mcp.jpg");
+    let mcp_image = assets.load("ui/737_mcp_3d.png");
 
     commands
         .spawn((
@@ -298,44 +218,17 @@ fn spawn_panel(mut commands: Commands, sim: Res<Sim>, assets: Res<AssetServer>) 
                     ..default()
                 },
             ))
-            .with_children(|panel| {
-                for window in [
-                    McpWindow::Speed,
-                    McpWindow::Heading,
-                    McpWindow::Altitude,
-                    McpWindow::VerticalSpeed,
-                ] {
-                    spawn_window(panel, window);
-                }
-                spawn_hotspots(panel);
-            });
+            .with_children(|panel| spawn_panel_contents(panel, PANEL_W / CROP_W));
         });
 
-    // Focus furniture. These are siblings of the panel so the panel's focus
-    // scale does not stretch them.
-    commands.spawn((
-        FocusDim,
-        Button,
-        Hovered(false),
-        Node {
-            position_type: PositionType::Absolute,
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            display: Display::None,
-            ..default()
-        },
-        BackgroundColor(Color::NONE),
-        GlobalZIndex(30),
-        DespawnOnExit(AppState::Flying),
-    ));
-
+    // Focus hint. It floats over the cockpit panel that `mcp_panel` raises.
     commands
         .spawn((
             FocusHint,
             Pickable::IGNORE,
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Px(20.0),
+                bottom: Val::Px(24.0),
                 width: Val::Percent(100.0),
                 justify_content: JustifyContent::Center,
                 display: Display::None,
@@ -352,7 +245,7 @@ fn spawn_panel(mut commands: Commands, sim: Res<Sim>, assets: Res<AssetServer>) 
                     font_size: FontSize::Px(15.0),
                     ..default()
                 },
-                TextColor(Color::srgba(1.0, 0.55, 0.45, 0.95)),
+                TextColor(Color::srgba(1.0, 0.82, 0.55, 0.95)),
             ));
         });
 
@@ -389,30 +282,34 @@ fn spawn_panel(mut commands: Commands, sim: Res<Sim>, assets: Res<AssetServer>) 
         });
 }
 
-/// Mask the baked-in digits, then lay out the live seven-segment glyphs.
-fn spawn_window(panel: &mut ChildSpawnerCommands, window: McpWindow) {
-    let (gx, gy, gw, gh) = glass(window).px();
-    panel.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(gx),
-            top: Val::Px(gy),
-            width: Val::Px(gw),
-            height: Val::Px(gh),
-            border_radius: BorderRadius::all(Val::Px(2.0)),
-            ..default()
-        },
-        BackgroundColor(GLASS),
-    ));
+/// Lay the live windows, engraved labels and click hotspots over the baked
+/// image. `scale` is on-screen px per asset px; the cockpit panel passes 1.0
+/// and scales the whole node instead.
+pub(crate) fn spawn_panel_contents(panel: &mut ChildSpawnerCommands, scale: f32) {
+    for window in [
+        McpWindow::Speed,
+        McpWindow::Heading,
+        McpWindow::Altitude,
+        McpWindow::VerticalSpeed,
+    ] {
+        spawn_window(panel, window, scale);
+    }
+    spawn_labels(panel, scale);
+    spawn_hotspots(panel, scale);
+}
 
-    // The photographed digits are ~40 source px apart and ~48 px tall; keep
-    // that pitch so the redrawn glyphs read at the same scale as the panel.
+/// Lay out the live seven-segment glyphs on the baked glass.
+fn spawn_window(panel: &mut ChildSpawnerCommands, window: McpWindow, scale: f32) {
+    let (gx, gy, gw, gh) = glass(window).scaled(scale);
+
+    // The baked digits are ~40 asset px apart and ~48 px tall; keep that pitch
+    // so the redrawn glyphs read at the same scale as the panel.
     let count = slots(window);
-    let pitch = 40.0 * PANEL_W / CROP_W;
-    let dw = pitch * 0.75;
-    let dh = 48.0 * PANEL_H / CROP_H;
-    let stroke = (dh * 0.13).max(2.0);
-    let right_margin = 4.0;
+    let pitch = 40.0 * scale;
+    let dw = 30.0 * scale;
+    let dh = 48.0 * scale;
+    let stroke = (6.2 * scale).max(1.5);
+    let right_margin = 4.0 * scale;
 
     for slot in 0..count {
         let group_left = gx + gw - right_margin - pitch * count as f32;
@@ -485,7 +382,7 @@ fn spawn_window(panel: &mut ChildSpawnerCommands, window: McpWindow) {
 }
 
 /// `(segment, left, top, width, height)` inside a glyph box.
-fn segment_rects(w: f32, h: f32, s: f32) -> [(Seg, f32, f32, f32, f32); 7] {
+pub(crate) fn segment_rects(w: f32, h: f32, s: f32) -> [(Seg, f32, f32, f32, f32); 7] {
     let half = h * 0.5;
     [
         (Seg::A, 0.0, 0.0, w, s),
@@ -498,18 +395,98 @@ fn segment_rects(w: f32, h: f32, s: f32) -> [(Seg, f32, f32, f32, f32); 7] {
     ]
 }
 
-fn spawn_hotspots(panel: &mut ChildSpawnerCommands) {
-    for (press, area) in [
-        (McpPress::AtArm, Area::new(1070.0, 155.0, 1175.0, 290.0)),
-        (McpPress::Cmd, Area::new(2679.0, 146.0, 2784.0, 255.0)),
-        (McpPress::LvlChg, Area::new(1524.0, 361.0, 1628.0, 463.0)),
-        (McpPress::HdgSel, Area::new(1694.0, 361.0, 1798.0, 463.0)),
-        (McpPress::Approach, Area::new(1102.0, 310.0, 1208.0, 430.0)),
-        (McpPress::AltHold, Area::new(2090.0, 355.0, 2205.0, 470.0)),
-        (McpPress::Vs, Area::new(2208.0, 355.0, 2323.0, 470.0)),
-    ] {
-        spawn_press(panel, area, press, 4.0);
+/// Every engraved label is a `Text` overlay: the bake carries hardware only, so
+/// the same label table reads the same on the strip and the cockpit panel.
+fn spawn_labels(panel: &mut ChildSpawnerCommands, scale: f32) {
+    for &(rect, _, label) in BUTTONS {
+        spawn_label(
+            panel,
+            label,
+            rect.cx(),
+            rect.cy(),
+            cap_font(label),
+            LABEL,
+            scale,
+        );
     }
+    for &(rect, label) in DECOR_CAPS {
+        spawn_label(
+            panel,
+            label,
+            rect.cx(),
+            rect.cy(),
+            cap_font(label),
+            LABEL,
+            scale,
+        );
+    }
+    for &(rect, label) in DECOR_ROUND {
+        spawn_label(panel, label, rect.cx(), rect.y0 - 12.0, 20.0, LABEL, scale);
+    }
+    for &(rect, _, label) in WINDOWS {
+        spawn_label(panel, label, rect.cx(), rect.y0 - 38.0, 28.0, LABEL, scale);
+    }
+    for rect in [COURSE_L_WINDOW, COURSE_R_WINDOW] {
+        spawn_label(panel, "077", rect.cx(), rect.cy(), 34.0, LABEL, scale);
+        spawn_label(
+            panel,
+            "COURSE",
+            rect.cx(),
+            rect.y0 - 20.0,
+            24.0,
+            LABEL,
+            scale,
+        );
+    }
+    for &(text, x, y, size) in EXTRA_LABELS {
+        spawn_label(panel, text, x, y, size, LABEL, scale);
+    }
+    spawn_label(
+        panel,
+        "DISENGAGE",
+        DISENGAGE.cx(),
+        DISENGAGE.cy() - DISENGAGE.h() * 0.08,
+        24.0,
+        LABEL,
+        scale,
+    );
+}
+
+fn spawn_label(
+    parent: &mut ChildSpawnerCommands,
+    text: &str,
+    x: f32,
+    y: f32,
+    size: f32,
+    color: Color,
+    scale: f32,
+) {
+    parent.spawn((
+        Pickable::IGNORE,
+        Text::new(text),
+        TextFont {
+            font_size: FontSize::Px(size * scale),
+            ..default()
+        },
+        TextColor(color),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(x * scale),
+            top: Val::Px(y * scale),
+            ..default()
+        },
+        UiTransform {
+            translation: Val2::percent(-50.0, -50.0),
+            ..default()
+        },
+    ));
+}
+
+fn spawn_hotspots(panel: &mut ChildSpawnerCommands, scale: f32) {
+    for &(rect, press, _) in BUTTONS {
+        spawn_press(panel, rect, press, 4.0 * scale, scale);
+    }
+    spawn_press(panel, AT_SWITCH, McpPress::AtArm, 4.0 * scale, scale);
 
     for window in [
         McpWindow::Speed,
@@ -517,47 +494,32 @@ fn spawn_hotspots(panel: &mut ChildSpawnerCommands) {
         McpWindow::Altitude,
         McpWindow::VerticalSpeed,
     ] {
-        let a = glass(window);
-        let area = Area::new(a.x0 - 2.0, a.y0 - 2.0, a.x1 + 2.0, a.y1 + 2.0);
-        spawn_window_box(panel, area, window);
+        spawn_window_box(panel, glass(window).expand(2.0), window, scale);
     }
 
-    spawn_knob(
-        panel,
-        McpWindow::Speed,
-        Area::new(1340.0, 272.0, 1450.0, 390.0),
-    );
-    spawn_knob(
-        panel,
-        McpWindow::Heading,
-        Area::new(1680.0, 245.0, 1800.0, 355.0),
-    );
-    spawn_knob(
-        panel,
-        McpWindow::Altitude,
-        Area::new(2105.0, 245.0, 2230.0, 355.0),
-    );
+    for &(rect, window) in KNOBS {
+        spawn_knob(panel, window, rect, scale);
+    }
 
     // The V/S wheel: upper half climbs, lower half descends.
-    let (x, y, w, h) = Area::new(2515.0, 255.0, 2570.0, 445.0).px();
+    let (x, y, w, h) = VS_WHEEL.scaled(scale);
     for (dir, top, height) in [(1.0, y, h * 0.5), (-1.0, y + h * 0.5, h * 0.5)] {
         panel.spawn((
             Button,
             Hovered(false),
-            McpHotspot,
             McpArrow {
                 window: McpWindow::VerticalSpeed,
                 dir,
             },
             knob_help(McpWindow::VerticalSpeed),
-            absolute(x, top, w, height, 4.0),
+            absolute(x, top, w, height, 4.0 * scale),
             BackgroundColor(Color::NONE),
             BorderColor::all(Color::NONE),
         ));
     }
 }
 
-fn press_help(press: McpPress) -> McpHelp {
+pub(crate) fn press_help(press: McpPress) -> McpHelp {
     match press {
         McpPress::AtArm => McpHelp {
             title: "A/T ARM",
@@ -594,7 +556,7 @@ fn press_help(press: McpPress) -> McpHelp {
     }
 }
 
-fn window_help(window: McpWindow) -> McpHelp {
+pub(crate) fn window_help(window: McpWindow) -> McpHelp {
     match window {
         McpWindow::Speed => McpHelp {
             title: "SPEED WINDOW",
@@ -615,7 +577,7 @@ fn window_help(window: McpWindow) -> McpHelp {
     }
 }
 
-fn knob_help(window: McpWindow) -> McpHelp {
+pub(crate) fn knob_help(window: McpWindow) -> McpHelp {
     match window {
         McpWindow::Speed => McpHelp {
             title: "SPEED KNOB",
@@ -636,12 +598,17 @@ fn knob_help(window: McpWindow) -> McpHelp {
     }
 }
 
-fn spawn_press(panel: &mut ChildSpawnerCommands, area: Area, press: McpPress, radius: f32) {
-    let (x, y, w, h) = area.px();
+fn spawn_press(
+    panel: &mut ChildSpawnerCommands,
+    area: PRect,
+    press: McpPress,
+    radius: f32,
+    scale: f32,
+) {
+    let (x, y, w, h) = area.scaled(scale);
     panel.spawn((
         Button,
         Hovered(false),
-        McpHotspot,
         press,
         press_help(press),
         absolute(x, y, w, h, radius),
@@ -650,15 +617,14 @@ fn spawn_press(panel: &mut ChildSpawnerCommands, area: Area, press: McpPress, ra
     ));
 }
 
-fn spawn_window_box(panel: &mut ChildSpawnerCommands, area: Area, window: McpWindow) {
-    let (x, y, w, h) = area.px();
+fn spawn_window_box(panel: &mut ChildSpawnerCommands, area: PRect, window: McpWindow, scale: f32) {
+    let (x, y, w, h) = area.scaled(scale);
     let mut e = panel.spawn((
         Button,
         Hovered(false),
-        McpHotspot,
         McpWindowBox(window),
         window_help(window),
-        absolute(x, y, w, h, 3.0),
+        absolute(x, y, w, h, 3.0 * scale),
         BackgroundColor(Color::NONE),
         BorderColor::all(Color::NONE),
     ));
@@ -668,16 +634,15 @@ fn spawn_window_box(panel: &mut ChildSpawnerCommands, area: Area, window: McpWin
 }
 
 /// Left half steps fine down, right half fine up.
-fn spawn_knob(panel: &mut ChildSpawnerCommands, window: McpWindow, area: Area) {
-    let (x, y, w, h) = area.px();
+fn spawn_knob(panel: &mut ChildSpawnerCommands, window: McpWindow, area: PRect, scale: f32) {
+    let (x, y, w, h) = area.scaled(scale);
     for (dir, left) in [(-1.0, x), (1.0, x + w * 0.5)] {
         panel.spawn((
             Button,
             Hovered(false),
-            McpHotspot,
             McpArrow { window, dir },
             knob_help(window),
-            absolute(left, y, w * 0.5, h, 6.0),
+            absolute(left, y, w * 0.5, h, 6.0 * scale),
             BackgroundColor(Color::NONE),
             BorderColor::all(Color::NONE),
         ));
@@ -698,7 +663,7 @@ fn absolute(left: f32, top: f32, width: f32, height: f32, radius: f32) -> Node {
 }
 
 /// Buttons activate on release (the widget's `Activate` event).
-fn on_mcp_activate(
+pub(crate) fn on_mcp_activate(
     activate: On<Activate>,
     presses: Query<&McpPress>,
     sim: Res<Sim>,
@@ -721,7 +686,7 @@ fn on_mcp_activate(
 }
 
 /// Knob halves nudge one fine step on press, then repeat while held.
-fn press_arrows(
+pub(crate) fn press_arrows(
     time: Res<Time>,
     mut hold: ResMut<ArrowHold>,
     mut mcp: ResMut<Mcp>,
@@ -752,7 +717,7 @@ fn press_arrows(
 }
 
 /// The outer knob: one coarse step per wheel notch while a window is hovered.
-fn scroll_windows(
+pub(crate) fn scroll_windows(
     mut wheel: MessageReader<MouseWheel>,
     q: Query<(&Hovered, &McpWindowBox)>,
     mut mcp: ResMut<Mcp>,
@@ -772,8 +737,8 @@ fn scroll_windows(
     }
 }
 
-/// Esc leaves focus; the panel eases back down to the strip.
-fn focus_input(
+/// Esc leaves focus; the cockpit panel eases back down and the cockpit returns.
+pub(crate) fn focus_input(
     keys: Res<ButtonInput<KeyCode>>,
     ui: Option<ResMut<Ui>>,
     mut hold: ResMut<ArrowHold>,
@@ -787,88 +752,18 @@ fn focus_input(
     }
 }
 
-/// Clicking the dimmed backdrop closes focus.
-fn on_focus_dim(activate: On<Activate>, dims: Query<(), With<FocusDim>>, ui: Option<ResMut<Ui>>) {
-    if dims.get(activate.entity).is_err() {
-        return;
-    }
-    if let Some(mut ui) = ui {
-        ui.mcp_focus = false;
-    }
-}
-
-/// Ease the panel between the bottom strip and a raised, scaled "book" over a
-/// dimmed cockpit. The dark layer and hint appear with it.
-fn focus_anim(
-    time: Res<Time>,
-    ui: Option<Res<Ui>>,
-    mut anim: ResMut<FocusAnim>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    mut panel: Query<(&mut UiTransform, &mut GlobalZIndex), With<McpPanel>>,
-    mut dim: Query<(&mut Node, &mut BackgroundColor), (With<FocusDim>, Without<McpPanel>)>,
-    mut hint: Query<&mut Node, (With<FocusHint>, Without<McpPanel>, Without<FocusDim>)>,
-) {
-    let cockpit = ui.as_deref().is_some_and(|ui| ui.cockpit);
-    let target = cockpit && ui.as_deref().is_some_and(|ui| ui.mcp_focus);
-    let want: f32 = if target { 1.0 } else { 0.0 };
-    if cockpit {
-        anim.e += (want - anim.e) * (1.0 - (-8.0 * time.delta_secs()).exp());
-        if (want - anim.e).abs() < 0.002 {
-            anim.e = want;
-        }
-    } else {
-        // Leaving the cockpit: the strip is already the chase-view pose.
-        anim.e = 0.0;
-    }
-    let e = anim.e;
-
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let lift = (window.height() * 0.5 - (STRIP_BOTTOM + STRIP_H * 0.5)).max(0.0) * e;
-    let fit = (window.width() * 0.92 / PANEL_W).clamp(0.8, 1.6);
-    let scale = 1.0 + (fit - 1.0) * e;
-
-    for (mut tf, mut z) in &mut panel {
-        tf.translation = Val2::new(Val::Px(0.0), Val::Px(-lift));
-        tf.scale = Vec2::splat(scale);
-        let z_want = if e > 0.001 { 31 } else { 15 };
-        if z.0 != z_want {
-            z.0 = z_want;
-        }
-    }
-
-    let show = if e > 0.001 {
-        Display::Flex
-    } else {
-        Display::None
-    };
-    for (mut node, mut bg) in &mut dim {
-        if node.display != show {
-            node.display = show;
-        }
-        bg.0 = Color::srgba(0.0, 0.0, 0.0, 0.72 * e);
-    }
-
-    let hint_show = if e > 0.3 {
-        Display::Flex
-    } else {
-        Display::None
-    };
-    for mut node in &mut hint {
-        if node.display != hint_show {
-            node.display = hint_show;
-        }
-    }
-}
-
-/// Outline every clickable control in red while the panel is focused.
-fn focus_hotspots(anim: Res<FocusAnim>, mut q: Query<&mut BorderColor, With<McpHotspot>>) {
-    let alpha = (anim.e * 0.9).clamp(0.0, 1.0);
-    let color = Color::srgba(1.0, 0.30, 0.20, alpha);
-    for mut border in &mut q {
-        *border = BorderColor::all(color);
-    }
+/// The focus hint belongs to the cockpit panel: show it while the cockpit is in
+/// MCP focus, hide it otherwise.
+fn focus_hint(ui: Option<Res<Ui>>, q: Query<&mut Node, With<FocusHint>>) {
+    let focused = ui.as_deref().is_some_and(|ui| ui.cockpit && ui.mcp_focus);
+    ui_theme::set_display(
+        q,
+        if focused {
+            Display::Flex
+        } else {
+            Display::None
+        },
+    );
 }
 
 /// Hovering a focused hotspot shows its name and what it does.
@@ -956,14 +851,15 @@ fn sync_panel(
         };
     }
 
-    if let Ok((mut text, mut color)) = fma.single_mut() {
-        let mode = ap.fma();
-        color.0 = match mode.as_str() {
-            "AP DISC" => FMA_AMBER,
-            "MANUAL" => FMA_GREY,
-            _ => FMA_GREEN,
-        };
-        text.0 = mode;
+    let mode = ap.fma();
+    let color = match mode.as_str() {
+        "AP DISC" => FMA_AMBER,
+        "MANUAL" => FMA_GREY,
+        _ => FMA_GREEN,
+    };
+    for (mut text, mut text_color) in &mut fma {
+        text_color.0 = color;
+        text.0 = mode.clone();
     }
 
     for (press, hover, pressed, mut bg) in &mut buttons {
@@ -987,20 +883,14 @@ fn sync_panel(
     }
 }
 
-/// The photo panel is a chase-view instrument; in the cockpit it only lifts
-/// into view while focused (or while easing back down).
-fn cockpit_visibility(
-    ui: Option<Res<Ui>>,
-    anim: Res<FocusAnim>,
-    q: Query<&mut Node, With<McpPanel>>,
-) {
+/// The baked strip is a chase-view instrument only. The cockpit's MCP is the
+/// centred panel in `mcp_panel`, so the strip stays out of the way there.
+fn cockpit_visibility(ui: Option<Res<Ui>>, q: Query<&mut Node, With<McpPanel>>) {
     // `Ui` is absent in tests that mount the panel on its own.
-    let ui = ui.as_deref();
-    let cockpit = ui.is_some_and(|ui| ui.cockpit);
-    let focused = ui.is_some_and(|ui| ui.mcp_focus);
+    let cockpit = ui.as_deref().is_some_and(|ui| ui.cockpit);
     ui_theme::set_display(
         q,
-        if cockpit && !focused && anim.e <= 0.001 {
+        if cockpit {
             Display::None
         } else {
             Display::Flex
@@ -1020,7 +910,7 @@ fn glow(active: bool, hovered: bool, pressed: bool) -> Color {
     Color::srgba(base.red, base.green, base.blue, alpha.min(0.45))
 }
 
-fn display_chars(window: McpWindow, mcp: &Mcp) -> Vec<char> {
+pub(crate) fn display_chars(window: McpWindow, mcp: &Mcp) -> Vec<char> {
     let text = match window {
         McpWindow::Speed => match mcp.speed_unit {
             SpeedUnit::Ias => format!("{:>3.0}", mcp.ias_kts),
@@ -1044,7 +934,7 @@ fn display_chars(window: McpWindow, mcp: &Mcp) -> Vec<char> {
     out
 }
 
-fn seg_lit(ch: char, seg: Seg) -> bool {
+pub(crate) fn seg_lit(ch: char, seg: Seg) -> bool {
     use Seg::*;
     match ch {
         '0' => matches!(seg, A | B | C | D | E | F),
@@ -1165,39 +1055,32 @@ mod tests {
         assert_eq!(app.world().resource::<Mcp>().hdg_deg, after_release);
     }
 
-    /// A focused panel must actually lift to mid-screen, scale up and sit above
-    /// the dim layer — the "book" pose — and the dim must be visible.
+    /// The baked strip is a chase-view instrument: in the cockpit it must be
+    /// out of the way, because `mcp_panel` owns the panel there.
     #[test]
-    fn focus_raises_the_panel_over_a_dim_layer() {
+    fn the_strip_is_hidden_in_the_cockpit() {
         let mut app = test_app();
-        app.world_mut().spawn((Window::default(), PrimaryWindow));
+        let panel = find(&mut app, |_: &McpPanel| true);
+
         app.insert_resource(Ui {
             cockpit: true,
-            mcp_focus: true,
             ..default()
         });
+        app.update();
+        assert_eq!(
+            app.world().entity(panel).get::<Node>().unwrap().display,
+            Display::None
+        );
 
-        for _ in 0..120 {
-            app.world_mut()
-                .resource_mut::<Time>()
-                .advance_by(Duration::from_millis(16));
-            app.update();
-        }
-
-        let panel = find(&mut app, |_: &McpPanel| true);
-        let entity = app.world().entity(panel);
-        let scale = entity.get::<UiTransform>().unwrap().scale.x;
-        assert!(scale > 1.0, "panel did not grow: {scale}");
-        let Val::Px(lift) = entity.get::<UiTransform>().unwrap().translation.y else {
-            panic!("unexpected lift");
-        };
-        assert!(lift < -100.0, "panel did not rise: {lift}");
-        assert_eq!(entity.get::<GlobalZIndex>().unwrap().0, 31);
-
-        let dim = find(&mut app, |_: &FocusDim| true);
-        let dim = app.world().entity(dim);
-        assert_eq!(dim.get::<Node>().unwrap().display, Display::Flex);
-        assert_eq!(app.world().resource::<FocusAnim>().e, 1.0);
+        app.insert_resource(Ui {
+            cockpit: false,
+            ..default()
+        });
+        app.update();
+        assert_eq!(
+            app.world().entity(panel).get::<Node>().unwrap().display,
+            Display::Flex
+        );
     }
 
     #[test]
@@ -1212,19 +1095,6 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::Escape);
         app.update();
-        assert!(!app.world().resource::<Ui>().mcp_focus);
-    }
-
-    #[test]
-    fn clicking_the_dim_layer_leaves_focus() {
-        let mut app = test_app();
-        app.insert_resource(Ui {
-            cockpit: true,
-            mcp_focus: true,
-            ..default()
-        });
-        let dim = find(&mut app, |_: &FocusDim| true);
-        app.world_mut().trigger(Activate { entity: dim });
         assert!(!app.world().resource::<Ui>().mcp_focus);
     }
 

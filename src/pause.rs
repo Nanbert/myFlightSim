@@ -36,11 +36,7 @@ pub struct PausePlugin;
 
 impl Plugin for PausePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, toggle_pause.run_if(flying).run_if(
-            // A lesson popup pins the flight instead (see `lesson_flow`): its
-            // own rows answer the keys while the plate stands aside.
-            not(crate::lesson_flow::modal),
-        ))
+        app.add_systems(Update, toggle_pause.run_if(flying).run_if(no_key_owner))
             // Whatever way a flight ends, the flag never leaks.
             .add_systems(OnExit(AppState::Flying), clear_pause)
             // Development hook: `PAUSE=1` boots the flight paused (with the
@@ -57,6 +53,34 @@ fn dev_pause(mut commands: Commands) {
     }
     commands.insert_resource(Paused);
     spawn_card(&mut commands);
+}
+
+/// Condition for the pause menu: true when no other surface owns the flight's
+/// keys.
+///
+/// This is fed to `run_if` **without** `not` — it already returns the runnable
+/// case. Inverting it makes the menu run exactly when it must not: Esc would
+/// freeze the flight while the panel is still closing, and the very next Esc
+/// would find the condition false and be ignored, so the dialog sat there dead.
+///
+/// A lesson popup pins the flight with its own rows (see `lesson_flow`), and
+/// MCP focus owns Esc while the cockpit panel is up — `mcp_ui::focus_input`
+/// closes it, and only a second, fresh Esc may reach this menu. Without the
+/// focus check the pause card swallowed the first press: `focus_input` is
+/// gated on `unpaused`, so once `Paused` landed in the same frame it never ran.
+/// `run_if` conditions read the world once per frame, so this holds whatever
+/// order the two systems happen to run in.
+fn no_key_owner(
+    card: Option<Res<crate::lesson_flow::FlowCard>>,
+    ui: Option<Res<crate::view::Ui>>,
+) -> bool {
+    keys_free(crate::lesson_flow::modal(card), crate::view::mcp_focused(ui.as_deref()))
+}
+
+/// The pause menu's key line is free while neither a lesson popup nor the
+/// focused MCP panel owns the flight's keys.
+fn keys_free(modal_open: bool, mcp_focus: bool) -> bool {
+    !modal_open && !mcp_focus
 }
 
 /// Escape owns the pause state machine: open on Esc, resume on Esc, confirm
@@ -174,4 +198,37 @@ fn spawn_card(commands: &mut Commands) {
 /// There is no pause without a flight.
 fn clear_pause(mut commands: Commands) {
     commands.remove_resource::<Paused>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keys_free;
+    use crate::view::{mcp_focused, Ui};
+
+    /// MCP focus owns Esc, so the pause menu must stand aside: one press
+    /// closes the panel, not the flight.
+    #[test]
+    fn mcp_focus_holds_the_flight_keys() {
+        let clear = Ui::default();
+        assert!(!mcp_focused(Some(&clear)));
+
+        let focused = Ui {
+            mcp_focus: true,
+            ..Default::default()
+        };
+        assert!(mcp_focused(Some(&focused)));
+
+        // No `Ui` at all (a hangar or menu frame) never blocks the menu.
+        assert!(!mcp_focused(None));
+    }
+
+    /// The truth table behind `no_key_owner`. It is used with `run_if` and no
+    /// `not`, so it must return the runnable case — this pins that.
+    #[test]
+    fn the_pause_menu_waits_for_a_free_key_line() {
+        assert!(keys_free(false, false)); // nothing else on screen: Esc pauses
+        assert!(!keys_free(true, false)); // a lesson popup owns the keys
+        assert!(!keys_free(false, true)); // the MCP panel owns Esc
+        assert!(!keys_free(true, true));
+    }
 }
