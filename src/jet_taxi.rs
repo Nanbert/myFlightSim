@@ -492,8 +492,9 @@ impl Plugin for JetTaxiPlugin {
 #[derive(Component)]
 struct NavArrow;
 
-/// The arrow's height above the pavement, metres.
-const ARROW_Y: f32 = 1.5;
+/// The arrow post's height, metres. High enough that the 10.5 m arrow,
+/// tilted 45° nose-up, keeps its tail clear of the pavement.
+const ARROW_Y: f32 = 4.5;
 /// The shaft length and the head's length/radius, metres.
 const SHAFT_LEN: f32 = 7.0;
 const HEAD_LEN: f32 = 3.5;
@@ -568,8 +569,12 @@ fn update_nav_arrow(
     let hdg_rad = hdg.to_radians();
     let dir = Vec2::new(hdg_rad.sin(), -hdg_rad.cos());
     let post = Vec2::new(x, z) + dir * slide;
-    // A yaw that parks the model's +X on the world heading (psi 0 = -Z).
-    tf.rotation = Quat::from_rotation_y((90.0 - hdg).to_radians());
+    // A yaw that parks the model's +X on the world heading (psi 0 = -Z),
+    // then the post tilt: 45° nose-up, so an arrow pointing along the
+    // viewer's own travel (CP2 from the approach) still reads as an arrow
+    // and not a dot.
+    tf.rotation = Quat::from_rotation_y((90.0 - hdg).to_radians())
+        * Quat::from_rotation_z(std::f32::consts::FRAC_PI_4);
     tf.translation = Vec3::new(post.x, ARROW_Y, post.y);
 }
 
