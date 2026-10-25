@@ -2,7 +2,7 @@
 //! AH-64D's arcade choice.
 //!
 //! Storage sits behind [`ConfigStore`] so the native build can write a file
-//! while a future browser (wasm) build supplies a `localStorage` sink; the rest
+//! while the browser (wasm) build supplies a `localStorage` sink; the rest
 //! of the app only ever talks to the trait. The format is hand-rolled text (no
 //! serde dependency), which keeps that wasm story simple.
 //!
@@ -10,6 +10,7 @@
 //! stores controls; sections left behind by older builds are ignored.
 
 use std::collections::{HashMap, HashSet};
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
 use bevy::prelude::*;
@@ -17,8 +18,8 @@ use bevy::prelude::*;
 use crate::aircraft_profile;
 use crate::weather::Weather;
 
-/// The sink the config text comes from and goes to. Native uses [`FileStore`];
-/// a wasm build would implement this over `localStorage`.
+/// The sink the config text comes from and goes to. Native builds use
+/// [`FileStore`]; the wasm build implements this over `localStorage`.
 pub trait ConfigStore: Send + Sync + 'static {
     fn load(&self) -> Option<String>;
     fn save(&self, text: &str);
@@ -195,12 +196,25 @@ pub struct ConfigPlugin;
 
 impl Plugin for ConfigPlugin {
     fn build(&self, app: &mut App) {
-        let store = FileStore::new();
+        let store = default_store();
         let config = store.load().map(|t| parse(&t)).unwrap_or_default();
         app.insert_resource(config)
-            .insert_resource(ConfigSink(Box::new(store)))
+            .insert_resource(ConfigSink(store))
             // Startup, so `Weather` (from `WeatherPlugin`) already exists.
             .add_systems(Startup, apply_weather);
+    }
+}
+
+/// The store this build persists through: a config file on the desktop,
+/// `localStorage` on the web.
+fn default_store() -> Box<dyn ConfigStore> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Box::new(FileStore::new())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Box::new(LocalStorageStore::new(CONFIG_KEY))
     }
 }
 
@@ -369,24 +383,33 @@ fn parse(text: &str) -> GameConfig {
 
 /// Writes `myflightsim/config.cfg` under the XDG config dir (or `~/.config`),
 /// using only `std::env` — no `dirs` dependency.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct FileStore {
     path: PathBuf,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl FileStore {
     pub fn new() -> Self {
         FileStore {
             path: default_path(),
         }
     }
+
+    /// A store for a sibling file in the same directory (the hop ledger).
+    pub fn at(path: PathBuf) -> Self {
+        FileStore { path }
+    }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for FileStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn default_path() -> PathBuf {
     app_dir().join("config.cfg")
 }
@@ -394,6 +417,7 @@ fn default_path() -> PathBuf {
 /// The directory persisted app files live in (`<XDG config>/myflightsim`, or
 /// `~/.config/myflightsim`). Shared by anything else that wants a save file —
 /// the hop ledger keeps its `ledger.cfg` here too.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn app_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -403,6 +427,7 @@ pub fn app_dir() -> PathBuf {
     base.join("myflightsim")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ConfigStore for FileStore {
     fn load(&self) -> Option<String> {
         std::fs::read_to_string(&self.path).ok()
@@ -413,6 +438,44 @@ impl ConfigStore for FileStore {
             let _ = std::fs::create_dir_all(parent);
         }
         let _ = std::fs::write(&self.path, text);
+    }
+}
+
+// --- web store ---------------------------------------------------------------
+
+/// The `localStorage` keys this game owns, so a shared origin (a dev server
+/// hosting several projects) can't collide with us.
+#[cfg(target_arch = "wasm32")]
+const CONFIG_KEY: &str = "myflightsim.config";
+#[cfg(target_arch = "wasm32")]
+pub const LEDGER_KEY: &str = "myflightsim.ledger";
+
+/// Reads and writes the same hand-rolled text through `localStorage` under a
+/// key. No web handle is held between calls — the storage is re-fetched per
+/// call — which keeps the store `Send + Sync` for free.
+#[cfg(target_arch = "wasm32")]
+pub struct LocalStorageStore {
+    key: &'static str,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl LocalStorageStore {
+    pub fn new(key: &'static str) -> Self {
+        LocalStorageStore { key }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ConfigStore for LocalStorageStore {
+    fn load(&self) -> Option<String> {
+        let storage = web_sys::window()?.local_storage().ok()??;
+        storage.get_item(self.key).ok().flatten()
+    }
+
+    fn save(&self, text: &str) {
+        if let Some(Ok(Some(storage))) = web_sys::window().map(|w| w.local_storage()) {
+            let _ = storage.set_item(self.key, text);
+        }
     }
 }
 

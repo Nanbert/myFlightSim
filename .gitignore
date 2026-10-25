@@ -4,3 +4,5 @@
 # Scratch from concurrent agent sessions
 .tmp/
 .tools/
+dist/
+.zcode/

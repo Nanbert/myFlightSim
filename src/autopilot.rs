@@ -787,6 +787,7 @@ mod tests {
         m
     }
 
+    #[cfg(feature = "jsbsim")]
     fn jsbsim_737(alt: f64, kt: f64) -> Box<dyn FlightModel> {
         let mut m: Box<dyn FlightModel> = Box::new(jsbsim_sys::Fdm::load("737", DT));
         setup(&mut *m, alt, kt);
@@ -970,6 +971,7 @@ mod tests {
         assert_eq!(ap.at, AtMode::Speed, "capture should hand over to SPD");
     }
 
+    #[cfg(feature = "jsbsim")]
     #[test]
     fn jsbsim_backend_flies_altitude_and_speed_hold() {
         let mut m = jsbsim_737(10_000.0, 250.0);

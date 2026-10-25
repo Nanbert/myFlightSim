@@ -1532,6 +1532,9 @@ fn menu_input(
             }
             Page::Exit => {
                 if enter {
+                    // Web builds have no process to exit — killing the page's
+                    // main loop just traps the tab — so only the desktop quits.
+                    #[cfg(not(target_arch = "wasm32"))]
                     std::process::exit(0);
                 }
                 if esc {

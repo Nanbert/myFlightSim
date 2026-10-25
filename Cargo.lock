@@ -3733,6 +3733,7 @@ dependencies = [
  "fdm",
  "flight-model",
  "jsbsim-sys",
+ "web-sys",
 ]
 
 [[package]]

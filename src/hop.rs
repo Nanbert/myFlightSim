@@ -12,15 +12,19 @@
 //!   hops form the streak the ledger displays;
 //! - the best streak ever held.
 //!
-//! Storage is the config store's peaceful cousin: the same XDG directory,
-//! hand-rolled text (no serde, same wasm story as `config.rs`), written
-//! once at flight end.
+//! Storage rides the same `ConfigStore` seam as the settings (`config.rs`):
+//! a file in the XDG directory on the desktop, a `localStorage` key on the
+//! web — hand-rolled text (no serde), written once at flight end.
 
 use bevy::prelude::*;
 
 use crate::app_state::{unpaused, AppState};
 use crate::approach::ApproachState;
-use crate::config::app_dir;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::config::{app_dir, FileStore};
+#[cfg(target_arch = "wasm32")]
+use crate::config::{LEDGER_KEY, LocalStorageStore};
+use crate::config::ConfigStore;
 use crate::landing::LandingState;
 use crate::sim::Sim;
 use crate::takeoff::TakeoffState;
@@ -93,8 +97,21 @@ pub fn render(ledger: &Ledger) -> String {
     out
 }
 
-fn ledger_path() -> std::path::PathBuf {
-    app_dir().join("ledger.cfg")
+/// The boxed ledger store, mirroring `ConfigSink` in `config.rs`.
+#[derive(Resource)]
+pub struct LedgerSink(pub Box<dyn ConfigStore>);
+
+/// The store this build persists the ledger through: `ledger.cfg` on the
+/// desktop, a `localStorage` key on the web.
+fn ledger_store() -> Box<dyn ConfigStore> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Box::new(FileStore::at(app_dir().join("ledger.cfg")))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Box::new(LocalStorageStore::new(LEDGER_KEY))
+    }
 }
 
 #[derive(Resource, Default)]
@@ -112,19 +129,15 @@ pub struct HopPlugin;
 
 impl Plugin for HopPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<HopState>()
-            .add_systems(Startup, load_ledger)
+        let store = ledger_store();
+        let ledger = store.load().map(|t| parse(&t)).unwrap_or_default();
+        app.insert_resource(HopState { ledger, landed: false })
+            .insert_resource(LedgerSink(store))
             .add_systems(Startup, spawn_panel)
             .add_systems(OnEnter(AppState::Flying), reset_panel)
             .add_systems(Update, update_panel.run_if(unpaused))
             .add_systems(OnExit(AppState::Flying), (flush, hide_ledger));
     }
-}
-
-fn load_ledger(mut state: ResMut<HopState>) {
-    state.ledger = std::fs::read_to_string(ledger_path())
-        .map(|t| parse(&t))
-        .unwrap_or_default();
 }
 
 fn spawn_panel(mut commands: Commands) {
@@ -176,15 +189,14 @@ fn flush(
     takeoff: Res<TakeoffState>,
     approach: Res<ApproachState>,
     mut state: ResMut<HopState>,
+    sink: Res<LedgerSink>,
 ) {
     if state.landed || landing.last.is_none() {
         return;
     }
     state.landed = true;
     state.ledger = record(state.ledger, landing.last, takeoff.last, approach.stable);
-    let dir = app_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::write(ledger_path(), render(&state.ledger));
+    sink.0.save(&render(&state.ledger));
 }
 
 /// A fresh flight only clears the this-flight landed flag; the ledger itself

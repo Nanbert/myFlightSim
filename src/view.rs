@@ -878,6 +878,12 @@ pub fn reset_control_rig(mut rig: ResMut<ControlRig>) {
 fn setup_scene(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
+        // WebGL2 has no multisampled immutable textures — wgpu's glow backend
+        // panics the tab the moment one is created (the 4× engine default
+        // does it) — so the web build flies with MSAA off. The cloud camera
+        // already opts out unconditionally (see `sky.rs`).
+        #[cfg(target_arch = "wasm32")]
+        bevy::render::view::Msaa::Off,
         // Far plane must clear the sky dome (radius 60 km, see `sky.rs`) and
         // the 96 km mission terrain, which is hazed out well before its edge.
         Projection::Perspective(PerspectiveProjection {

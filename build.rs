@@ -5,6 +5,11 @@ use std::path::PathBuf;
 // propagate `rustc-link-arg` from dependencies, so the app binary needs its own
 // rpath entry pointing at the same directory.
 fn main() {
+    // Web builds drop the `jsbsim` feature (libJSBSim can't link to wasm), and
+    // wasm-ld rejects `-rpath` outright — so skip the arg on that target.
+    if env::var("TARGET").is_ok_and(|t| t.starts_with("wasm32")) {
+        return;
+    }
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let target = env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)

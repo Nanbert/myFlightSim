@@ -12,13 +12,25 @@ edition = "2021"
 autoexamples = false
 
 [features]
+# Web builds pass `--no-default-features`: libJSBSim is C++ and cannot link
+# into wasm, while the pure-Rust `fdm` engine is the default backend anyway.
+default = ["jsbsim"]
 shots = []
+jsbsim = ["dep:jsbsim-sys"]
 
 [dependencies]
+# Both are load-bearing even though no asset *file* needs them: the 737 and
+# AH-64D glbs embed JPEG textures, and the missile warning tone in `combat.rs`
+# is synthesized as WAV bytes — both decoders live behind these features.
 bevy = { version = "0.20", features = ["wav", "jpeg"] }
 fdm = { path = "crates/fdm" }
 flight-model = { path = "crates/flight-model" }
-jsbsim-sys = { path = "jsbsim-sys" }
+jsbsim-sys = { path = "jsbsim-sys", optional = true }
+
+# Web persistence: the config/ledger stores write through `localStorage`
+# (see `config.rs`). The desktop build needs nothing platform-specific.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Storage"] }
 
 [workspace]
 members = ["jsbsim-sys", "crates/flight-model", "crates/fdm"]

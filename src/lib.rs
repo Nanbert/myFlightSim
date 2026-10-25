@@ -88,6 +88,10 @@ pub fn run() {
                 // A half-width window would overlap the two trios, so start
                 // fullscreen (as the sim is meant to be flown).
                 mode: WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
+                // Web: size the canvas to its container and follow resizes,
+                // instead of freezing at winit's default logical size.
+                #[cfg(target_arch = "wasm32")]
+                fit_canvas_to_parent: true,
                 ..default()
             }),
             ..default()

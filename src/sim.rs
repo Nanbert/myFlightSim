@@ -92,10 +92,13 @@ impl Sim {
     }
 
     fn build(name: &str, rust: bool) -> Self {
+        // Web builds drop the `jsbsim` feature (C++ can't link to wasm), so
+        // there the Rust engine runs no matter what the env says.
+        let rust = rust || cfg!(not(feature = "jsbsim"));
         let (model, backend): (Box<dyn FlightModel>, &str) = if rust {
             (Box::new(fdm::Fdm::new(name)), "Rust")
         } else {
-            (Box::new(jsbsim_sys::Fdm::load(name, DT)), "JSBSim")
+            Self::jsbsim_backend(name)
         };
         let display = if name == "ah1s" { "AH-64D" } else { name };
         let label = format!("{backend} {display}");
@@ -122,6 +125,20 @@ impl Sim {
         );
         sim.reset_ground();
         sim
+    }
+
+    /// The C++ JSBSim backend, linked only with the `jsbsim` feature (the
+    /// desktop default) — a validation oracle for the Rust engine, never a
+    /// web dependency.
+    #[cfg(feature = "jsbsim")]
+    fn jsbsim_backend(name: &str) -> (Box<dyn FlightModel>, &'static str) {
+        (Box::new(jsbsim_sys::Fdm::load(name, DT)), "JSBSim")
+    }
+
+    #[cfg(not(feature = "jsbsim"))]
+    fn jsbsim_backend(name: &str) -> (Box<dyn FlightModel>, &'static str) {
+        // Unreachable: without the feature `build` forces the Rust engine on.
+        (Box::new(fdm::Fdm::new(name)), "Rust")
     }
 
     /// Parked on the apron stand, at rest, nose west along the lead-in line.

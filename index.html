@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>myFlightSim</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { margin: 0; height: 100%; background: #101418; overflow: hidden; }
+    /* Trunk appends the Bevy canvas to <body>; it covers this once running. */
+    #boot {
+      position: absolute; inset: 0; display: flex;
+      align-items: center; justify-content: center;
+      color: #8fa3b8; font: 14px/1.6 system-ui, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div id="boot">Loading myFlightSim — the hangar models stream in over the network.</div>
+  <!-- Trunk hooks: build the crate to wasm, and copy the runtime assets
+       (models/shaders/fonts the app fetches by path at run time). -->
+  <link data-trunk rel="rust" />
+  <link data-trunk rel="copy-dir" href="assets" />
+  <script>
+    // The app runs on a canvas Trunk appends to <body>; once it appears the
+    // boot line has served its purpose and only ghosts through translucent UI.
+    new MutationObserver((_, obs) => {
+      const canvas = document.querySelector('canvas');
+      if (canvas) {
+        obs.disconnect();
+        const boot = document.getElementById('boot');
+        if (boot) boot.remove();
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  </script>
+</body>
+</html>

@@ -256,6 +256,15 @@ impl Plugin for VaporPlugin {
                 .after(TransformSystems::Propagate)
                 .run_if(unpaused),
         )
+        // Warmup runs after every visibility writer (the drive systems live in
+        // Update, `drive_box` above), so one forced-visible frame wins.
+        .add_systems(
+            PostUpdate,
+            warm_pipelines
+                .after(drive_box)
+                .after(TransformSystems::Propagate)
+                .run_if(unpaused),
+        )
         .add_systems(
             Update,
             drive_shadow
@@ -822,7 +831,7 @@ fn spawn_vapor(
         volume_quad.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; 4]);
         volume_quad.insert_attribute(
             Mesh::ATTRIBUTE_UV_0,
-            vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+            vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [1.0, 0.0]],
         );
         volume_quad.insert_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2]));
         let volume_quad = meshes.add(volume_quad);
@@ -840,6 +849,59 @@ fn spawn_vapor(
                 DespawnOnExit(AppState::Flying),
             ));
         }
+    }
+
+    // Every vapor pipeline compiles on this flight's first frames (see
+    // `warm_pipelines`), so the cone appears the instant the mach band asks
+    // for it instead of seconds into the acceleration.
+    commands.insert_resource(PipelineWarmup {
+        frames_left: WARMUP_FRAMES,
+    });
+}
+
+/// For how many frames `warm_pipelines` keeps the vapor entities forced
+/// visible after a flight spawns. All the materials sit at alpha 0 until the
+/// flight state calls for them, so the window draws nothing — it exists only
+/// to push every vapor shader through the pipeline cache before the pilot is
+/// moving fast enough to see one.
+const WARMUP_FRAMES: u32 = 30;
+
+#[derive(Resource)]
+struct PipelineWarmup {
+    frames_left: u32,
+}
+
+/// Hidden entities are visibility-culled, so a vapor material's GPU pipeline
+/// compiles the first frame it is actually shown — on WebGL2 that stall is
+/// seconds long, which read as the vapor "popping in" mid-acceleration. For a
+/// short window after the flight spawns, force every vapor entity visible
+/// (alpha-0 materials draw nothing) so all six pipelines compile while the
+/// aircraft is still on the runway; then hand visibility back to the drive
+/// systems. Runs in PostUpdate after `drive_box`, the last visibility writer.
+fn warm_pipelines(
+    mut commands: Commands,
+    mut warmup: Option<ResMut<PipelineWarmup>>,
+    mut visibles: Query<
+        &mut Visibility,
+        Or<(
+            With<VaporPuff>,
+            With<VaporCone>,
+            With<VaporSheet>,
+            With<VaporBox>,
+            With<MassShadow>,
+            With<WingPuff>,
+        )>,
+    >,
+) {
+    let Some(warm) = warmup.as_deref_mut() else {
+        return;
+    };
+    for mut vis in &mut visibles {
+        *vis = Visibility::Inherited;
+    }
+    warm.frames_left -= 1;
+    if warm.frames_left == 0 {
+        commands.remove_resource::<PipelineWarmup>();
     }
 }
 

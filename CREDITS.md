@@ -30,15 +30,6 @@
   separate cockpit, canopy and HUD meshes supply the interior. The airframe is
   used as-is (single welded mesh, no animation).
 
-## 3D model — `assets/mi-24_hind.glb`
-
-- **Title:** Mi-24 Hind
-- **Author:** Duane's Mind (https://sketchfab.com/duanesmind)
-- **Source:** https://sketchfab.com/3d-models/mi-24-hind-004d68143e1a4df88e136dbc0a05f181
-- **License:** [CC BY 4.0](http://creativecommons.org/licenses/by/4.0/)
-- **Modifications:** None. Used as the visual for the AH-1S rotorcraft FDM; its
-  main and tail rotor hubs are spun at runtime from the simulated rotor rpm.
-
 ## 3D model — `assets/b737.glb`
 
 - **Title:** Boeing737

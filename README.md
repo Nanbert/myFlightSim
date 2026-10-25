@@ -28,7 +28,8 @@ FDM**（`crates/fdm`）驱动，设置 `FDM_BACKEND=jsbsim` 可切到 **JSBSim**
 
 ## 前置依赖
 
-本项目**不自带** JSBSim，而是从一个本地源码检出（checkout）编译并链接：
+本项目**不自带** JSBSim，而是从一个本地源码检出（checkout）编译并链接（仅默认
+桌面构建需要；Web 构建用 `--no-default-features` 完全不碰 JSBSim，见下文）：
 
 - 一份 **JSBSim 源码**（需要同时提供编译产物与运行期数据目录
   `aircraft/`、`engine/`、`systems/`）
@@ -62,6 +63,24 @@ cargo run
 首次运行会先编译 JSBSim（耗时较长），之后增量构建很快。左上角 HUD 显示空速、
 高度、姿态、油门、转速等；按 `H` 可切换控制输入叠加层，按 `C` 在机外跟随与
 座舱内视角之间切换（机模带内饰时才有座舱视角，见下）。
+
+### Web 构建（wasm）
+
+Web 版不带 JSBSim（C++ 库无法链入 wasm），物理始终走纯 Rust 引擎；设置与
+737 航程账本持久化到 `localStorage`（键 `myflightsim.config` /
+`myflightsim.ledger`）：
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install trunk --locked
+
+trunk serve --no-default-features            # 开发：http://localhost:8080
+trunk build --release --no-default-features  # 发布：dist/ 即静态站点目录
+```
+
+`dist/` 可部署到任何静态托管（GitHub Pages、itch.io 等）。菜单机库的 4 个
+机型模型按需异步加载，任务专属资产（如 GLACIAL 任务的雕像）只在进入对应
+任务时拉取；首次驾驶 737 会现场取 83 MB 的座舱模型，网络慢时座舱会先空一段。
 
 ## 键位
 
@@ -342,8 +361,8 @@ ah1s = 1
 ```
 
 键位本身是固定的，不写入配置文件；旧版本留下的 `[机型]` 键位段会被忽略并在下次
-保存时清掉。读写走 `config.rs` 里的 `ConfigStore` 抽象：原生写文件，将来浏览器
-（wasm）版只需换一个 `localStorage` 实现，其余代码不动。
+保存时清掉。读写走 `config.rs` 里的 `ConfigStore` 抽象：桌面写文件，Web
+（wasm）版写 `localStorage`，其余代码不动。
 
 ## 目录结构
 
@@ -362,7 +381,7 @@ ah1s = 1
 │   ├── landing.rs     # C172 落地评分：接地率/中线/速度/接地点/侧风技术
 │   ├── takeoff.rs     # 737 起飞评分：抬轮速度对 PFD VR 线、姿态、收轮时机
 │   ├── approach.rs    # 737 稳定进近门：1000 ft 廊道稳定标准告警
-│   ├── hop.rs         # 737 航程账本：单元 hop 总分持久化（ledger.cfg）
+│   ├── hop.rs         # 737 航程账本：单元 hop 总分持久化（桌面 ledger.cfg / web localStorage）
 │   ├── checklist.rs   # C172 检查单：冷启动 / 起飞前，随状态自动打勾
 │   ├── taxi.rs        # C172 滑行引导：引入线偏移 + 停机评级
 │   ├── aircraft_profile.rs # 每机型的控制键位档案（数据表）
@@ -375,8 +394,8 @@ ah1s = 1
 │   └── lens.rs        # 镜头雨滴后处理
 ├── crates/
 │   ├── flight-model/  # FlightModel trait：属性总线接口（后端无关的缝）
-│   └── fdm/           # 纯 Rust 飞行力学（wasm 目标；当前为骨架）
-├── jsbsim-sys/        # JSBSim 的 Rust 绑定（默认物理后端）
+│   └── fdm/           # 纯 Rust 飞行力学（默认后端；wasm 可用）
+├── jsbsim-sys/        # JSBSim 的 Rust 绑定（本地验证后端；web 构建不含）
 │   ├── src/lib.rs     # 安全封装 (Fdm) 与源码定位
 │   ├── src/autopilot.rs
 │   ├── shim/shim.cpp  # C ABI 垫片
