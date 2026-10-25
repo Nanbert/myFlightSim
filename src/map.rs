@@ -151,9 +151,12 @@ impl MapId {
     pub fn spawn_alt_ft(self) -> f64 {
         let ground = ground_height(self, 0.0, 0.0) as f64;
         let m = match self {
-            // Clear of the central ridge, inside the visual band the islands
-            // read best from, and below the cloud deck.
-            MapId::Archipelago => 1_200.0,
+            // The ported archipelago grows a ~3 km central summit at the
+            // origin, so it seats the jet above the ground there (same rule
+            // as the alpine/glacial maps) — the old fixed 1 200 m spawned the
+            // aircraft inside the peak, where the FDM fights its way out and
+            // the jet reads as uncontrollable.
+            MapId::Archipelago => (ground + 900.0).max(7_200.0),
             // Above the cloud top so the opening shot looks down on the peaks.
             MapId::Alpine => (ground + 900.0).max(7_200.0),
             // Same rule as the alpine: spawn seated above the valley ice and
