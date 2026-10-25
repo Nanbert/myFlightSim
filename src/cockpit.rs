@@ -210,6 +210,16 @@ fn board_probe(
         }
     }
 
+    // Both hit tests are resolved before the click is handled: a click must
+    // act on this frame's aim, not on a flag left over from the last one.
+    if mouse.just_pressed(MouseButton::Left) {
+        if hover.hovered {
+            ui.panel_focus = Some(PanelFocus::Mcp);
+        } else if hover.pedestal {
+            ui.panel_focus = Some(PanelFocus::Pedestal);
+        }
+    }
+
     // Project the board corners to screen space for the outline.
     let Ok(camera) = cameras.single() else {
         return;
@@ -250,9 +260,6 @@ fn board_probe(
         node.height = Val::Px(max.y - min.y);
     }
 
-    if hover.hovered && mouse.just_pressed(MouseButton::Left) {
-        ui.panel_focus = Some(PanelFocus::Mcp);
-    }
 }
 
 /// Show/hide the crosshair and board outline, and reflect hover in their
@@ -313,10 +320,10 @@ mod tests {
     /// misleading and the click target is nowhere near the crosshair).
     #[test]
     fn rest_look_lands_inside_the_board() {
-        let eye = Vec3::new(0.2801, 2.06, 0.9355);
+        let eye = Vec3::new(0.2801, 2.14, 0.9355);
         let yaw = std::f32::consts::PI;
         let look = Quat::from_rotation_y(-11.76_f32.to_radians())
-            * Quat::from_rotation_x(-2.92_f32.to_radians());
+            * Quat::from_rotation_x(-6.5_f32.to_radians());
         let rot = Quat::from_rotation_y(-yaw) * look;
         let forward = rot * Vec3::NEG_Z;
         let t = (BOARD_Z - eye.z) / forward.z;
@@ -341,7 +348,7 @@ mod tests {
     /// so a stray hit would open the wrong one.
     #[test]
     fn a_downward_look_lands_on_the_pedestal() {
-        let eye = Vec3::new(0.2801, 2.06, 0.9355);
+        let eye = Vec3::new(0.2801, 2.14, 0.9355);
         let yaw = std::f32::consts::PI;
         let look = Quat::from_rotation_y(-52_f32.to_radians())
             * Quat::from_rotation_x(-60_f32.to_radians());
@@ -366,10 +373,10 @@ mod tests {
 
     #[test]
     fn the_mcp_gaze_does_not_hit_the_pedestal() {
-        let eye = Vec3::new(0.2801, 2.06, 0.9355);
+        let eye = Vec3::new(0.2801, 2.14, 0.9355);
         let yaw = std::f32::consts::PI;
         let look = Quat::from_rotation_y(-11.76_f32.to_radians())
-            * Quat::from_rotation_x(-2.92_f32.to_radians());
+            * Quat::from_rotation_x(-6.5_f32.to_radians());
         let forward = Quat::from_rotation_y(-yaw) * look * Vec3::NEG_Z;
         let t = (PED_Y - eye.y) / forward.y;
         assert!(t > 0.0);
