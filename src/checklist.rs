@@ -266,7 +266,8 @@ impl Plugin for ChecklistPlugin {
         app.init_resource::<ChecklistState>()
             .add_systems(Startup, spawn_panel)
             .add_systems(OnEnter(AppState::Flying), reset_checklist)
-            .add_systems(Update, update.run_if(unpaused));
+            .add_systems(Update, update.run_if(unpaused))
+            .add_systems(OnExit(AppState::Flying), hide_panel);
     }
 }
 
@@ -275,6 +276,15 @@ impl Plugin for ChecklistPlugin {
 /// from the live state on the first frame.
 fn reset_checklist(mut state: ResMut<ChecklistState>) {
     state.phase = Phase::Off;
+}
+
+/// The panel is spawned once at `Startup` and its display is written only
+/// while unpaused, so the exit has to hide it — otherwise the last card
+/// lingers over the menu.
+fn hide_panel(mut panel: Query<&mut Node, With<ChecklistPanel>>) {
+    for mut node in &mut panel {
+        node.display = Display::None;
+    }
 }
 
 fn spawn_panel(mut commands: Commands) {
