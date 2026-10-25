@@ -910,6 +910,12 @@ fn setup_scene(mut commands: Commands) {
         // The F-22's paint is matted at runtime (see `tame_airframe_materials`),
         // so the remaining intensity is a gentle halo, not a screen wash.
         Hdr,
+        // MSAA is off on the web (WebGL2 has no multisample storage), so
+        // near-coplanar geometry edges — the shoreline above all — shimmer:
+        // every edge pixel jumps between the two surfaces as the pose
+        // sub-pixel-drifts. FXAA is the cheap stand-in for the desktop's 4x.
+        #[cfg(target_arch = "wasm32")]
+        bevy::anti_alias::fxaa::Fxaa::default(),
         Bloom {
             intensity: 0.5,
             low_frequency_boost: 0.35,
