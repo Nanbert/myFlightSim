@@ -238,7 +238,7 @@ fn update_focus(
     cams: Query<(&Camera, &Transform), (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
     airframe: Query<&Transform, With<AircraftRoot>>,
 ) {
-    let cockpit = sim.name == "c172p" && ui.cockpit && !ui.mcp_focus;
+    let cockpit = sim.name == "c172p" && ui.cockpit && !ui.has_focus();
     if !cockpit {
         focus.hovered = None;
         focus.active = None;
@@ -348,7 +348,7 @@ fn place_rings(
     airframe: Query<&Transform, With<AircraftRoot>>,
     mut rings: Query<(&FocusRing, &mut Node, &mut UiTransform, &mut BorderColor)>,
 ) {
-    let show = ui.cockpit && !ui.mcp_focus && focus.active.is_none();
+    let show = ui.cockpit && !ui.has_focus() && focus.active.is_none();
     let view = match (show, cams.single(), airframe.single()) {
         (true, Ok((camera, cam_tf)), Ok(root_tf)) => {
             Some((camera, GlobalTransform::from(*cam_tf), *root_tf))
@@ -399,7 +399,7 @@ fn sync_overlay(
     mut tick_colors: Query<&mut BackgroundColor, With<AimTick>>,
     mut hint: Query<(&mut Text, &mut TextColor), With<AimHint>>,
 ) {
-    let cockpit = ui.cockpit && !ui.mcp_focus;
+    let cockpit = ui.cockpit && !ui.has_focus();
     let display = if cockpit {
         Display::Flex
     } else {

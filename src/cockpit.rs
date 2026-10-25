@@ -16,7 +16,7 @@ use crate::aircraft_profile;
 use crate::app_state::{unpaused, AppState};
 use crate::sim::Sim;
 use crate::ui_theme::centered;
-use crate::view::{self, CockpitTune, Ui};
+use crate::view::{self, CockpitTune, PanelFocus, Ui};
 
 /// The modelled MCP board in cockpit-model coordinates: the 737 model is
 /// authored in metres with +X left / +Y up / +Z nose. The bounds cover the
@@ -25,14 +25,24 @@ const BOARD_Z: f32 = 1.425;
 const BOARD_X: (f32, f32) = (-0.15, 0.265);
 const BOARD_Y: (f32, f32) = (1.99, 2.10);
 
+/// The control stand's top surface, in the same model frame. It is a
+/// horizontal plane (the pedestal top), measured with
+/// `examples/pedestal_calib.rs`. Looking down through this rectangle selects
+/// the stand; looking at the MCP is almost horizontal, so the two never
+/// compete.
+const PED_Y: f32 = 1.52;
+const PED_X: (f32, f32) = (-0.18, 0.06);
+const PED_Z: (f32, f32) = (1.00, 1.58);
+
 /// Red frame around the clickable board: dim until aimed at, hot on hover.
 const COLD: Color = Color::srgba(1.0, 0.26, 0.18, 0.50);
 const HOT: Color = Color::srgba(1.0, 0.30, 0.20, 1.0);
 
-/// Whether the crosshair is currently on the modelled MCP board.
+/// Whether the crosshair is on the modelled MCP board or the pedestal.
 #[derive(Resource, Default)]
 struct BoardHover {
     hovered: bool,
+    pedestal: bool,
 }
 
 #[derive(Component)]
@@ -155,8 +165,9 @@ fn board_probe(
     cameras: Query<&Camera, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
 ) {
     hover.hovered = false;
+    hover.pedestal = false;
     let autopilot = aircraft_profile::profile(&sim.name).has_autopilot;
-    if !ui.cockpit || ui.mcp_focus || !autopilot {
+    if !ui.cockpit || ui.has_focus() || !autopilot {
         if let Ok(mut node) = frame.single_mut() {
             node.display = Display::None;
         }
@@ -183,6 +194,19 @@ fn board_probe(
                 && hit.x <= BOARD_X.1
                 && BOARD_Y.0 <= hit.y
                 && hit.y <= BOARD_Y.1;
+        }
+    }
+
+    // The pedestal is below the pilot, not in front: only a downward look can
+    // hit its plane, which keeps `MCP` and `CONTROL STAND` from stacking.
+    if !hover.hovered && forward.y < -1e-4 {
+        let t = (PED_Y - eye.y) / forward.y;
+        if t > 0.0 {
+            let hit = eye + forward * t;
+            hover.pedestal = PED_X.0 <= hit.x
+                && hit.x <= PED_X.1
+                && PED_Z.0 <= hit.z
+                && hit.z <= PED_Z.1;
         }
     }
 
@@ -227,7 +251,7 @@ fn board_probe(
     }
 
     if hover.hovered && mouse.just_pressed(MouseButton::Left) {
-        ui.mcp_focus = true;
+        ui.panel_focus = Some(PanelFocus::Mcp);
     }
 }
 
@@ -242,7 +266,7 @@ fn sync_overlay(
     mut frame_colors: Query<&mut BorderColor, With<BoardFrame>>,
     mut label: Query<(&mut Text, &mut TextColor), With<CrosshairLabel>>,
 ) {
-    let show = ui.cockpit && !ui.mcp_focus;
+    let show = ui.cockpit && !ui.has_focus();
     let display = if show { Display::Flex } else { Display::None };
     for mut node in &mut root {
         if node.display != display {
@@ -255,18 +279,24 @@ fn sync_overlay(
         }
     }
 
-    let color = if hover.hovered && show { HOT } else { COLD };
+    let aimed = show && (hover.hovered || hover.pedestal);
+    let color = if aimed { HOT } else { COLD };
     for mut bg in &mut ticks {
         bg.0 = color;
     }
+    // The frame outlines the MCP only; the pedestal has no outline to keep
+    // the down-look uncluttered.
+    let frame_color = if show && hover.hovered { HOT } else { COLD };
     for mut border in &mut frame_colors {
-        *border = BorderColor::all(color);
+        *border = BorderColor::all(frame_color);
     }
     if let Ok((mut text, mut tint)) = label.single_mut() {
-        let want = if hover.hovered && show {
+        let want = if !aimed {
+            ""
+        } else if hover.hovered {
             "CLICK TO OPEN MCP"
         } else {
-            ""
+            "CLICK TO OPEN CONTROL STAND"
         };
         if text.0 != want {
             text.0 = want.to_owned();
@@ -304,5 +334,50 @@ mod tests {
             hit.y,
             BOARD_Y
         );
+    }
+
+    /// The calibration pose (`pedestal_calib`) must land on the pedestal
+    /// rectangle, and the MCP gaze must not: both panels share one focus slot,
+    /// so a stray hit would open the wrong one.
+    #[test]
+    fn a_downward_look_lands_on_the_pedestal() {
+        let eye = Vec3::new(0.2801, 2.06, 0.9355);
+        let yaw = std::f32::consts::PI;
+        let look = Quat::from_rotation_y(-52_f32.to_radians())
+            * Quat::from_rotation_x(-60_f32.to_radians());
+        let forward = Quat::from_rotation_y(-yaw) * look * Vec3::NEG_Z;
+        assert!(forward.y < 0.0);
+        let t = (PED_Y - eye.y) / forward.y;
+        assert!(t > 0.0);
+        let hit = eye + forward * t;
+        assert!(
+            PED_X.0 <= hit.x && hit.x <= PED_X.1,
+            "x {} outside {:?}",
+            hit.x,
+            PED_X
+        );
+        assert!(
+            PED_Z.0 <= hit.z && hit.z <= PED_Z.1,
+            "z {} outside {:?}",
+            hit.z,
+            PED_Z
+        );
+    }
+
+    #[test]
+    fn the_mcp_gaze_does_not_hit_the_pedestal() {
+        let eye = Vec3::new(0.2801, 2.06, 0.9355);
+        let yaw = std::f32::consts::PI;
+        let look = Quat::from_rotation_y(-11.76_f32.to_radians())
+            * Quat::from_rotation_x(-2.92_f32.to_radians());
+        let forward = Quat::from_rotation_y(-yaw) * look * Vec3::NEG_Z;
+        let t = (PED_Y - eye.y) / forward.y;
+        assert!(t > 0.0);
+        let hit = eye + forward * t;
+        let inside = PED_X.0 <= hit.x
+            && hit.x <= PED_X.1
+            && PED_Z.0 <= hit.z
+            && hit.z <= PED_Z.1;
+        assert!(!inside, "MCP gaze hit the stand at {hit:?}");
     }
 }

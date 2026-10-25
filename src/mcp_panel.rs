@@ -1,6 +1,6 @@
 //! The 737 Mode Control Panel raised as a 2D panel in the cockpit.
 //!
-//! Clicking the modelled board (`cockpit.rs` sets `ui.mcp_focus`) keeps the
+//! Clicking the modelled board (`cockpit.rs` sets `ui.panel_focus`) keeps the
 //! cockpit where it is and dims it with a translucent scrim, so the PFDs stay
 //! readable behind the panel instead of swapping to a black room. It is the
 //! same image and the same `mcp_layout` table as the chase strip, so every
@@ -20,7 +20,7 @@ use crate::app_state::{unpaused, AppState};
 use crate::mcp_layout::{CROP_H, CROP_W};
 use crate::mcp_ui::{spawn_panel_contents, FmaLabel, FocusAnim, FMA_BG, FMA_GREEN};
 use crate::sim::Sim;
-use crate::view::Ui;
+use crate::view::{PanelFocus, Ui};
 
 /// The panel leaves this much of the viewport free on each axis, matching the
 /// old 3D stage's fit. It is wider than the HUD margins so the labels breathe.
@@ -175,7 +175,7 @@ fn sync_hero(
     mut backdrop: Query<(&mut Node, &mut BackgroundColor), (With<HeroBackdrop>, Without<HeroPanel>)>,
 ) {
     let cockpit = ui.as_deref().is_some_and(|ui| ui.cockpit);
-    let focused = cockpit && ui.as_deref().is_some_and(|ui| ui.mcp_focus);
+    let focused = cockpit && ui.as_deref().is_some_and(|ui| ui.is_focused(PanelFocus::Mcp));
     let want = if focused { 1.0 } else { 0.0 };
     if cockpit {
         // Exponential ease; snap when close so the panel stops re-laying out.
@@ -259,7 +259,7 @@ fn hero_pointer(
     let Some(mut ui) = ui else {
         return;
     };
-    let focused = ui.cockpit && ui.mcp_focus;
+    let focused = ui.cockpit && ui.is_focused(PanelFocus::Mcp);
     if !focused {
         *was_focused = false;
         return;
@@ -277,7 +277,7 @@ fn hero_pointer(
     let closes = outside_click_closes(*was_focused, mouse.just_pressed(MouseButton::Left), inside);
     *was_focused = true;
     if closes {
-        ui.mcp_focus = false;
+        ui.panel_focus = None;
     }
 }
 

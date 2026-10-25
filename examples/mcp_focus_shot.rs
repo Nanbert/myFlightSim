@@ -9,6 +9,7 @@
 mod common;
 
 use bevy::prelude::*;
+use my_flight_sim::view::PanelFocus;
 use my_flight_sim::{cockpit, mcp_panel, mcp_ui, pfd, view};
 
 fn main() {
@@ -35,5 +36,5 @@ fn main() {
 
 fn force_focus(mut ui: ResMut<view::Ui>) {
     ui.cockpit = true;
-    ui.mcp_focus = true;
+    ui.panel_focus = Some(PanelFocus::Mcp);
 }

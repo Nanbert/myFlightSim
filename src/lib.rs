@@ -43,6 +43,10 @@ pub mod menu_page;
 pub mod mission;
 pub mod panel_geom;
 pub mod pause;
+pub mod pedestal_layout;
+#[cfg(feature = "shots")]
+pub mod pedestal_bake;
+pub mod pedestal_ui;
 pub mod pfd;
 pub mod scoring;
 pub mod sim;
@@ -106,6 +110,7 @@ pub fn run() {
             menu::MenuPlugin,
         ))
         .add_plugins(mcp_panel::McpPanelPlugin)
+        .add_plugins(pedestal_ui::PedestalUiPlugin)
         .add_plugins(g_strain::GStrainPlugin)
         // After the menu: it builds terrain for whatever mission
         // `start_flight` just launched. (A separate call: Bevy's plugin tuples

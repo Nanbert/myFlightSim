@@ -510,6 +510,14 @@ struct Hide737Yoke;
 #[derive(Component)]
 struct Hud;
 
+/// Which 2D panel is raised over the cockpit. The MCP and the control stand
+/// share one slot: only one can hold the mouse and the focus keys at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelFocus {
+    Mcp,
+    Pedestal,
+}
+
 /// HUD/toggle state. `H` reveals the control-input overlay; `C` switches the
 /// camera between the chase view and (for models that have an interior) the
 /// pilot-eye cockpit view.
@@ -528,17 +536,29 @@ pub struct Ui {
     /// Drop the first non-zero mouse delta after the lock, too; some compositors
     /// deliver the warp a little later than the grab.
     pub look_ignore: bool,
-    /// Cockpit only: the MCP panel is raised over the cockpit, which `mcp_panel`
-    /// dims (not cleared) so the PFDs stay readable. The mouse is released for
-    /// direct clicks, and free-look and the crosshair are suspended while this
-    /// is set.
-    pub mcp_focus: bool,
+    /// Cockpit only: a 2D panel is raised over the cockpit, which its hero
+    /// plugin dims (not clears) so the PFDs stay readable. The mouse is
+    /// released for direct clicks, and free-look and the crosshair are
+    /// suspended while this is set.
+    pub panel_focus: Option<PanelFocus>,
     /// Cockpit only, C172: the head-look is held still while an instrument is
     /// zoomed in, so the close-up stays exactly on the dial.
     pub freeze_look: bool,
     /// Cockpit only: vertical FOV override while the instrument close-up is
     /// eased in. `None` uses the rest lens.
     pub zoom_fov: Option<f32>,
+}
+
+impl Ui {
+    /// True while any 2D panel holds the cockpit.
+    pub fn has_focus(&self) -> bool {
+        self.panel_focus.is_some()
+    }
+
+    /// True while `panel` is the raised one.
+    pub fn is_focused(&self, panel: PanelFocus) -> bool {
+        self.panel_focus == Some(panel)
+    }
 }
 
 /// Live overrides for dialling in the cockpit view, driven by
@@ -741,7 +761,7 @@ pub fn spawn_flight_aircraft(
     ui.cockpit = std::env::var("COCKPIT").is_ok_and(|v| v == "1");
     ui.look_settle = if ui.cockpit { 1.0 } else { 0.0 };
     ui.look_ignore = ui.cockpit;
-    ui.mcp_focus = false;
+    ui.panel_focus = None;
     // No instrument close-up carries across flights.
     ui.freeze_look = false;
     ui.zoom_fov = None;
@@ -1180,17 +1200,17 @@ fn apply_look_delta(ui: &mut Ui, delta: Vec2) {
     ui.look_pitch = (ui.look_pitch - delta.y * k).clamp(-LOOK_PITCH_LIMIT, LOOK_PITCH_LIMIT);
 }
 
-/// True while the cockpit MCP panel is focused: Esc belongs to the panel, so
-/// the pause menu stands aside until it closes.
-pub fn mcp_focused(ui: Option<&Ui>) -> bool {
-    ui.is_some_and(|ui| ui.mcp_focus)
+/// True while a cockpit panel is focused: Esc belongs to the panel, so the
+/// pause menu stands aside until it closes.
+pub fn panel_focused(ui: Option<&Ui>) -> bool {
+    ui.is_some_and(|ui| ui.has_focus())
 }
 
 /// Cockpit free-look: mouse motion turns the pilot's head relative to the
 /// airframe. Position is untouched (that stays on `follow_camera`'s eye), so
 /// this only changes where you're looking. Inert unless in the cockpit view.
 fn cockpit_look(time: Res<Time>, motion: Res<AccumulatedMouseMotion>, mut ui: ResMut<Ui>) {
-    if !ui.cockpit || ui.mcp_focus || ui.freeze_look {
+    if !ui.cockpit || ui.has_focus() || ui.freeze_look {
         return;
     }
     // Development screenshot hook: hold the rest gaze while the desktop mouse
@@ -1222,7 +1242,7 @@ fn cockpit_cursor(
     mut windows: Query<(&mut CursorOptions, &Window)>,
 ) {
     let cockpit = *state.get() == AppState::Flying && ui.cockpit;
-    let free_look = cockpit && !ui.mcp_focus;
+    let free_look = cockpit && !ui.has_focus();
     for (mut cursor, window) in &mut windows {
         let grab = if free_look && window.focused {
             CursorGrabMode::Locked
@@ -1472,7 +1492,7 @@ fn toggle_ui(keys: Res<ButtonInput<KeyCode>>, sim: Res<Sim>, mut ui: ResMut<Ui>)
         ui.show_inputs = !ui.show_inputs;
     }
     if keys.just_pressed(KeyCode::KeyC) {
-        ui.mcp_focus = false;
+        ui.panel_focus = None;
         ui.freeze_look = false;
         ui.zoom_fov = None;
         ui.cockpit = !ui.cockpit;
@@ -1589,6 +1609,7 @@ fn control_hints(
         entries.push("Up/Down alt".to_string());
         entries.push("PgUp/PgDn v/s".to_string());
         entries.push("[ ] speed".to_string());
+        entries.push("; stand".to_string());
     }
     if cockpit {
         // Free-look only does anything from the pilot's seat.
@@ -1640,8 +1661,12 @@ fn update_hud(
         ""
     };
 
+    // The 737's stand carries the gear lights, N2 and flap pointer, so its
+    // text HUD keeps only the numbers the stand does not show.
+    let stand = aircraft_profile::normalized(&sim.name) == "737";
+
     // Landing-gear state, shown only for aircraft whose gear retracts (F-22).
-    let gear = if state.gear_available {
+    let gear = if state.gear_available && !stand {
         if state.gear_pos > 0.99 {
             "   GEAR DOWN"
         } else if state.gear_pos < 0.01 {
@@ -1679,17 +1704,23 @@ fn update_hud(
     } else {
         String::new()
     };
+    let instruments = if stand {
+        format!(
+            "ALT {:>4.0} ft   IAS {:>3.0} kt   TRIM {:+.2}",
+            state.alt_ft, state.cas_kts, state.elevator_trim,
+        )
+    } else {
+        format!(
+            "ALT {:>4.0} ft   IAS {:>3.0} kt   RPM {:>4.0}   FLAP {:>4.1}°   TRIM {:+.2}",
+            state.alt_ft, state.cas_kts, state.rpm, state.flap_deg, state.elevator_trim,
+        )
+    };
     let mut out = format!(
         "myFlightSim — {}  {mode}{tvc}{gear}{place}   WX: {}{wind}\n\
-         ALT {:>4.0} ft   IAS {:>3.0} kt   RPM {:>4.0}   FLAP {:>4.1}°   TRIM {:+.2}\n\
+         {instruments}\n\
          HDG {:>3.0}°   PITCH {:>5.1}°   ROLL {:>5.1}°",
         sim.label,
         weather.label(),
-        state.alt_ft,
-        state.cas_kts,
-        state.rpm,
-        state.flap_deg,
-        state.elevator_trim,
         state.heading_deg.rem_euclid(360.0),
         state.pitch_deg,
         state.roll_deg,

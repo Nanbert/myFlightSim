@@ -16,7 +16,17 @@ fn main() {
     std::env::set_var("FDM_BACKEND", "rust");
     common::app("b737_cockpit_shot", Some((1200, 800)))
         .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
-        .add_plugins((mcp_ui::McpUiPlugin, pfd::PfdPlugin, cockpit::CockpitPlugin))
+        .add_plugins((
+            mcp_ui::McpUiPlugin,
+            pfd::PfdPlugin,
+            cockpit::CockpitPlugin,
+            my_flight_sim::lights::LightsPlugin,
+        ))
+        .init_resource::<my_flight_sim::map::ActiveMap>()
+        .init_resource::<my_flight_sim::map::SunPose>()
+        .init_resource::<my_flight_sim::airfield::Airfield>()
+        .init_resource::<my_flight_sim::mission::ActiveLesson>()
+        .init_resource::<my_flight_sim::taxi::Taximeter>()
         .insert_resource(common::Shots::new(
             &[(600, "/tmp/b737_cockpit_shot.png")],
             700,
