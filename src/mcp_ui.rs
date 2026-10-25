@@ -456,7 +456,7 @@ pub(crate) fn spawn_labels(panel: &mut ChildSpawnerCommands, scale: f32) {
     );
 }
 
-fn spawn_label(
+pub(crate) fn spawn_label(
     parent: &mut ChildSpawnerCommands,
     text: &str,
     x: f32,
@@ -750,8 +750,8 @@ pub(crate) fn focus_input(
     let Some(mut ui) = ui else {
         return;
     };
-    if ui.mcp_focus && keys.just_pressed(KeyCode::Escape) {
-        ui.mcp_focus = false;
+    if ui.is_focused(crate::view::PanelFocus::Mcp) && keys.just_pressed(KeyCode::Escape) {
+        ui.panel_focus = None;
         hold.entity = None;
     }
 }
@@ -759,7 +759,9 @@ pub(crate) fn focus_input(
 /// The focus hint belongs to the cockpit panel: show it while the cockpit is in
 /// MCP focus, hide it otherwise.
 fn focus_hint(ui: Option<Res<Ui>>, q: Query<&mut Node, With<FocusHint>>) {
-    let focused = ui.as_deref().is_some_and(|ui| ui.cockpit && ui.mcp_focus);
+    let focused = ui
+        .as_deref()
+        .is_some_and(|ui| ui.cockpit && ui.is_focused(crate::view::PanelFocus::Mcp));
     ui_theme::set_display(
         q,
         if focused {
@@ -779,7 +781,10 @@ fn focus_tooltip(
     mut tooltip: Query<&mut Node, With<HotspotTooltip>>,
     mut texts: Query<&mut Text, With<TooltipText>>,
 ) {
-    let focused = ui.as_deref().is_some_and(|ui| ui.mcp_focus) && anim.e > 0.9;
+    let focused = ui
+        .as_deref()
+        .is_some_and(|ui| ui.is_focused(crate::view::PanelFocus::Mcp))
+        && anim.e > 0.9;
     let help = if focused {
         helped
             .iter()
@@ -1092,14 +1097,14 @@ mod tests {
         let mut app = test_app();
         app.insert_resource(Ui {
             cockpit: true,
-            mcp_focus: true,
+            panel_focus: Some(crate::view::PanelFocus::Mcp),
             ..default()
         });
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::Escape);
         app.update();
-        assert!(!app.world().resource::<Ui>().mcp_focus);
+        assert!(!app.world().resource::<Ui>().has_focus());
     }
 
     #[test]

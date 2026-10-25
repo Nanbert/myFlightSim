@@ -138,6 +138,34 @@ test = false
 doc = false
 
 [[example]]
+name = "pedestal_bake"
+path = "examples/pedestal_bake.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "pedestal_focus_shot"
+path = "examples/pedestal_focus_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "pedestal_calib"
+path = "examples/pedestal_calib.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
+name = "pedestal_shot"
+path = "examples/pedestal_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
 name = "mcp_focus_shot"
 path = "examples/mcp_focus_shot.rs"
 required-features = ["shots"]

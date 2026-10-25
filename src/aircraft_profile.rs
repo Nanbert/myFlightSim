@@ -166,8 +166,8 @@ pub struct BindingSpec {
     /// Starting value (throttle/collective may begin raised).
     pub initial: f64,
     /// Discrete stop positions (normalized, ascending). Empty = a continuous
-    /// lever. The C172's flap lever has four detents; the jet levers stay
-    /// continuous.
+    /// lever. Both the C172's four-stop flap lever and the 737's nine-stop
+    /// gate use detents; every other axis stays continuous.
     pub detents: &'static [f64],
 }
 
@@ -295,6 +295,22 @@ fn flap() -> BindingSpec {
 /// The C172 flap lever's stops as normalized `flap-cmd-norm` values. The wing's
 /// full-flap deflection is 30°, so the mid detents land on 10° and 20° exactly.
 pub const C172_FLAP_DETENTS: &[f64] = &[0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0];
+
+/// The 737 flap lever's stops as normalized `flap-cmd-norm` values: the book
+/// positions UP / 1 / 2 / 5 / 10 / 15 / 25 / 30 / 40. The wing's full-flap
+/// deflection is 40°, so each stop is just degrees/40 — the same mapping the
+/// FDM's 9-segment flap kinematic uses.
+pub const B737_FLAP_DETENTS: &[f64] = &[
+    0.0,
+    1.0 / 40.0,
+    2.0 / 40.0,
+    5.0 / 40.0,
+    10.0 / 40.0,
+    15.0 / 40.0,
+    25.0 / 40.0,
+    30.0 / 40.0,
+    1.0,
+];
 fn brake(action: Action, property: &'static str) -> BindingSpec {
     BindingSpec {
         action,
@@ -441,7 +457,18 @@ pub fn profile(id: &str) -> Profile {
             has_autopilot: true,
             has_arcade: false,
             arcade_selectable: false,
-            bindings: core_bindings(KeyCode::ShiftLeft),
+            bindings: {
+                let mut b = core_bindings(KeyCode::ShiftLeft);
+                // The jet's flap lever is a real detent gate, like the
+                // Cessna's: F/V step between the nine book positions instead
+                // of slewing a continuous command.
+                for spec in &mut b {
+                    if spec.action == Action::Flap {
+                        spec.detents = B737_FLAP_DETENTS;
+                    }
+                }
+                b
+            },
             toggles: {
                 let mut t = core_toggles();
                 t.push(ToggleSpec {
@@ -586,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn the_c172_flap_lever_has_four_detents_and_the_jets_do_not() {
+    fn each_flap_lever_has_its_own_detents() {
         let flap = |id| {
             profile(id)
                 .bindings
@@ -601,7 +628,18 @@ mod tests {
         assert!((detents[1] - 10.0 / 30.0).abs() < 1e-9);
         assert!((detents[2] - 20.0 / 30.0).abs() < 1e-9);
         assert_eq!(detents[3], 1.0);
-        assert!(flap("737").is_empty());
+
+        // The 737's gate is the book nine: UP / 1 / 2 / 5 / 10 / 15 / 25 /
+        // 30 / 40, on a 40-degree wing.
+        let jet = flap("737");
+        assert_eq!(jet.len(), 9);
+        assert_eq!(jet, B737_FLAP_DETENTS);
+        assert_eq!(*jet.last().unwrap(), 1.0);
+        for stop in jet {
+            assert!((0.0..=1.0).contains(stop));
+        }
+
+        // Everything else still has a plain continuous lever.
         assert!(flap("f22").is_empty());
     }
 
