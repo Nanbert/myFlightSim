@@ -299,7 +299,11 @@ pub(crate) fn spawn_panel_contents(panel: &mut ChildSpawnerCommands, scale: f32)
 }
 
 /// Lay out the live seven-segment glyphs on the baked glass.
-fn spawn_window(panel: &mut ChildSpawnerCommands, window: McpWindow, scale: f32) {
+pub(crate) fn spawn_window(
+    panel: &mut ChildSpawnerCommands,
+    window: McpWindow,
+    scale: f32,
+) {
     let (gx, gy, gw, gh) = glass(window).scaled(scale);
 
     // The baked digits are ~40 asset px apart and ~48 px tall; keep that pitch
@@ -397,7 +401,7 @@ pub(crate) fn segment_rects(w: f32, h: f32, s: f32) -> [(Seg, f32, f32, f32, f32
 
 /// Every engraved label is a `Text` overlay: the bake carries hardware only, so
 /// the same label table reads the same on the strip and the cockpit panel.
-fn spawn_labels(panel: &mut ChildSpawnerCommands, scale: f32) {
+pub(crate) fn spawn_labels(panel: &mut ChildSpawnerCommands, scale: f32) {
     for &(rect, _, label) in BUTTONS {
         spawn_label(
             panel,

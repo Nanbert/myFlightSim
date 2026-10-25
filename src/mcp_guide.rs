@@ -464,48 +464,54 @@ pub(crate) fn spawn_guide_layer(
     };
     let image = assets.load("ui/737_mcp_3d.png");
     let scale = GUIDE_W / mcp_layout::CROP_W;
-    let layer = commands
+    commands
         .spawn((
             GuideLayer,
+            Pickable::IGNORE,
+            ImageNode::new(image),
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Percent(50.0),
                 top: Val::Px(10.0),
                 width: Val::Px(GUIDE_W),
                 height: Val::Px(GUIDE_W / mcp_layout::CROP_W * mcp_layout::CROP_H),
-                margin: UiRect {
-                    left: Val::Px(-0.5 * GUIDE_W),
-                    ..default()
-                },
                 display: Display::None,
                 ..default()
             },
-            Pickable::IGNORE,
+            UiTransform {
+                translation: Val2::percent(-50.0, 0.0),
+                ..default()
+            },
             DespawnOnExit(AppState::Menu),
             ChildOf(card),
         ))
-        .id();
-    commands.entity(layer).with_child((
-        ImageNode::new(image),
-        Node {
-            width: Val::Px(GUIDE_W),
-            height: Val::Px(GUIDE_W / mcp_layout::CROP_W * mcp_layout::CROP_H),
-            ..default()
-        },
-        Pickable::IGNORE,
-    ));
-    for (ti, topic) in TOPICS.iter().enumerate() {
-        for rect in topic_rects(topic.id) {
-            commands.entity(layer).with_child((
-                Button,
-                Hovered(false),
-                GuideSpot(ti),
-                spot_node(rect, scale),
-                BackgroundColor(Color::NONE),
-                BorderColor::all(Color::NONE),
-            ));
-        }
-    }
+        .with_children(|panel| {
+            // The bake carries hardware only - the engraved labels and the
+            // seven-segment glyphs are the same overlays the live panel
+            // wears, and the digits read the real MCP, so the diagram shows
+            // the windows exactly as the last flight left them.
+            crate::mcp_ui::spawn_labels(panel, scale);
+            for window in [
+                McpWindow::Speed,
+                McpWindow::Heading,
+                McpWindow::Altitude,
+                McpWindow::VerticalSpeed,
+            ] {
+                crate::mcp_ui::spawn_window(panel, window, scale);
+            }
+            for (ti, topic) in TOPICS.iter().enumerate() {
+                for rect in topic_rects(topic.id) {
+                    panel.spawn((
+                        Button,
+                        Hovered(false),
+                        GuideSpot(ti),
+                        spot_node(rect, scale),
+                        BackgroundColor(Color::NONE),
+                        BorderColor::all(Color::NONE),
+                    ));
+                }
+            }
+        });
 }
 
 /// A click on a hotspot selects its topic.
