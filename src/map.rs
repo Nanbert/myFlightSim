@@ -353,7 +353,14 @@ fn enter_mission(
         commands.spawn((
             Mesh3d(meshes.add(Plane3d::default().mesh().size(WATER_SIZE, WATER_SIZE))),
             MeshMaterial3d(water.clone()),
-            Transform::default(),
+            // 0.3 m below the heightfield's zero: the shoreline crosses y=0
+            // with arbitrarily shallow slopes, so a plane at exactly 0 and the
+            // beach triangles there fight over depth every frame — the coast
+            // flickers between sand and sea as the camera moves. Dropping the
+            // sea clear of the band (the waves live in the shader's normals,
+            // not the mesh) silences the fight; the shoreline silhouette
+            // barely moves.
+            Transform::from_xyz(0.0, -0.3, 0.0),
             DespawnOnExit(AppState::Flying),
         ));
         commands.insert_resource(MapHandles {

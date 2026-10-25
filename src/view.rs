@@ -1015,8 +1015,13 @@ fn is_control_bone(name: &str) -> bool {
 
 /// The rigged F-22 glTF ships a few props that aren't the aircraft: a 1.8 m
 /// ground-grid quad (`Object_113`) and a boarding ladder (`Object_89`) parked
-/// off the left side. Hide them so they don't fly with the jet. Idempotent.
-fn hide_scene_junk(mut q: Query<(&Name, &mut Visibility), Added<Name>>) {
+/// off the left side. Hide them so they don't fly with the jet.
+///
+/// The hide is re-asserted every frame instead of once on `Added<Name>`: with
+/// the one-shot version the props still rendered on the web build (whose async
+/// scene instantiation is what exposed it), and matching a handful of names
+/// per frame is free.
+fn hide_scene_junk(mut q: Query<(&Name, &mut Visibility)>) {
     const JUNK: [&str; 2] = ["Object_113", "Object_89"];
     for (name, mut vis) in &mut q {
         if JUNK.contains(&name.as_str()) && *vis != Visibility::Hidden {
