@@ -1,15 +1,15 @@
 //! Per-aircraft tutorial pages for the start menu.
 //!
-//! Each page walks through the same three things: what the sim does today,
-//! what the real aircraft's procedure looks like, and which systems are not
-//! modelled yet (marked `TODO`). The game-key rows are generated from the
-//! aircraft's fixed profile in [`crate::aircraft_profile`].
+//! Each page walks the same two tracks: what the sim does today, and what
+//! the real aircraft's procedure looks like. The game-key rows are generated
+//! from the aircraft's fixed profile in [`crate::aircraft_profile`].
 //!
 //! The built-in font is ASCII-only, so every string in this module has to stay
 //! ASCII. The long text is shown through a fixed-height window; `Up/Down`
 //! scroll one line and `PageUp/PageDown` one screen.
 
 use crate::aircraft_profile::{self, Action, ToggleAction};
+use crate::menu_page::PageLine;
 use crate::input::Bindings;
 
 /// Body lines visible at once. Chosen so the page still fits a 720p window at
@@ -40,7 +40,7 @@ pub fn render(id: &str, scroll: usize) -> String {
         out.push('\n');
     }
     out.push_str(
-        "\nGAME = what this sim does now.  REAL = the actual aircraft.  TODO = not modelled.",
+        "\nGAME = what this sim does now.  REAL = the actual aircraft.",
     );
     out
 }
@@ -137,8 +137,7 @@ fn c172() -> Vec<String> {
 
     p.heading("GAME vs REAL");
     p.line("  This page covers both. GAME rows are what this sim does now.");
-    p.line("  REAL rows are the real aircraft's procedure. TODO rows list");
-    p.line("  systems that are not modelled yet.");
+    p.line("  REAL rows are the real aircraft's procedure.");
     p.line("  The Cessna has fixed gear and no autopilot, so there is no");
     p.line("  gear key and G does nothing.");
 
@@ -286,19 +285,6 @@ fn c172() -> Vec<String> {
     p.line("  on final, 60-65 kt over the threshold, flare, touchdown,");
     p.line("  brakes. Carb heat cold, mixture idle cutoff, master off.");
 
-    p.heading("NOT MODELLED YET (TODO)");
-    p.line("  TODO fuel selector (the two tanks burn symmetrically),");
-    p.line("       mixture, primer, separate magneto checks, carb heat.");
-    p.line("  TODO oil-temperature limits and shutdown checks.");
-    p.line("  TODO payload presets changing weight and balance.");
-    p.line("  TODO density altitude (temperature setting) and mixture");
-    p.line("       power loss - they matter together at high fields.");
-    p.line("  TODO nosewheel steering and differential braking.");
-    p.line("  TODO OBS course selector: the CDI card follows the beam");
-    p.line("       course instead of the pilot-set one.");
-    p.line("  TODO stall warning, spins and carb icing.");
-    p.line("  TODO ATC, traffic and a real navigation stack.");
-
     p.0
 }
 
@@ -379,14 +365,6 @@ fn f22() -> Vec<String> {
     p.line("  Landing: visual pattern, gear down, about 150-170 kt on");
     p.line("  final, flare and aerobrake, then wheel brakes.");
 
-    p.heading("NOT MODELLED YET (TODO)");
-    p.line("  TODO engine start, APU/JFS, fuel and oxygen systems.");
-    p.line("  TODO FBW envelope protection, G/AoA limiter and stalls.");
-    p.line("  TODO weapons, bay doors, radar, RWR, HMD and sensors.");
-    p.line("  TODO afterburner visuals/audio and nozzle animation.");
-    p.line("  TODO landing drag chute, aerobraking and brake heat.");
-    p.line("  TODO damage, ejection and realistic combat systems.");
-
     p.0
 }
 
@@ -450,20 +428,6 @@ fn ah64() -> Vec<String> {
     p.line("  Emergency: autorotation with rotor RPM and glide-speed");
     p.line("  management; the governor and force trim help the pilot.");
 
-    p.heading("NOT MODELLED YET (TODO)");
-    p.line("  TODO engine/APU start, rotor engagement and RPM limits.");
-    p.line("  TODO autorotation, governor, hydraulics and damage.");
-    p.line("  TODO weapons, TADS/PNVS, IHADSS, sensors, countermeasures.");
-    p.line("  TODO helicopter combat: ground targets, gun/rockets/ATGM, a TADS");
-    p.line("        sight, AAA/SAM threats and terrain-masking attack runs.");
-    p.line("  TODO missions: LZ rescue/medevac, sling-load supply and convoy");
-    p.line("        escort, with timed objectives, landing score and fail states.");
-    p.line("  TODO mission layer: LZ triggers, pickup/hover timers, cargo weight");
-    p.line("        in the rotor model, low-altitude threat cues.");
-    p.line("  TODO dual-crew station and copilot/gunner operation.");
-    p.line("  TODO force-trim release, SCAS/autopilot hold modes and fuel.");
-    p.line("  TODO weight and balance, dust and ground effect.");
-
     p.0
 }
 
@@ -494,6 +458,8 @@ fn b737() -> Vec<String> {
     p.line("  Nosewheel authority fades with speed - 35 deg at a walk,");
     p.line("  pedal-only 7 deg by 40 kt - so slow down before the turns.");
     p.line("  Wheels on grass or a nose past the solid pair fails the run.");
+    p.blank();
+    p.line("  SCORE: LINE 0.40 - CENTRELINE 0.30 - SPEED 0.20 - THRUST 0.10.");
 
     p.heading("M2 TAKEOFF - FLY THE CALLOUTS (GAME)");
     p.line("  PLAY > M2 TAKEOFF lines you up on ZSNM's numbers, engines");
@@ -510,6 +476,8 @@ fn b737() -> Vec<String> {
     p.line("  not collapses. Clean up and hand off by 5,000 ft or the run");
     p.line("  fails. The card grades rotation, centreline, the clean-up,");
     p.line("  the climb speed band and the automation handoff itself.");
+    p.blank();
+    p.line("  SCORE: ROTATION 0.30 - CLEAN-UP 0.20 - AUTOMATION 0.20 - RLW 0.15 - CLIMB 0.15.");
 
     p.heading("M3 LANDING - THE GRADED ARRIVAL (GAME)");
     p.line("  PLAY > M3 LANDING seats you 4.9 NM out on ZSNM's ILS 36,");
@@ -522,6 +490,8 @@ fn b737() -> Vec<String> {
     p.line("  grease it onto the 300 m mark, and stop: reverse out by 80 kt,");
     p.line("  throttles idle, brakes to a full stop. Past 600 fpm at the");
     p.line("  wheels is a hard-landing FAIL; a bounce costs the card.");
+    p.blank();
+    p.line("  SCORE: TOUCH 0.45 - ROLLOUT 0.20 - GS 0.15 - LOC 0.10 - SPEED 0.10.");
 
     p.heading("M4 GO-AROUND - FLY THE CALL (GAME)");
     p.line("  PLAY > M4 GO-AROUND seats you 8 km out at landing config,");
@@ -536,6 +506,8 @@ fn b737() -> Vec<String> {
     p.line("  200 ft past the call, banking past 30 degrees, or bleeding");
     p.line("  below 130 kt dirty. The card freezes at the capture; Enter");
     p.line("  re-arms and the next descent through the gate goes again.");
+    p.blank();
+    p.line("  SCORE: REACT <=2 s - GEAR <=3 s - FLAPS 15 by 2,000 ft - LEVEL +-150 ft.");
 
     p.heading("M5 RTO - THE REJECTED TAKEOFF (GAME)");
     p.line("  PLAY > M5 RTO lines you up on ZSNM's numbers, engines idling.");
@@ -547,6 +519,8 @@ fn b737() -> Vec<String> {
     p.line("  past the call the roll ran, the call-to-stop clock, the");
     p.line("  centreline and the buckets. Roll through V1 or fly the call to");
     p.line("  a liftoff and the run fails. Enter re-arms on the runway.");
+    p.blank();
+    p.line("  SCORE: REACT <=2 s - PEAK <=110 kt - STOP <=10 s - BUCKETS <=2 s - LINE.");
 
     p.heading("M6 AUTOMATION - THE COUPLED ARRIVAL (GAME)");
     p.line("  PLAY > M6 AUTOMATION seats you 20 km out and 4 km right of");
@@ -570,6 +544,8 @@ fn b737() -> Vec<String> {
     p.line("  the windows, the stop, the intercept, the descent and the");
     p.line("  beams. No Continue - the lesson ends established; land it as");
     p.line("  free flight, or run M3 for the graded touchdown.");
+    p.blank();
+    p.line("  SCORE: window before press - stop <=3 s - intercept dev <=0.10 - A/T 180.");
 
     p.heading("GAME CONTROLS (fixed keys)");
     fixed_wing_rows(&mut p, &b);
@@ -660,13 +636,139 @@ fn b737() -> Vec<String> {
     p.line("  Landing: Vref + 5, flare, autobrake, spoilers, reverse, then");
     p.line("  taxi in and shut down.");
 
-    p.heading("NOT MODELLED YET (TODO)");
-    p.line("  TODO FMC/CDU, LNAV/VNAV, route, performance and fuel (in work).");
-    p.line("  TODO autobrake, ground spoilers and auto-stow speedbrake on exit.");
-    p.line("  TODO engine start, pressurisation, hydraulics and failures.");
-    p.line("  TODO full 737 systems, checklists and crew coordination.");
-
     p.0
+}
+
+/// One aircraft's INFO page: a short history and the real specifications.
+/// Pure facts about the real aeroplane - the lessons and the MCP GUIDE
+/// carry the how-to-fly.
+struct InfoPage {
+    /// The `aircraft_profile` id this page answers to.
+    id: &'static str,
+    name: &'static str,
+    history: &'static [&'static str],
+    /// `(label, value)` spec rows, rendered two-column.
+    specs: &'static [(&'static str, &'static str)],
+}
+
+const INFO_PAGES: &[InfoPage] = &[
+    InfoPage {
+        id: "c172p",
+        name: "CESSNA 172 SKYHAWK",
+        history: &[
+            "First flown in 1955 and built ever since, the Skyhawk is the",
+            "most produced aircraft in history: more than 45,000 airframes,",
+            "and the default flight-school machine on every continent. A",
+            "tricycle-gear development of the Cessna 170, it trades glamour",
+            "for an honest, forgiving wing - which is exactly why it teaches",
+            "so well.",
+        ],
+        specs: &[
+            ("FIRST FLIGHT", "1955"),
+            ("BUILT", "45,000+"),
+            ("WINGSPAN", "36 ft 1 in"),
+            ("LENGTH", "27 ft 2 in"),
+            ("ENGINE", "Lycoming IO-360, 160 hp"),
+            ("CRUISE", "122 kt"),
+            ("SERVICE CEILING", "13,500 ft"),
+            ("RANGE", "approx 640 NM"),
+            ("MTOW", "2,550 lb"),
+        ],
+    },
+    InfoPage {
+        id: "737",
+        name: "BOEING 737-800 (NG)",
+        history: &[
+            "First flown in 1967, the 737 grew into the most-built jet",
+            "airliner in history - over 11,000 delivered. The NG generation",
+            "(1997) brought bigger wings, the CFM56-7B and the winglets this",
+            "model wears; the -800 is the type's workhorse on every short",
+            "and medium route in the world.",
+        ],
+        specs: &[
+            ("FIRST FLIGHT", "1967 (NG: 1997)"),
+            ("DELIVERED", "11,000+ all variants"),
+            ("WINGSPAN", "117 ft 5 in (winglets)"),
+            ("LENGTH", "129 ft 6 in"),
+            ("ENGINES", "2 x CFM56-7B"),
+            ("CRUISE", "Mach 0.785"),
+            ("SERVICE CEILING", "41,000 ft"),
+            ("RANGE", "2,935 NM"),
+            ("MTOW", "155,500 lb"),
+            ("SEATS", "162-189"),
+        ],
+    },
+    InfoPage {
+        id: "f22",
+        name: "LOCKHEED MARTIN F-22 RAPTOR",
+        history: &[
+            "The YF-22 won the Advanced Tactical Fighter fly-off in 1991;",
+            "the production F-22 first flew in 1997 and entered service in",
+            "2005 as its era's only operational fifth-generation fighter.",
+            "Production stopped at 187 aircraft - an air-supremacy fighter,",
+            "priced like one. Figures below are the public estimates.",
+        ],
+        specs: &[
+            ("FIRST FLIGHT", "1997 (YF-22: 1990)"),
+            ("BUILT", "187"),
+            ("WINGSPAN", "44 ft 6 in"),
+            ("LENGTH", "62 ft"),
+            ("ENGINES", "2 x Pratt & Whitney F119"),
+            ("MAX SPEED", "Mach 2.25 (supercruise 1.8)"),
+            ("SERVICE CEILING", "approx 65,000 ft"),
+            ("MTOW", "83,500 lb"),
+        ],
+    },
+    InfoPage {
+        id: "ah1s",
+        name: "BOEING AH-64D APACHE LONGBOW",
+        history: &[
+            "The YAH-64 first flew in 1975; the Apache entered Army service",
+            "in 1986, and the Longbow D-model (1997) added the mast-mounted",
+            "radar and a new spine of sensors. More than 1,200 Apaches of",
+            "all variants have been built, and the type is still in",
+            "production.",
+        ],
+        specs: &[
+            ("FIRST FLIGHT", "1975 (YAH-64)"),
+            ("BUILT", "1,200+ all variants"),
+            ("ROTOR DIAMETER", "48 ft"),
+            ("FUSELAGE LENGTH", "49 ft"),
+            ("ENGINES", "2 x GE T700-701C"),
+            ("CRUISE", "150 kt"),
+            ("NEVER-EXCEED", "229 kt"),
+            ("SERVICE CEILING", "21,000 ft"),
+            ("MTOW", "23,000 lb"),
+            ("CREW", "2"),
+        ],
+    },
+];
+
+/// The INFO page: the aircraft's story and its real numbers.
+pub fn info_lines(id: &str) -> Vec<PageLine> {
+    let normalized = aircraft_profile::normalized(id);
+    let Some(page) = INFO_PAGES.iter().find(|p| p.id == normalized) else {
+        return vec![
+            PageLine::heading("INFO"),
+            PageLine::body("No info for this aircraft."),
+        ];
+    };
+    let mut out = vec![PageLine::heading(page.name)];
+    for line in page.history {
+        if line.is_empty() {
+            out.push(PageLine::blank());
+        } else {
+            out.push(PageLine::body(*line));
+        }
+    }
+    out.push(PageLine::blank());
+    out.push(PageLine::heading("SPECS"));
+    for (label, value) in page.specs {
+        out.push(PageLine::option(*label, *value, false));
+    }
+    out.push(PageLine::blank());
+    out.push(PageLine::hint("public figures - the real aeroplane, not this sim"));
+    out
 }
 
 fn lines(id: &str) -> Vec<String> {
@@ -687,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn every_aircraft_page_covers_game_real_and_todo() {
+    fn every_aircraft_page_covers_game_and_real() {
         for id in ids() {
             // The markers can land on any scroll page (the 737's M1 section
             // pushes GAME CONTROLS past the first window).
@@ -696,7 +798,6 @@ mod tests {
                 .collect::<String>();
             assert!(whole.contains("GAME CONTROLS"), "{id} has no game keys");
             assert!(whole.contains("REAL"), "{id} has no real procedure");
-            assert!(whole.contains("TODO"), "{id} has no TODO section");
         }
     }
 
@@ -709,6 +810,28 @@ mod tests {
                     line.chars().count() <= 88,
                     "{} chars in {id}: {line}",
                     line.chars().count()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_info_page_tells_the_story_and_the_numbers() {
+        for id in ids() {
+            let lines = info_lines(id);
+            assert!(lines.len() > 8, "{id} info is thin");
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.left == "SPECS" || line.right == "SPECS"),
+                "{id} info has no specs"
+            );
+            for line in &lines {
+                assert!(line.left.is_ascii(), "non-ASCII in {id}: {}", line.left);
+                assert!(line.right.is_ascii(), "non-ASCII in {id}: {}", line.right);
+                assert!(
+                    line.left.chars().count() <= 88 && line.right.chars().count() <= 88,
+                    "info line too long in {id}"
                 );
             }
         }
@@ -729,8 +852,8 @@ mod tests {
             // Header + page line + blank + ROWS body lines + blank + footer.
             assert_eq!(text.lines().count(), ROWS + 5);
             assert!(
-                text.contains("TODO"),
-                "{id}'s last page is not the TODO page"
+                text.contains("PROCEDURE"),
+                "{id}'s last page is not the procedure section"
             );
             let pages = max / ROWS + 1;
             assert!(text.contains(&format!("page {pages}/{pages}")), "{text}");

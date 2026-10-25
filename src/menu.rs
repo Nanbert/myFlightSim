@@ -779,6 +779,7 @@ fn update_menu_ui(
         Some(Page::Tutorial) => {
             menu_page::freeform(&tutorial::render(sel.aircraft_id(), tutorial_state.scroll))
         }
+        Some(Page::Info) => tutorial::info_lines(sel.aircraft_id()),
         Some(Page::McpGuide) => crate::mcp_guide::lines(guide_state.topic),
         Some(p) => menu_page::freeform(&page_text(p, &sel)),
         None => Vec::new(),
@@ -1133,9 +1134,8 @@ fn exit_lines() -> Vec<PageLine> {
     ]
 }
 
-fn page_text(page: Page, sel: &MenuSelection) -> String {
+fn page_text(page: Page, _sel: &MenuSelection) -> String {
     let close = "\n\n[Enter] or [Esc] to close";
-    let label = AIRCRAFT[sel.aircraft_index().unwrap_or(0)].label;
     match page {
         // The guide has its own content arm in `update_menu_ui`.
         Page::McpGuide => String::new(),
@@ -1148,11 +1148,14 @@ fn page_text(page: Page, sel: &MenuSelection) -> String {
         ),
         // The built-in font is ASCII-only, so no em dashes here (they render as
         // missing-glyph boxes).
-        Page::Info => format!("{label} - INFO\n\nAircraft info coming soon.{close}"),
+        //
+        // INFO and the MCP guide have their own content arms in
+        // `update_menu_ui` (`tutorial::info_lines` / `mcp_guide::lines`).
         // Folded through `menu_page::freeform`. Rendered by `tutorial::render`
         // and the `*_lines` builders, which need live state; `page_text` never
         // sees these.
         Page::Tutorial
+        | Page::Info
         | Page::Settings
         | Page::Global
         | Page::Play

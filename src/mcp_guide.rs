@@ -305,8 +305,7 @@ pub const TOPICS: &[Topic] = &[
             "without the glide). The COURSE knobs and windows feed those,",
             "and the F/D switches show the director bars with the A/P off.",
             "",
-            "The sim's own TODO list carries them all. The lessons fly the",
-            "modes it has - and fly them well.",
+            "The lessons fly the modes the sim has - and fly them well.",
         ],
     },
     Topic {
