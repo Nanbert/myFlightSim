@@ -1582,6 +1582,7 @@ fn start_flight(
             Some(Lesson::JetLanding) => sim.reset_final_jet(),
             Some(Lesson::JetGoAround) => sim.reset_go_around_jet(),
             Some(Lesson::JetRto) => sim.reset_threshold(),
+            Some(Lesson::JetAutomation) => sim.reset_auto_lesson(),
             Some(Lesson::Landing) => sim.reset_final_c172(),
             None => sim.reset_ground(),
         }
@@ -1677,6 +1678,13 @@ fn start_flight(
     if matches!(active.0, Some(Lesson::JetGoAround)) {
         mcp.ias_kts = 140.0;
         mcp.vs_fpm = -700.0;
+    }
+    // The automation lesson arrives at the seat's own cruise: the IAS window
+    // rides 210 so the A/T (once the modes hand it over) holds the seat's
+    // speed until the arrival call dials 180. The rest of the windows stay at
+    // their defaults — setting them is the lesson.
+    if matches!(active.0, Some(Lesson::JetAutomation)) {
+        mcp.ias_kts = 210.0;
     }
     rp.init = false;
 }

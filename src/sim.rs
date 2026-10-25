@@ -362,6 +362,31 @@ impl Sim {
         self.origin_lon = 0.0;
     }
 
+    /// The 737 M6 seat: the automation lesson's arrival gate — 20 km south
+    /// of the threshold and 4 km east of the localizer, 3,000 ft, 210 kt,
+    /// clean, heading north parallel to the course. The A/P is the pilot
+    /// here from the first keypress; the seat is trimmed on its own wing
+    /// like the other jet spawns, and the aerodrome frame stays anchored.
+    pub fn reset_auto_lesson(&mut self) {
+        let dlat = -(20_000.0 / 0.3048) / fdm::FT_PER_DEG_LAT;
+        let dlon = (4_000.0 / 0.3048) / fdm::FT_PER_DEG_LAT;
+        self.model.set("ic/lat-gc-deg", dlat);
+        self.model.set("ic/long-gc-deg", dlon);
+        self.model.set("ic/vc-kts", 210.0);
+        self.model.set("ic/h-sl-ft", 3000.0);
+        self.model.set("ic/psi-true-deg", 0.0);
+        self.model.set("gear/gear-cmd-norm", 0.0);
+        self.model.apply_ic();
+        self.model.set("fcs/flap-cmd-norm", 0.0);
+        self.model.set("fcs/flap-pos-norm", 0.0);
+        self.model.set("gear/gear-pos-norm", 0.0);
+        self.light_engine();
+        self.model.trim(210.0, 3000.0);
+        self.reset_hud_memory();
+        self.origin_lat = 0.0;
+        self.origin_lon = 0.0;
+    }
+
     /// Spawn the engine per the flight's engine plan: running (the tutorial
     /// flow's 60 %-throttle hands-on start) or cold and dark for the cold
     /// lessons — spark off, prop stopped, and the start flow is the pilot's.
@@ -1327,6 +1352,146 @@ mod m5_probe {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod m6_probe {
+    use super::*;
+    use crate::aircraft_profile::ToggleAction;
+    use crate::airfield::AirfieldSpec;
+    use crate::autopilot::{Autopilot, Mcp, advance};
+    use crate::ils;
+
+    /// The M6 automation lesson, headless: the whole scripted arrival —
+    /// engage, MCP ALT 4000 + LVL CHG, the ATC stop at 3,500 (ALT HOLD),
+    /// HDG SEL 330, V/S 3000 down from ~13 km, APP armed with the A/T at
+    /// 180 — asserting each capture fires in its window and the G/S takes
+    /// while still descending, before the threshold. The seat, the offset
+    /// and the leg budgets are tuned here.
+    #[test]
+    fn the_coupled_arrival_establishes() {
+        std::env::set_var("FDM_BACKEND", "rust");
+        let mut sim = Sim::new("737");
+        sim.reset_auto_lesson();
+        let spec = AirfieldSpec::zsnm();
+        let mut ap = Autopilot::default();
+        let mut mcp = Mcp {
+            ias_kts: 210.0,
+            ..Default::default()
+        };
+        let dt = 1.0 / 120.0;
+        let mut t = 0.0f64;
+        let mut stage = 0u8;
+        let mut stop_alt = 0.0f64;
+        let mut stop_t = 0.0f64;
+        let mut turn_t = 0.0f64;
+        let mut vs_t = 0.0f64;
+        let mut app_t = 0.0f64;
+        let mut loc: Option<(f64, f64)> = None;
+        let mut gs: Option<(f64, f64)> = None;
+        let mut max_bank = 0.0f64;
+        let mut last_log = -10.0;
+        for _ in 0..120 * 420 {
+            let alt = sim.model.get("position/h-sl-ft");
+            let vs = sim.model.get("velocities/h-dot-fps") * 60.0;
+            let psi = sim.model.get("attitude/psi-deg");
+            // Along-course distance to the threshold (the threshold sits at
+            // z = 140; the seat's lat is the negative of the south offset).
+            let to_go = -sim.model.get("position/lat-gc-deg") * fdm::FT_PER_DEG_LAT * 0.3048
+                - 140.0;
+            match stage {
+                0 if t > 2.0 => {
+                    ap.toggle(&*sim.model);
+                    mcp.alt_ft = 4000.0;
+                    ap.press_mode(ToggleAction::LvlChg, &*sim.model);
+                    stage = 1;
+                    eprintln!("[m6] t={t:.1} ENGAGE + LVL CHG 4000");
+                }
+                1 if alt >= 3500.0 => {
+                    stop_alt = alt;
+                    stop_t = t;
+                    ap.press_mode(ToggleAction::AltHold, &*sim.model);
+                    stage = 2;
+                    eprintln!("[m6] t={t:.1} STOP THE CLIMB at {alt:.0}");
+                }
+                2 if t - stop_t > 6.0 && vs.abs() < 200.0 && to_go <= 16_000.0 => {
+                    turn_t = t;
+                    mcp.hdg_deg = 330.0;
+                    ap.press_mode(ToggleAction::HdgSel, &*sim.model);
+                    stage = 3;
+                    eprintln!(
+                        "[m6] t={t:.1} LEVEL {alt:.0} - HDG SEL 330 at {to_go:.0} m"
+                    );
+                }
+                3 if ((psi - 330.0 + 180.0).rem_euclid(360.0) - 180.0).abs() < 2.0
+                    && t - turn_t > 5.0
+                    && to_go <= 13_500.0 =>
+                {
+                    vs_t = t;
+                    mcp.alt_ft = 1000.0;
+                    mcp.vs_fpm = -2800.0;
+                    ap.press_mode(ToggleAction::VsMode, &*sim.model);
+                    stage = 4;
+                    eprintln!("[m6] t={t:.1} ON 330 - V/S 2800 DOWN at {to_go:.0} m");
+                }
+                4 if t - vs_t > 5.0 => {
+                    app_t = t;
+                    ap.press_mode(ToggleAction::Approach, &*sim.model);
+                    mcp.ias_kts = 180.0;
+                    stage = 5;
+                    eprintln!("[m6] t={t:.1} APP ARMED - A/T 180");
+                }
+                _ => {}
+            }
+            let beams = ils::compute(&sim, &spec);
+            advance(&mut *sim.model, &mcp, &mut ap, dt, &beams);
+            sim.model.step();
+            t += dt;
+            max_bank = max_bank.max(sim.model.get("attitude/phi-deg").abs());
+            if loc.is_none() && ap.fma().contains("LOC") {
+                loc = Some((alt, beams.dist_m));
+                eprintln!("[m6] t={t:.1} LOC CAPTURED alt={alt:.0} dist={:.0}", beams.dist_m);
+            }
+            if gs.is_none() && ap.vert == crate::autopilot::VertMode::Gs {
+                gs = Some((alt, beams.dist_m));
+                eprintln!("[m6] t={t:.1} G/S CAPTURED alt={alt:.0} dist={:.0}", beams.dist_m);
+            }
+            if t - last_log >= 15.0 {
+                last_log = t;
+                eprintln!(
+                    "[m6] t={t:5.1} alt={alt:6.0} cas={:6.1} vs={vs:6.0} psi={psi:5.1} bank={:5.1} dist={:6.0} vert={:?}",
+                    sim.model.get("velocities/vc-kts"),
+                    sim.model.get("attitude/phi-deg"),
+                    beams.dist_m,
+                    ap.vert,
+                );
+            }
+            if let Some((galt, gdist)) = gs {
+                if t - app_t > 3.0 {
+                    eprintln!(
+                        "[m6] DONE t={t:.1} stop={stop_alt:.0} bank={max_bank:.1} loc@{:.0} gs@{gdist:.0} gs_alt={galt:.0}",
+                        loc.map(|(_, d)| d).unwrap_or(0.0)
+                    );
+                    assert!(stop_alt < 3900.0, "the stop-climb held: {stop_alt}");
+                    assert!(max_bank <= 26.5, "the A/P bank limit held: {max_bank}");
+                    let (_, ldist) = loc.expect("LOC before G/S");
+                    assert!(ldist <= 9_300.0, "LOC captured in range: {ldist}");
+                    assert!(
+                        gdist > 3_000.0 && gdist <= 9_300.0,
+                        "G/S established in range: {gdist}"
+                    );
+                    assert!(
+                        (galt - 1_400.0).abs() < 600.0,
+                        "the intercept happened at a sane height: {galt}"
+                    );
+                    return;
+                }
+            }
+        }
+        panic!(
+            "the coupled arrival never established (t={t:.1}, stage={stage}, loc={loc:?}, gs={gs:?})"
+        );
     }
 }
 

@@ -545,6 +545,29 @@ fn b737() -> Vec<String> {
     p.line("  centreline and the buckets. Roll through V1 or fly the call to");
     p.line("  a liftoff and the run fails. Enter re-arms on the runway.");
 
+    p.heading("M6 AUTOMATION - THE COUPLED ARRIVAL (GAME)");
+    p.line("  PLAY > M6 AUTOMATION seats you 20 km out and 4 km right of");
+    p.line("  the course at 3,000 ft, clean, with the A/P off. From there");
+    p.line("  the box flies the whole arrival - window first, button");
+    p.line("  second, every time:");
+    p.line("  1. G (CMD), MCP ALT 4000 (arrows), then 4 LVL CHG. The climb");
+    p.line("     starts; the A/T N1 comes with the mode.");
+    p.line("  2. Crossing 3,500 ft ATC calls STOP THE CLIMB - answer with");
+    p.line("     2 ALT HOLD at once, or the run fails past 3,900.");
+    p.line("  3. HDG SEL is already live (the FMA says so) - set the bug to");
+    p.line("     330 (arrows) and the jet turns to intercept the course.");
+    p.line("  4. At about 13 km: MCP ALT 1000, V/S 2800 DOWN (PgDn), then");
+    p.line("     3. The descent meets the beam out front.");
+    p.line("  5. 6 APP arms both beams; set IAS 180 ([ keys) and the A/T");
+    p.line("     SPD (5, usually already on) holds it. LOC takes, then G/S -");
+    p.line("     established, and the card freezes.");
+    p.line("  The A/P flies all of it: a disconnect is a FAIL, a window set");
+    p.line("  after the button sends the box the wrong way, a leg that never");
+    p.line("  reaches its target is a FAIL naming the leg. The card grades");
+    p.line("  the windows, the stop, the intercept, the descent and the");
+    p.line("  beams. No Continue - the lesson ends established; land it as");
+    p.line("  free flight, or run M3 for the graded touchdown.");
+
     p.heading("GAME CONTROLS (fixed keys)");
     fixed_wing_rows(&mut p, &b);
     p.row("Landing gear", toggle(&b, ToggleAction::Gear));

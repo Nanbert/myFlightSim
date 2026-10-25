@@ -25,6 +25,10 @@
 //! - **M5 RTO** (737) — lined up on ZSNM's numbers: takeoff thrust into the
 //!   scripted STOP call at 100 kt, then idle, brakes and reverse to the
 //!   graded full stop — the other half of the M2 departure.
+//! - **M6 AUTOMATION** (737) — the full coupled arrival: every MCP mode from
+//!   CMD to APP, window first and button second, the ATC stop-climb on ALT
+//!   HOLD, the ILS established. The A/P flies it all — a disconnect fails
+//!   the lesson.
 //!
 //! The old M4 FINAL (a full cold-start-to-touchdown run) stayed on the
 //! drawing board: the landing lesson alone is the grind, and the full flight
@@ -36,7 +40,7 @@
 use bevy::prelude::*;
 
 /// The lesson HUD tags, in menu order (`Lesson::label`).
-const LESSON_LABELS: [&str; 8] = [
+const LESSON_LABELS: [&str; 9] = [
     "M1 TAXI",
     "M2 TAKEOFF",
     "M3 LANDING",
@@ -45,6 +49,7 @@ const LESSON_LABELS: [&str; 8] = [
     "M3 LANDING",
     "M4 GO-AROUND",
     "M5 RTO",
+    "M6 AUTOMATION",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -70,6 +75,9 @@ pub enum Lesson {
     /// The 737's rejected-takeoff drill: takeoff thrust into the scripted
     /// STOP call, then idle, brakes and reverse to the graded stop.
     JetRto,
+    /// The 737's coupled-arrival drill: every MCP mode, window first and
+    /// button second, flown on the A/P from CMD to the ILS established.
+    JetAutomation,
 }
 
 impl Lesson {
@@ -124,7 +132,7 @@ pub const PLAY_MENU: [PlayRow; 4] = [
 
 /// The 737's PLAY page rows: free flight plus its own graded lessons at
 /// ZSNM.
-pub const PLAY_MENU_JET: [PlayRow; 6] = [
+pub const PLAY_MENU_JET: [PlayRow; 7] = [
     PlayRow {
         label: "FREE FLIGHT",
         lesson: None,
@@ -154,6 +162,11 @@ pub const PLAY_MENU_JET: [PlayRow; 6] = [
         label: "M5 RTO",
         lesson: Some(Lesson::JetRto),
         hint: "lined up: takeoff thrust, the STOP call, brakes and reverse to the stop",
+    },
+    PlayRow {
+        label: "M6 AUTOMATION",
+        lesson: Some(Lesson::JetAutomation),
+        hint: "the coupled arrival: window first, button second, the ILS established",
     },
 ];
 
@@ -221,6 +234,10 @@ mod tests {
             "the jet's go-around arrives warm"
         );
         assert!(!Lesson::JetRto.cold_start(), "the jet's RTO departs warm");
+        assert!(
+            !Lesson::JetAutomation.cold_start(),
+            "the coupled arrival starts airborne"
+        );
     }
 
     #[test]
@@ -236,17 +253,20 @@ mod tests {
         assert_eq!(PLAY_MENU_JET[4].label, "M4 GO-AROUND");
         assert_eq!(PLAY_MENU_JET[5].lesson, Some(Lesson::JetRto));
         assert_eq!(PLAY_MENU_JET[5].label, "M5 RTO");
+        assert_eq!(PLAY_MENU_JET[6].lesson, Some(Lesson::JetAutomation));
+        assert_eq!(PLAY_MENU_JET[6].label, "M6 AUTOMATION");
     }
 
     #[test]
     fn rows_for_picks_the_aircrafts_own_menu() {
         assert_eq!(rows_for("c172p").len(), 4);
-        assert_eq!(rows_for("737").len(), 6);
+        assert_eq!(rows_for("737").len(), 7);
         assert_eq!(rows_for("737")[1].lesson, Some(Lesson::JetTaxi));
         assert_eq!(rows_for("737")[2].lesson, Some(Lesson::JetTakeoff));
         assert_eq!(rows_for("737")[3].lesson, Some(Lesson::JetLanding));
         assert_eq!(rows_for("737")[4].lesson, Some(Lesson::JetGoAround));
         assert_eq!(rows_for("737")[5].lesson, Some(Lesson::JetRto));
+        assert_eq!(rows_for("737")[6].lesson, Some(Lesson::JetAutomation));
         // Anything else: free flight only.
         assert_eq!(rows_for("f22").len(), 1);
         assert_eq!(rows_for("f22")[0].lesson, None);

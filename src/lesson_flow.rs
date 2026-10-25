@@ -116,6 +116,7 @@ pub struct LessonMeters<'w> {
     pub jll: ResMut<'w, crate::jet_landing_lesson::JetLandingMeter>,
     pub jga: ResMut<'w, crate::jet_go_around::JetGoAroundMeter>,
     pub jrt: ResMut<'w, crate::jet_rto::JetRtoMeter>,
+    pub jau: ResMut<'w, crate::jet_automation::JetAutomationMeter>,
 }
 
 pub(crate) fn watch(
@@ -167,6 +168,7 @@ pub(crate) fn watch(
                 Lesson::JetLanding => meters.jll.rearm(),
                 Lesson::JetGoAround => meters.jga.rearm(),
                 Lesson::JetRto => meters.jrt.rearm(),
+                Lesson::JetAutomation => meters.jau.rearm(),
                 _ => meters.hs.settled = false,
             }
         }
@@ -352,6 +354,31 @@ pub(crate) fn watch(
                 return;
             }
             show_prompt(&mut prompt, meters.jrt.live.clone());
+        }
+        return;
+    }
+    // --- the 737's M6: the coupled-arrival meter owns the triggers here.
+    // The lesson ends established, so the card has no Continue row; the
+    // FAIL names the leg that never flew.
+    if matches!(lesson, Lesson::JetAutomation) {
+        if no_popup {
+            if let Some(reason) = meters.jau.fail {
+                open_fail_detail(
+                    &mut flow,
+                    &mut commands,
+                    reason,
+                    meters.jau.fail_detail.clone(),
+                );
+                return;
+            }
+            if meters.jau.settled && meters.jau.done.is_some() {
+                let body = meters.jau.finals_text();
+                flow.kind = Some(Card::Grade);
+                commands.insert_resource(Paused);
+                spawn_popup(&mut commands, "AUTOMATION - GRADED", body, false);
+                return;
+            }
+            show_prompt(&mut prompt, meters.jau.live.clone());
         }
         return;
     }
