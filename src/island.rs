@@ -174,7 +174,7 @@ impl Material for TerrainMaterial {
 pub struct WaterParams {
     /// xyz = camera position, w = time (s).
     camera: Vec4,
-    /// xyz = direction toward the sun, w = glitter intensity.
+    /// xyz = direction toward the sun, w = rain (0..1).
     sun: Vec4,
     /// Deep-water body colour.
     deep: Vec4,
@@ -182,8 +182,11 @@ pub struct WaterParams {
     shallow: Vec4,
     /// Haze colour, w = density.
     fog: Vec4,
-    /// x = wave height, y = wave speed, z = glitter, w = alpha base.
+    /// x = wave-LOD scale, y = swell height gain, z = glitter gain,
+    /// w = glitter exponent.
     tune: Vec4,
+    /// x = cloud base, y = cloud top, z = coverage, w = wind (m/s).
+    cloud: Vec4,
     /// Night factor (0 day .. 1 deep night).
     night: f32,
 }
@@ -192,11 +195,12 @@ impl WaterParams {
     fn new(fog: Vec4) -> Self {
         Self {
             camera: Vec4::ZERO,
-            sun: Vec4::new(SUN_DIR.x, SUN_DIR.y, SUN_DIR.z, 1.0),
+            sun: Vec4::new(SUN_DIR.x, SUN_DIR.y, SUN_DIR.z, 0.0),
             deep: Vec4::new(0.003, 0.035, 0.075, 1.0),
             shallow: Vec4::new(0.015, 0.130, 0.145, 1.0),
             fog,
             tune: Vec4::new(1.0, 1.0, 1.0, 0.78),
+            cloud: Vec4::ZERO,
             night: 0.0,
         }
     }
@@ -206,16 +210,21 @@ impl WaterParams {
 pub struct WaterMaterial {
     #[uniform(0)]
     params: WaterParams,
-    /// Same tileable detail texture as the terrain, for fine ripples.
+    /// Tileable 2D RGBA, for the breaking-surf noise.
     #[texture(1)]
     #[sampler(2)]
     #[dependency]
     noise: Handle<Image>,
-    /// Arena height field, for depth-based shallows and surf.
+    /// Arena height field, for depth-based shallows, transparency and surf.
     #[texture(3)]
     #[sampler(4)]
     #[dependency]
     height: Handle<Image>,
+    /// The sky's 3D weather field, for cloud shadows on the sea.
+    #[texture(5, dimension = "3d")]
+    #[sampler(6)]
+    #[dependency]
+    cloud_noise: Handle<Image>,
 }
 
 impl Material for WaterMaterial {
@@ -270,6 +279,8 @@ pub fn build(
     water_mats: &mut Assets<WaterMaterial>,
     handles: &mut IslandHandles,
     weather: &Weather,
+    cloud_noise: Handle<Image>,
+    cloud: Vec4,
 ) {
     let noise = images.add(detail_image());
     let (mesh, height_img) = terrain_mesh_and_height_image();
@@ -294,11 +305,13 @@ pub fn build(
             let mut p = WaterParams::new(fog);
             // The water shader reads the haze density from fog.w.
             p.fog.w = HAZE;
+            p.cloud = cloud;
             p.night = weather.night_factor();
             p
         },
         noise,
         height,
+        cloud_noise,
     });
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(WATER_SIZE, WATER_SIZE))),
@@ -319,6 +332,7 @@ pub fn build(
 fn update_params(
     time: Res<Time>,
     weather: Res<Weather>,
+    cloud: Res<crate::sky::CloudField>,
     handles: Res<IslandHandles>,
     camera: Query<&GlobalTransform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
     mut terrain_mats: ResMut<Assets<TerrainMaterial>>,
@@ -342,7 +356,13 @@ fn update_params(
     if let Some(handle) = &handles.water {
         if let Some(mut mat) = water_mats.get_mut(handle) {
             mat.params.camera = Vec4::new(pos.x, pos.y, pos.z, t);
-            mat.params.sun.w = 1.0 - 0.5 * rain;
+            mat.params.sun.w = rain;
+            mat.params.cloud = Vec4::new(
+                cloud.base,
+                cloud.top,
+                crate::sky::coverage_for(rain),
+                cloud.wind,
+            );
             mat.params.night = night;
         }
     }

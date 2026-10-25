@@ -315,6 +315,13 @@ fn enter_mission(
     };
     active.0 = Some(map);
 
+    let cloud_params = Vec4::new(
+        cloud.base,
+        cloud.top,
+        crate::sky::coverage_for(weather.rain),
+        cloud.wind,
+    );
+
     if map == MapId::Archipelago {
         // The ported terrain-lab map: a pre-baked 80 m height field, a painted
         // coastline and the transparent sea. Its materials drive their own
@@ -328,6 +335,8 @@ fn enter_mission(
             &mut island_water_mats,
             &mut island_handles,
             &weather,
+            cloud.noise.clone(),
+            cloud_params,
         );
         let (el, az) = map.sun();
         pose.rot = (-el, az);
@@ -336,12 +345,6 @@ fn enter_mission(
 
     let pal = map.palette();
     let fog = fog_color(0.0, weather.night_factor());
-    let cloud_params = Vec4::new(
-        cloud.base,
-        cloud.top,
-        coverage_for(weather.rain),
-        cloud.wind,
-    );
     let material = terrain_mats.add(TerrainMaterial {
         params: TerrainParams {
             camera: Vec4::ZERO,
