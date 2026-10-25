@@ -477,6 +477,9 @@ fn b737() -> Vec<String> {
     p.line("  The 737 is the only aircraft here with an autopilot and");
     p.line("  autothrottle. You start on the runway; the A/P can only");
     p.line("  engage airborne.");
+    p.line("  TUTORIAL > MCP GUIDE walks the whole panel: click any switch");
+    p.line("  and it explains itself - sim meaning, real 737 function, and");
+    p.line("  how the modes hand off to each other.");
 
     p.heading("M1 TAXI - THE GRADED TAXI (GAME)");
     p.line("  PLAY > M1 TAXI seats you at the ZSNM stand, engines idling,");

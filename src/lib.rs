@@ -44,6 +44,7 @@ pub mod mcp_ui;
 pub mod menu;
 pub mod menu_page;
 pub mod mission;
+pub mod mcp_guide;
 pub mod pause;
 pub mod pfd;
 pub mod scoring;
@@ -107,6 +108,7 @@ pub fn run() {
             lens::LensPlugin,
             menu::MenuPlugin,
         ))
+        .add_plugins(mcp_guide::McpGuidePlugin)
         .add_plugins(mcp_panel::McpPanelPlugin)
         .add_plugins(g_strain::GStrainPlugin)
         // After the menu: it builds terrain for whatever mission
