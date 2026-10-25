@@ -15,7 +15,7 @@ use bevy::text::FontSize;
 use crate::aircraft_profile;
 use crate::app_state::AppState;
 use crate::autopilot::{Autopilot, Mcp};
-use crate::config::{self, ConfigSink, FeelSetting, GameConfig};
+use crate::config::{self, AmmoSetting, ConfigSink, FeelSetting, GameConfig};
 use crate::input::Bindings;
 use crate::input::FeelBaseline;
 use crate::map::{self, MapId, PendingMission};
@@ -189,6 +189,17 @@ fn assist_row_count(id: &str) -> usize {
     }
 }
 
+/// F-22-only arcade combat rows: enemy count, gun rounds, missiles, flares.
+const COMBAT_ROWS: usize = 4;
+
+fn combat_row_count(id: &str) -> usize {
+    if aircraft_profile::normalized(id) == "f22" {
+        COMBAT_ROWS
+    } else {
+        0
+    }
+}
+
 /// Wrap the selected row of a paged list: clamp to the row count, then wrap
 /// around the top/bottom on ArrowUp/ArrowDown (`n` is expected >= 1 by the
 /// callers, which all `.max(1)` their row sources).
@@ -204,9 +215,11 @@ fn cursor_nav(cur: usize, n: usize, up: bool, down: bool) -> usize {
 }
 
 /// Rows on the per-aircraft settings page. Zero for aircraft whose settings are
-/// entirely fixed (the F-22 and the 737 hide the SETTINGS entry).
+/// entirely fixed (the 737 hides the SETTINGS entry); the F-22 carries the
+/// arcade combat loadout, the AH-64D the flight-model switch and the C172 its
+/// keyboard assists.
 fn settings_row_count(id: &str) -> usize {
-    has_flight_model_row(id) as usize + assist_row_count(id)
+    has_flight_model_row(id) as usize + assist_row_count(id) + combat_row_count(id)
 }
 
 /// Where the cursor is: the highlighted top entry, the submenu card cursor,
@@ -284,7 +297,7 @@ fn top_labels() -> [&'static str; TOP_COUNT] {
 /// start-state page (its lessons are the C172's graded missions).
 fn sub_items(top: usize) -> &'static [&'static str] {
     match top {
-        F22_INDEX => &["FREE FLY", "MISSIONS", "TUTORIAL", "INFO"],
+        F22_INDEX => &["FREE FLY", "MISSIONS", "SETTINGS", "TUTORIAL", "INFO"],
         t if t < AIRCRAFT.len() => match AIRCRAFT[t].id {
             // The C172 also flies its keyboard assists; both the C172 and the
             // 737 offer the CONTROL FEEL dial page.
@@ -820,7 +833,8 @@ fn update_menu_ui(
 }
 
 /// The aircraft's settings page rows: the Realistic/Arcade switch (AH-64D
-/// only) or the C172's keyboard assists. Bindings themselves are fixed.
+/// only), the C172's keyboard assists, or the F-22's arcade combat loadout.
+/// Bindings themselves are fixed.
 fn aircraft_settings_lines(
     id: &str,
     config: &GameConfig,
@@ -851,12 +865,37 @@ fn aircraft_settings_lines(
             row += 1;
         }
     }
+    if combat_row_count(id) > 0 {
+        let c = config.combat(id);
+        for (label, value) in [
+            ("ENEMY COUNT", c.enemies.to_string()),
+            ("GUN ROUNDS", ammo_label(c.rounds)),
+            ("MISSILES", ammo_label(c.missiles)),
+            ("FLARES", ammo_label(c.flares)),
+        ] {
+            out.push(PageLine::option(label, value, row == cursor));
+            row += 1;
+        }
+        out.push(PageLine::blank());
+        out.push(PageLine::note(
+            "  ENEMY COUNT is bandits per wave. STOCK is the mission default; INF never runs dry.",
+        ));
+    }
 
     out.push(PageLine::blank());
     out.push(PageLine::hint(
         "[Up/Down] select   [,/.] change   [Esc] close   [Left/Right] tab",
     ));
     out
+}
+
+/// A combat store's page cell: STOCK, a literal count, or INF.
+fn ammo_label(choice: AmmoSetting) -> String {
+    match choice {
+        AmmoSetting::Stock => "STOCK".to_owned(),
+        AmmoSetting::Count(n) => n.to_string(),
+        AmmoSetting::Infinite => "INF".to_owned(),
+    }
 }
 
 /// One knob on the CONTROL FEEL page, mapped to its `FeelSetting` field
@@ -1383,7 +1422,14 @@ fn menu_input(
                 };
                 if dir != 0 {
                     let row = aircraft_settings.row;
-                    if has_flight_model_row(id) && row == 0 {
+                    if combat_row_count(id) > 0 {
+                        config.set_combat(id, |c| match row {
+                            0 => c.enemies = config::cycle_enemies(c.enemies, dir),
+                            1 => c.rounds = c.rounds.cycled(dir),
+                            2 => c.missiles = c.missiles.cycled(dir),
+                            _ => c.flares = c.flares.cycled(dir),
+                        });
+                    } else if has_flight_model_row(id) && row == 0 {
                         let on = !config.arcade(id);
                         config.set_arcade(id, on);
                     } else if assist_row_count(id) > 0 {
@@ -1809,10 +1855,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_f22_offers_free_fly_and_missions_while_other_aircraft_keep_play() {
+    fn the_f22_offers_free_fly_missions_and_combat_settings_while_other_aircraft_keep_play() {
         assert_eq!(
             sub_items(F22_INDEX),
-            &["FREE FLY", "MISSIONS", "TUTORIAL", "INFO"]
+            &["FREE FLY", "MISSIONS", "SETTINGS", "TUTORIAL", "INFO"]
         );
         for (top, aircraft) in AIRCRAFT.iter().enumerate() {
             match aircraft.id {
@@ -1910,8 +1956,32 @@ mod tests {
         assert!(!has_flight_model_row("737"));
         assert_eq!(settings_row_count("ah1s"), 1);
         assert_eq!(settings_row_count("c172p"), 2);
-        assert_eq!(settings_row_count("f22"), 0);
+        assert_eq!(settings_row_count("f22"), 4);
         assert_eq!(settings_row_count("737"), 0);
+    }
+
+    #[test]
+    fn the_f22_page_renders_the_combat_loadout() {
+        let mut config = GameConfig::default();
+        let lines = aircraft_settings_lines("f22", &config, &AircraftSettings::default());
+        assert_eq!(option_row(&lines, "ENEMY COUNT").right, "3");
+        assert_eq!(option_row(&lines, "GUN ROUNDS").right, "STOCK");
+        assert_eq!(option_row(&lines, "MISSILES").right, "STOCK");
+        assert_eq!(option_row(&lines, "FLARES").right, "STOCK");
+
+        config.set_combat("f22", |c| {
+            c.enemies = 6;
+            c.rounds = AmmoSetting::Count(4);
+            c.missiles = AmmoSetting::Infinite;
+            c.flares = AmmoSetting::Count(10);
+        });
+        let lines = aircraft_settings_lines("f22", &config, &AircraftSettings { row: 2 });
+        assert_eq!(option_row(&lines, "ENEMY COUNT").right, "6");
+        assert_eq!(option_row(&lines, "GUN ROUNDS").right, "4");
+        assert!(option_row(&lines, "MISSILES").active, "cursor on row 2");
+        assert_eq!(option_row(&lines, "MISSILES").right, "INF");
+        assert_eq!(option_row(&lines, "FLARES").right, "10");
+        assert!(lines.iter().all(|l| l.left != "FLIGHT MODEL"));
     }
 
     #[test]

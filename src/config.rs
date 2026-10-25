@@ -1,5 +1,5 @@
-//! Persisted user settings: weather/wind/time, per-aircraft assists and the
-//! AH-64D's arcade choice.
+//! Persisted user settings: weather/wind/time, per-aircraft assists, the
+//! AH-64D's arcade choice and the F-22's arcade combat loadout.
 //!
 //! Storage sits behind [`ConfigStore`] so the native build can write a file
 //! while the browser (wasm) build supplies a `localStorage` sink; the rest
@@ -77,6 +77,81 @@ impl Default for FeelSetting {
 const FEEL_MULT_MIN: f64 = 0.25;
 const FEEL_MULT_MAX: f64 = 4.0;
 
+/// A finite or infinite store choice on the F-22's combat settings page.
+/// `Stock` keeps the mission's built-in loadout, `Count` is a literal 1-10
+/// rounds/missiles/flares choice, and `Infinite` never depletes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AmmoSetting {
+    #[default]
+    Stock,
+    Count(u8),
+    Infinite,
+}
+
+impl AmmoSetting {
+    /// The configured finite count, or `None` for stock/infinite. Combat treats
+    /// stock as its own default constant and infinite as "never decrement".
+    pub fn count(self) -> Option<u8> {
+        match self {
+            AmmoSetting::Count(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    pub fn is_infinite(self) -> bool {
+        matches!(self, AmmoSetting::Infinite)
+    }
+
+    /// The next choice in the menu cycle: STOCK, 1 ... 10, INF (and back).
+    pub fn cycled(self, dir: isize) -> Self {
+        const CHOICES: usize = 12; // stock + 1..=10 + infinite
+        let index = match self {
+            AmmoSetting::Stock => 0,
+            AmmoSetting::Count(n) => n.clamp(1, 10) as usize,
+            AmmoSetting::Infinite => 11,
+        };
+        let next = if dir >= 0 {
+            (index + 1) % CHOICES
+        } else {
+            (index + CHOICES - 1) % CHOICES
+        };
+        match next {
+            0 => AmmoSetting::Stock,
+            1..=10 => AmmoSetting::Count(next as u8),
+            _ => AmmoSetting::Infinite,
+        }
+    }
+}
+
+/// The F-22's arcade combat loadout, set on its SETTINGS page. The stock values
+/// mirror the constants in `combat.rs` (3 bandits per wave, 480 gun rounds,
+/// 2 IR + 2 BVR missiles and 8 flares).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CombatConfig {
+    /// Bandits per wave, 1..=10.
+    pub enemies: u8,
+    pub rounds: AmmoSetting,
+    pub missiles: AmmoSetting,
+    pub flares: AmmoSetting,
+}
+
+impl Default for CombatConfig {
+    fn default() -> Self {
+        Self {
+            enemies: 3,
+            rounds: AmmoSetting::Stock,
+            missiles: AmmoSetting::Stock,
+            flares: AmmoSetting::Stock,
+        }
+    }
+}
+
+/// `1 ..= 10`, wrapping. Shared by the menu and its tests.
+pub fn cycle_enemies(n: u8, dir: isize) -> u8 {
+    let n = n.clamp(1, 10) as isize;
+    (((n - 1 + dir).rem_euclid(10)) + 1) as u8
+}
+
 /// All persisted settings. Lives as a resource so the menu can read and write
 /// it; changes are flushed through [`ConfigSink`].
 #[derive(Resource, Default, Debug, PartialEq)]
@@ -94,6 +169,9 @@ pub struct GameConfig {
     /// Aircraft set to fly in arcade mode, by canonical id. An id is present iff
     /// arcade is on, so the realistic default is simply absence.
     arcade: HashSet<String>,
+    /// Per-aircraft arcade combat loadouts. Only the F-22 writes one; an id is
+    /// present iff its loadout differs from the stock mission defaults.
+    combat: HashMap<String, CombatConfig>,
 }
 
 impl GameConfig {
@@ -181,6 +259,28 @@ impl GameConfig {
     pub fn reset_feel(&mut self, id: &str) {
         self.feel.remove(aircraft_profile::normalized(id));
     }
+
+    /// The arcade combat loadout for an aircraft (stock when absent).
+    pub fn combat(&self, id: &str) -> CombatConfig {
+        self.combat
+            .get(aircraft_profile::normalized(id))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Adjust an aircraft's combat loadout, keeping enemies in 1..=10 and
+    /// dropping the entry once every field is back at stock.
+    pub fn set_combat(&mut self, id: &str, change: impl FnOnce(&mut CombatConfig)) {
+        let id = aircraft_profile::normalized(id).to_owned();
+        let mut c = self.combat.get(&id).copied().unwrap_or_default();
+        change(&mut c);
+        c.enemies = c.enemies.clamp(1, 10);
+        if c == CombatConfig::default() {
+            self.combat.remove(&id);
+        } else {
+            self.combat.insert(id, c);
+        }
+    }
 }
 
 /// The boxed store, kept so the menu can save without knowing the backend.
@@ -234,9 +334,16 @@ fn apply_weather(config: Res<GameConfig>, mut weather: ResMut<Weather>) {
 //   [c172p.assist]
 //   bank-hold = 1
 //
-// The reserved section names are `arcade` (aircraft ids) and `<id>.assist`
-// (the C172's keyboard assists). Any other section is a leftover keymap from
-// an older build and is ignored.
+//   [f22.combat]
+//   enemies = 5
+//   rounds = inf
+//   missiles = 4
+//   flares = stock
+//
+// The reserved section names are `arcade` (aircraft ids), `<id>.assist`
+// (the C172's keyboard assists), `<id>.feel` (feel multipliers) and
+// `<id>.combat` (the F-22's arcade loadout). Any other section is a leftover
+// keymap from an older build and is ignored.
 
 /// The section header whose keys are aircraft ids, not control ids.
 const ARCADE_SECTION: &str = "arcade";
@@ -244,9 +351,26 @@ const ARCADE_SECTION: &str = "arcade";
 const ASSIST_SUFFIX: &str = ".assist";
 /// Per-aircraft keyboard-feel sections are written as `[c172p.feel]`.
 const FEEL_SUFFIX: &str = ".feel";
+/// Per-aircraft arcade combat loadouts are written as `[f22.combat]`.
+const COMBAT_SUFFIX: &str = ".combat";
 
 fn truthy(value: &str) -> bool {
     matches!(value, "1" | "true" | "on")
+}
+
+/// Parse a combat store cell: `inf`, `stock`, or a literal 1-10. Anything else
+/// falls back to stock, so a hand-edited file can never inject a bad count.
+fn parse_ammo(value: &str) -> AmmoSetting {
+    match value.to_ascii_lowercase().as_str() {
+        "inf" | "infinite" | "-1" => AmmoSetting::Infinite,
+        "stock" | "default" | "0" => AmmoSetting::Stock,
+        other => other
+            .parse::<u8>()
+            .ok()
+            .filter(|n| (1..=10).contains(n))
+            .map(AmmoSetting::Count)
+            .unwrap_or(AmmoSetting::Stock),
+    }
 }
 
 fn serialize(config: &GameConfig) -> String {
@@ -293,6 +417,27 @@ fn serialize(config: &GameConfig) -> String {
         ] {
             if m != 1.0 {
                 out.push_str(&format!("{key} = {m:.3}\n"));
+            }
+        }
+    }
+
+    let mut combat_ids: Vec<&String> = config.combat.keys().collect();
+    combat_ids.sort();
+    for id in combat_ids {
+        let c = config.combat[id];
+        out.push_str(&format!("\n[{id}.combat]\n"));
+        if c.enemies != CombatConfig::default().enemies {
+            out.push_str(&format!("enemies = {}\n", c.enemies));
+        }
+        for (key, choice) in [
+            ("rounds", c.rounds),
+            ("missiles", c.missiles),
+            ("flares", c.flares),
+        ] {
+            match choice {
+                AmmoSetting::Stock => {}
+                AmmoSetting::Count(n) => out.push_str(&format!("{key} = {n}\n")),
+                AmmoSetting::Infinite => out.push_str(&format!("{key} = inf\n")),
             }
         }
     }
@@ -369,6 +514,29 @@ fn parse(text: &str) -> GameConfig {
                         "fine" => f.fine = v,
                         _ => {}
                     });
+                }
+            }
+            Some(s) if s.ends_with(COMBAT_SUFFIX) => {
+                let id = &s[..s.len() - COMBAT_SUFFIX.len()];
+                match key {
+                    "enemies" => {
+                        if let Ok(n) = value.parse::<u8>() {
+                            config.set_combat(id, |c| c.enemies = n);
+                        }
+                    }
+                    "rounds" => {
+                        let choice = parse_ammo(value);
+                        config.set_combat(id, |c| c.rounds = choice);
+                    }
+                    "missiles" => {
+                        let choice = parse_ammo(value);
+                        config.set_combat(id, |c| c.missiles = choice);
+                    }
+                    "flares" => {
+                        let choice = parse_ammo(value);
+                        config.set_combat(id, |c| c.flares = choice);
+                    }
+                    _ => {}
                 }
             }
             // Any other section is a keymap from an older build; bindings are
@@ -604,6 +772,43 @@ mod tests {
         config.set_turn_coord("c172p", false);
         assert_eq!(config.assists("c172p"), AssistConfig::default());
         assert!(!serialize(&config).contains(".assist"));
+    }
+
+    #[test]
+    fn combat_loadout_round_trips_and_clamps() {
+        let mut config = GameConfig::default();
+        assert_eq!(config.combat("f22"), CombatConfig::default());
+        config.set_combat("f22", |c| {
+            c.enemies = 7;
+            c.rounds = AmmoSetting::Count(4);
+            c.missiles = AmmoSetting::Infinite;
+            c.flares = AmmoSetting::Count(10);
+        });
+
+        let text = serialize(&config);
+        assert!(text.contains("[f22.combat]"));
+        assert_eq!(parse(&text), config);
+        assert_eq!(serialize(&parse(&text)), text);
+
+        // Junk enemies clamp into 1..=10; junk stores fall back to stock.
+        let cfg = parse("[f22.combat]\nenemies = 0\nrounds = 99\nmissiles = inf\n");
+        assert_eq!(cfg.combat("f22").enemies, 1);
+        assert_eq!(cfg.combat("f22").rounds, AmmoSetting::Stock);
+        assert_eq!(cfg.combat("f22").missiles, AmmoSetting::Infinite);
+
+        // Back to stock drops the section entirely.
+        config.set_combat("f22", |c| *c = CombatConfig::default());
+        assert!(!serialize(&config).contains("[f22.combat]"));
+    }
+
+    #[test]
+    fn ammo_choice_cycles_stock_numbers_and_infinite() {
+        assert_eq!(AmmoSetting::Stock.cycled(1), AmmoSetting::Count(1));
+        assert_eq!(AmmoSetting::Count(10).cycled(1), AmmoSetting::Infinite);
+        assert_eq!(AmmoSetting::Infinite.cycled(1), AmmoSetting::Stock);
+        assert_eq!(AmmoSetting::Stock.cycled(-1), AmmoSetting::Infinite);
+        assert_eq!(cycle_enemies(10, 1), 1);
+        assert_eq!(cycle_enemies(1, -1), 10);
     }
 
     #[test]

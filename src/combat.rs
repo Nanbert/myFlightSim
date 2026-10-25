@@ -18,6 +18,7 @@ use bevy::text::FontSize;
 
 use crate::aircraft_profile::ToggleAction;
 use crate::app_state::{unpaused, AppState};
+use crate::config::{AmmoSetting, CombatConfig, GameConfig};
 use crate::input::Bindings;
 use crate::map::ActiveMap;
 use crate::sim::{AircraftState, Sim};
@@ -52,6 +53,7 @@ const AMRAAM_MOTOR_S: f32 = 6.0;
 const AMRAAM_TURN_RAD_S: f32 = 0.9;
 const AMRAAM_LIFE_S: f32 = 30.0;
 const AMRAAM_ROUNDS: i32 = 2;
+const SIDEWINDER_ROUNDS: i32 = 2;
 
 const GUN_INTERVAL_S: f32 = 0.075;
 const GUN_SPEED: f32 = 900.0;
@@ -65,7 +67,7 @@ const GUN_PORT_RIGHT: f32 = 1.55;
 const GUN_PORT_UP: f32 = 0.55;
 const GUN_PORT_AHEAD: f32 = 3.6;
 /// Every Nth round also puffs a little gun gas at the muzzle.
-const GUN_SMOKE_EVERY: i32 = 6;
+const GUN_SMOKE_EVERY: u32 = 6;
 
 /// Smoke puffs per launch and how long they linger, in seconds.
 const SMOKE_PUFFS: usize = 7;
@@ -85,7 +87,9 @@ const ESCORT_TURN_RAD_S: f32 = 0.14;
 const ESCORT_FIRE_RANGE: f32 = 2600.0;
 const ESCORT_FIRE_CONE_DEG: f32 = 18.0;
 const ESCORT_FIRE_CD_S: f32 = 6.0;
-const BANDITS_PER_WAVE: usize = 3;
+/// The settings page can put up to ten bandits in a wave; one is always the
+/// escort, the rest orbit as drones.
+const MAX_ENEMIES: usize = 10;
 const WAVE_DELAY_S: f32 = 4.0;
 
 /// Incoming IR missile: slower and less agile than the player's AIM-9, so a
@@ -114,7 +118,8 @@ const EDGE_BOTTOM: f32 = 108.0;
 const RADAR_RANGES_M: [f32; 3] = [10_000.0, 20_000.0, 40_000.0];
 const RADAR_RADIUS_PX: f32 = 88.0;
 const RADAR_CENTRE_PX: f32 = 95.0;
-const RADAR_DOTS: usize = 8;
+/// One dot per possible bandit in a wave.
+const RADAR_DOTS: usize = MAX_ENEMIES;
 
 /// Door travel rate (fraction of full travel per second): 0.3 s to open.
 const BAY_RATE: f32 = 3.4;
@@ -159,6 +164,18 @@ pub struct Combat {
     pub bvr: i32,
     pub rounds: i32,
     pub flares: i32,
+    /// The menu's loadout, applied at spawn and after a respawn.
+    settings: CombatConfig,
+    /// Infinite stores never decrement (the HUD shows a full block).
+    missiles_inf: bool,
+    bvr_inf: bool,
+    rounds_inf: bool,
+    flares_inf: bool,
+    /// Sidewinder launches so far: infinite stores alternate the two bays even
+    /// though the remaining count no longer changes.
+    ir_shots: u32,
+    /// Gun rounds fired so far, for the muzzle-gas cadence.
+    gun_shots: u32,
     pub kills: u32,
     pub wave: u32,
     /// Selected TSD range, one of [`RADAR_RANGES_M`].
@@ -178,10 +195,17 @@ impl Default for Combat {
             spawned: false,
             lock: None,
             weapon: Weapon::Ir,
-            missiles: 2,
+            missiles: SIDEWINDER_ROUNDS,
             bvr: AMRAAM_ROUNDS,
             rounds: GUN_ROUNDS,
             flares: 8,
+            settings: CombatConfig::default(),
+            missiles_inf: false,
+            bvr_inf: false,
+            rounds_inf: false,
+            flares_inf: false,
+            ir_shots: 0,
+            gun_shots: 0,
             kills: 0,
             wave: 0,
             radar_range_m: RADAR_RANGES_M[1],
@@ -218,7 +242,7 @@ struct CombatAssets {
     flash_mat: Handle<StandardMaterial>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BanditRole {
     /// Circles a fixed orbit; the easy targets.
     Drone,
@@ -446,8 +470,33 @@ fn wav_bytes(samples: &[i16]) -> Vec<u8> {
     out
 }
 
-fn reset_combat(mut combat: ResMut<Combat>) {
+fn reset_combat(mut combat: ResMut<Combat>, config: Res<GameConfig>) {
     *combat = Combat::default();
+    combat.settings = config.combat("f22");
+    apply_stores(&mut combat);
+}
+
+/// One store's live count and its infinite flag. STOCK keeps the mission's
+/// built-in constant, a finite choice replaces it, INF keeps the constant but
+/// marks the store as never depleting.
+fn ammo_value(choice: AmmoSetting, stock: i32) -> (i32, bool) {
+    match choice {
+        AmmoSetting::Stock => (stock, false),
+        AmmoSetting::Count(n) => (n as i32, false),
+        AmmoSetting::Infinite => (stock, true),
+    }
+}
+
+/// Apply the menu's loadout to the live stores (spawn and respawn).
+fn apply_stores(combat: &mut Combat) {
+    let settings = combat.settings;
+    (combat.missiles, combat.missiles_inf) = ammo_value(settings.missiles, SIDEWINDER_ROUNDS);
+    // One MISSILES row arms both the Sidewinders and the AMRAAMs.
+    (combat.bvr, combat.bvr_inf) = ammo_value(settings.missiles, AMRAAM_ROUNDS);
+    (combat.rounds, combat.rounds_inf) = ammo_value(settings.rounds, GUN_ROUNDS);
+    (combat.flares, combat.flares_inf) = ammo_value(settings.flares, 8);
+    combat.ir_shots = 0;
+    combat.gun_shots = 0;
 }
 
 /// Combat exists only for the F-22 in arcade mode, and only in a mission arena
@@ -545,7 +594,12 @@ fn spawn_combat(
         return;
     };
     let assets = combat_assets(&mut meshes, &mut mats);
-    let spawned = spawn_wave(&mut commands, &assets, root);
+    let spawned = spawn_wave(
+        &mut commands,
+        &assets,
+        root,
+        combat.settings.enemies as usize,
+    );
     commands.insert_resource(assets);
     spawn_hud(&mut commands);
     combat.spawned = true;
@@ -560,18 +614,38 @@ fn spawn_combat(
     }
 }
 
-/// Spawn one wave ahead of the jet: two orbiting drones plus one escort that
-/// turns into the player and shoots. Escorts are the orange airframes.
-fn spawn_wave(commands: &mut Commands, assets: &CombatAssets, root: &Transform) -> Vec<Entity> {
+/// Wave layout: `enemies - 1` drones fanned across the forward arc, plus the
+/// escort behind the jet (the missile warning is the first thing the player
+/// hears about it). Always at least one bandit, at most [`MAX_ENEMIES`].
+fn wave_offsets(enemies: usize) -> Vec<(f32, f32, f32, BanditRole)> {
+    let n = enemies.clamp(1, MAX_ENEMIES);
+    let drones = n - 1;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..drones {
+        let lane = i as f32 - drones.saturating_sub(1) as f32 * 0.5;
+        out.push((
+            2500.0 + 350.0 * (i % 4) as f32,
+            lane * 900.0,
+            if i % 2 == 0 { 120.0 } else { -80.0 },
+            BanditRole::Drone,
+        ));
+    }
+    out.push((-2500.0, 0.0, 200.0, BanditRole::Escort));
+    out
+}
+
+/// Spawn one wave ahead of the jet: up to nine orbiting drones plus one escort
+/// that turns into the player and shoots. Escorts are the orange airframes.
+/// The settings page picks how many bandits fly in a wave (1-10).
+fn spawn_wave(
+    commands: &mut Commands,
+    assets: &CombatAssets,
+    root: &Transform,
+    enemies: usize,
+) -> Vec<Entity> {
     let fwd = root.rotation * Vec3::NEG_Z;
     let side = root.rotation * Vec3::X;
-    let offsets = [
-        (2500.0, -900.0, 120.0, BanditRole::Drone),
-        (3200.0, 800.0, -80.0, BanditRole::Drone),
-        // The escort starts behind the jet: the missile warning is the first
-        // thing the player hears about it.
-        (-2500.0, 0.0, 200.0, BanditRole::Escort),
-    ];
+    let offsets = wave_offsets(enemies);
     let mut spawned = Vec::with_capacity(offsets.len());
     for (i, (ahead, lateral, up, role)) in offsets.into_iter().enumerate() {
         let center = root.translation + fwd * ahead + side * lateral + Vec3::Y * up;
@@ -834,7 +908,7 @@ fn spawn_hud(commands: &mut Commands) {
                     TextLayout::new(Justify::Right, LineBreak::NoWrap),
                 ));
             });
-            for i in 0..BANDITS_PER_WAVE {
+            for i in 0..MAX_ENEMIES {
                 root.spawn((
                     TargetBox(i),
                     Node {
@@ -1178,8 +1252,13 @@ fn fire_weapons(
                     return;
                 };
                 match combat.weapon {
-                    Weapon::Ir if combat.missiles > 0 => {
-                        let left = combat.missiles % 2 == 0;
+                    Weapon::Ir if combat.missiles > 0 || combat.missiles_inf => {
+                        let left = if combat.missiles_inf {
+                            combat.ir_shots % 2 == 0
+                        } else {
+                            combat.missiles % 2 == 0
+                        };
+                        combat.ir_shots = combat.ir_shots.wrapping_add(1);
                         let bay = Vec3::new(if left { 0.176 } else { -0.176 }, 0.014, -0.01);
                         let origin = root.translation + root.rotation * model_to_body("f22", bay);
                         let dir = (target_tf.translation - origin).normalize_or_zero();
@@ -1235,16 +1314,18 @@ fn fire_weapons(
                                 DespawnOnExit(AppState::Flying),
                             ));
                         }
-                        combat.missiles -= 1;
-                        for mesh in MISSILE_MESHES[if left { 0 } else { 1 }] {
-                            for (name, mut vis) in &mut in_bay {
-                                if name.as_str() == mesh {
-                                    *vis = Visibility::Hidden;
+                        if !combat.missiles_inf {
+                            combat.missiles -= 1;
+                            for mesh in MISSILE_MESHES[if left { 0 } else { 1 }] {
+                                for (name, mut vis) in &mut in_bay {
+                                    if name.as_str() == mesh {
+                                        *vis = Visibility::Hidden;
+                                    }
                                 }
                             }
                         }
                     }
-                    Weapon::Bvr if combat.bvr > 0 => {
+                    Weapon::Bvr if combat.bvr > 0 || combat.bvr_inf => {
                         // The model has no main bay: the AIM-120 leaves from a
                         // belly centreline station with a puff of gas.
                         let bay = Vec3::new(0.0, -0.02, 0.05);
@@ -1298,7 +1379,9 @@ fn fire_weapons(
                                 DespawnOnExit(AppState::Flying),
                             ));
                         }
-                        combat.bvr -= 1;
+                        if !combat.bvr_inf {
+                            combat.bvr -= 1;
+                        }
                     }
                     _ => {}
                 }
@@ -1308,9 +1391,12 @@ fn fire_weapons(
 
     combat.gun_cd = (combat.gun_cd - dt).max(0.0);
     if let Some(key) = key_of(&bindings, ToggleAction::FireGun) {
-        if keys.pressed(key) && combat.rounds > 0 && combat.gun_cd <= 0.0 {
+        if keys.pressed(key) && (combat.rounds > 0 || combat.rounds_inf) && combat.gun_cd <= 0.0 {
             combat.gun_cd = GUN_INTERVAL_S;
-            combat.rounds -= 1;
+            if !combat.rounds_inf {
+                combat.rounds -= 1;
+            }
+            combat.gun_shots = combat.gun_shots.wrapping_add(1);
             // The M61A2's muzzle in the right wing root.
             let muzzle = root.translation
                 + fwd * GUN_PORT_AHEAD
@@ -1338,7 +1424,7 @@ fn fire_weapons(
                 DespawnOnExit(AppState::Flying),
             ));
             // Gun gas every few rounds: a thin puff that falls behind the jet.
-            if combat.rounds % GUN_SMOKE_EVERY == 0 {
+            if combat.gun_shots % GUN_SMOKE_EVERY == 0 {
                 let mat = mats.add(StandardMaterial {
                     base_color: Color::srgba(0.66, 0.66, 0.68, 0.30),
                     alpha_mode: AlphaMode::Blend,
@@ -1365,8 +1451,10 @@ fn fire_weapons(
     }
 
     if let Some(key) = key_of(&bindings, ToggleAction::Flares) {
-        if keys.just_pressed(key) && combat.flares > 0 {
-            combat.flares -= 1;
+        if keys.just_pressed(key) && (combat.flares > 0 || combat.flares_inf) {
+            if !combat.flares_inf {
+                combat.flares -= 1;
+            }
             for i in 0..6 {
                 let a = i as f32 / 6.0 * std::f32::consts::TAU;
                 let side = Vec3::new(a.cos(), -0.6, a.sin()) * 12.0;
@@ -1571,10 +1659,7 @@ fn guide_threats(
             sim.reset_air(alt, kts);
             combat.lock = None;
             combat.weapon = Weapon::Ir;
-            combat.missiles = 2;
-            combat.bvr = AMRAAM_ROUNDS;
-            combat.rounds = GUN_ROUNDS;
-            combat.flares = 8;
+            apply_stores(&mut combat);
             combat.bay = 0.0;
             combat.down = 3.0;
         }
@@ -1814,7 +1899,12 @@ fn respawn_wave(
         return;
     }
     combat.wave += 1;
-    spawn_wave(&mut commands, &assets, root);
+    spawn_wave(
+        &mut commands,
+        &assets,
+        root,
+        combat.settings.enemies as usize,
+    );
 }
 
 /// Drive the four side-bay doors and the two launch rails from the eased bay
@@ -1858,16 +1948,29 @@ fn update_hud(
     mut lock_text: Query<&mut Text, (With<LockText>, Without<StatusText>, Without<ThreatText>)>,
     mut threat_text: Query<&mut Text, (With<ThreatText>, Without<StatusText>, Without<LockText>)>,
 ) {
-    // The F-22 HUD draws the stores block; a negative count hides it.
+    // The F-22 HUD draws fixed-width digits, with no INF glyph; an infinite
+    // store shows a full block (9 / 999) and simply never decrements.
     if combat.spawned {
-        weapons.ir = combat.missiles;
-        weapons.bvr = combat.bvr;
+        weapons.ir = if combat.missiles_inf {
+            9
+        } else {
+            combat.missiles
+        };
+        weapons.bvr = if combat.bvr_inf { 9 } else { combat.bvr };
         weapons.selected = match combat.weapon {
             Weapon::Ir => 0,
             Weapon::Bvr => 1,
         };
-        weapons.rounds = combat.rounds;
-        weapons.flares = combat.flares;
+        weapons.rounds = if combat.rounds_inf {
+            999
+        } else {
+            combat.rounds
+        };
+        weapons.flares = if combat.flares_inf {
+            9
+        } else {
+            combat.flares
+        };
         weapons.kills = combat.kills;
     } else {
         weapons.ir = -1;
@@ -2288,6 +2391,40 @@ mod tests {
         let turn_rate = DRONE_SPEED / DRONE_RADIUS;
         let g = DRONE_SPEED * turn_rate / 9.81;
         assert!(g < 2.0, "drone turn is {g:.2} G");
+    }
+
+    #[test]
+    fn wave_layout_scales_to_the_settings_count() {
+        for n in 1..=MAX_ENEMIES {
+            let wave = wave_offsets(n);
+            assert_eq!(wave.len(), n, "one entity per configured bandit");
+            assert_eq!(wave.last().unwrap().3, BanditRole::Escort);
+            assert!(wave[..n - 1]
+                .iter()
+                .all(|(_, _, _, role)| *role == BanditRole::Drone));
+        }
+        // Out-of-range counts are clamped rather than spawning a huge wave.
+        assert_eq!(wave_offsets(0).len(), 1);
+        assert_eq!(wave_offsets(99).len(), MAX_ENEMIES);
+    }
+
+    #[test]
+    fn store_loadout_uses_stock_finite_and_infinite() {
+        let stock = Combat::default();
+        assert_eq!((stock.missiles, stock.rounds), (2, 480));
+        assert!(!stock.missiles_inf && !stock.rounds_inf);
+
+        let mut combat = Combat::default();
+        combat.settings = CombatConfig {
+            enemies: 5,
+            rounds: AmmoSetting::Count(10),
+            missiles: AmmoSetting::Count(4),
+            flares: AmmoSetting::Infinite,
+        };
+        apply_stores(&mut combat);
+        assert_eq!((combat.rounds, combat.missiles, combat.bvr), (10, 4, 4));
+        assert!(combat.flares_inf && !combat.rounds_inf);
+        assert_eq!(combat.flares, 8, "infinite keeps the stock display count");
     }
 
     #[test]
