@@ -879,11 +879,13 @@ fn setup_scene(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
         // WebGL2 has no multisampled immutable textures — wgpu's glow backend
-        // panics the tab the moment one is created (the 4× engine default
-        // does it) — so the web build flies with MSAA off. The cloud camera
-        // already opts out unconditionally (see `sky.rs`).
+        // panics when one is created and sampled. That used to be the 4×
+        // default's fate on the web, but the pass that sampled the MSAA
+        // target (motion blur, desktop-only since) is gone, so the web now
+        // carries real MSAA again — without it the shoreline's near-coplanar
+        // sand/sea edge shimmers no matter what screen-space smoothing runs.
         #[cfg(target_arch = "wasm32")]
-        bevy::render::view::Msaa::Off,
+        bevy::render::view::Msaa::Sample4,
         // Far plane must clear the sky dome (radius 60 km, see `sky.rs`) and
         // the 96 km mission terrain, which is hazed out well before its edge.
         Projection::Perspective(PerspectiveProjection {
@@ -910,12 +912,6 @@ fn setup_scene(mut commands: Commands) {
         // The F-22's paint is matted at runtime (see `tame_airframe_materials`),
         // so the remaining intensity is a gentle halo, not a screen wash.
         Hdr,
-        // MSAA is off on the web (WebGL2 has no multisample storage), so
-        // near-coplanar geometry edges — the shoreline above all — shimmer:
-        // every edge pixel jumps between the two surfaces as the pose
-        // sub-pixel-drifts. FXAA is the cheap stand-in for the desktop's 4x.
-        #[cfg(target_arch = "wasm32")]
-        bevy::anti_alias::fxaa::Fxaa::default(),
         Bloom {
             intensity: 0.5,
             low_frequency_boost: 0.35,
