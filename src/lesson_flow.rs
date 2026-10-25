@@ -5,7 +5,8 @@
 //!
 //! - **FAIL** — the wheels leave the pavement, or (per lesson) an attempt's
 //!   own rule trips: the M1 holding-pair incursion (either airframe), the M2
-//!   climb failures, the M3 unstable approach at the 500 ft gate: paused,
+//!   climb failures, the M3 unstable approach at the 500 ft gate, the M4
+//!   continued approach past the go-around call: paused,
 //!   with RID/back-to-menu rows.
 //! - **The finals cards** — a graded stop (M1, either airframe), the M2
 //!   climb gate or the M3 stopped landing pauses the flight under its
@@ -113,6 +114,9 @@ pub struct LessonMeters<'w> {
     pub jt: ResMut<'w, crate::jet_taxi::JetTaxiMeter>,
     pub jtk: ResMut<'w, crate::jet_takeoff_lesson::JetTakeoffMeter>,
     pub jll: ResMut<'w, crate::jet_landing_lesson::JetLandingMeter>,
+    pub jga: ResMut<'w, crate::jet_go_around::JetGoAroundMeter>,
+    pub jrt: ResMut<'w, crate::jet_rto::JetRtoMeter>,
+    pub jau: ResMut<'w, crate::jet_automation::JetAutomationMeter>,
 }
 
 pub(crate) fn watch(
@@ -162,6 +166,9 @@ pub(crate) fn watch(
                 Lesson::JetTaxi => meters.jt.rearm(),
                 Lesson::JetTakeoff => meters.jtk.rearm(),
                 Lesson::JetLanding => meters.jll.rearm(),
+                Lesson::JetGoAround => meters.jga.rearm(),
+                Lesson::JetRto => meters.jrt.rearm(),
+                Lesson::JetAutomation => meters.jau.rearm(),
                 _ => meters.hs.settled = false,
             }
         }
@@ -308,6 +315,70 @@ pub(crate) fn watch(
                 return;
             }
             show_prompt(&mut prompt, meters.jll.live.clone());
+        }
+        return;
+    }
+    // --- the 737's M4: the scripted-go-around meter owns the triggers here,
+    // like the M2/M3 pair before it. The capture freezes the card; Enter
+    // re-arms and the next descent through the gate opens a fresh attempt.
+    if matches!(lesson, Lesson::JetGoAround) {
+        if no_popup {
+            if let Some(reason) = meters.jga.fail {
+                open_fail(&mut flow, &mut commands, reason);
+                return;
+            }
+            if meters.jga.settled && meters.jga.done.is_some() {
+                let body = meters.jga.finals_text();
+                flow.kind = Some(Card::Grade);
+                commands.insert_resource(Paused);
+                spawn_popup(&mut commands, "GO-AROUND - GRADED", body, true);
+                return;
+            }
+            show_prompt(&mut prompt, meters.jga.live.clone());
+        }
+        return;
+    }
+    // --- the 737's M5: the RTO meter owns the triggers here, like the M2/M3
+    // pair before it. The stop freezes the card; Enter re-arms on the runway.
+    if matches!(lesson, Lesson::JetRto) {
+        if no_popup {
+            if let Some(reason) = meters.jrt.fail {
+                open_fail(&mut flow, &mut commands, reason);
+                return;
+            }
+            if meters.jrt.settled && meters.jrt.done.is_some() {
+                let body = meters.jrt.finals_text();
+                flow.kind = Some(Card::Grade);
+                commands.insert_resource(Paused);
+                spawn_popup(&mut commands, "RTO - GRADED", body, true);
+                return;
+            }
+            show_prompt(&mut prompt, meters.jrt.live.clone());
+        }
+        return;
+    }
+    // --- the 737's M6: the coupled-arrival meter owns the triggers here.
+    // The lesson ends established, so the card has no Continue row; the
+    // FAIL names the leg that never flew.
+    if matches!(lesson, Lesson::JetAutomation) {
+        if no_popup {
+            if let Some(reason) = meters.jau.fail {
+                open_fail_detail(
+                    &mut flow,
+                    &mut commands,
+                    reason,
+                    meters.jau.fail_detail.clone(),
+                );
+                return;
+            }
+            if meters.jau.settled && meters.jau.done.is_some() {
+                let body = meters.jau.finals_text();
+                flow.kind = Some(Card::Grade);
+                commands.insert_resource(Paused);
+                spawn_popup(&mut commands, "AUTOMATION - GRADED", body, false);
+                return;
+            }
+            show_prompt(&mut prompt, meters.jau.live.clone());
         }
         return;
     }

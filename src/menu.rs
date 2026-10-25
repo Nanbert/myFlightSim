@@ -96,9 +96,9 @@ struct TopLabel(usize);
 #[derive(Component)]
 struct TopUnderline(usize);
 #[derive(Component)]
-struct PanelRoot;
+pub(crate) struct PanelRoot;
 #[derive(Component)]
-struct CardRoot;
+pub(crate) struct CardRoot;
 /// The footer text cell's query filter, factored out to keep the signature
 /// readable.
 type FooterTextFilter = (With<FooterText>, Without<TopLabel>, Without<TopUnderline>);
@@ -116,6 +116,9 @@ enum Page {
     Exit,
     /// How to fly the selected aircraft, in the sim and in reality.
     Tutorial,
+    /// The 737's interactive MCP diagram: click a switch, read its meaning,
+    /// its real 737 function and the links between the modes.
+    McpGuide,
     Info,
     Settings,
     /// The start-state page the aircraft's PLAY row opens: free flight plus
@@ -286,7 +289,7 @@ fn sub_items(top: usize) -> &'static [&'static str] {
             // The C172 also flies its keyboard assists; both the C172 and the
             // 737 offer the CONTROL FEEL dial page.
             "c172p" => &["PLAY", "TUTORIAL", "INFO", "SETTINGS", "FEEL"],
-            "737" => &["PLAY", "TUTORIAL", "INFO", "FEEL"],
+            "737" => &["PLAY", "TUTORIAL", "MCP GUIDE", "INFO", "FEEL"],
             // Only the AH-64D still has anything else to configure: its
             // flight model.
             "ah1s" => &["PLAY", "TUTORIAL", "INFO", "SETTINGS"],
@@ -334,6 +337,11 @@ impl Plugin for MenuPlugin {
             .add_systems(
                 OnEnter(AppState::Menu),
                 (enter_menu, auto_start_aircraft, spawn_hangar, setup_menu_ui).chain(),
+            )
+            // After `setup_menu_ui`: the diagram hangs off the card it spawns.
+            .add_systems(
+                OnEnter(AppState::Menu),
+                crate::mcp_guide::spawn_guide_layer.after(setup_menu_ui),
             )
             // `start_flight` must run before the mesh spawns, so the root picks
             // up the newly selected model. The set also lets other plugins'
@@ -418,12 +426,19 @@ fn auto_open_page(mut sel: ResMut<MenuSelection>) {
         "PLAY" => Page::Play,
         "MISSIONS" => Page::Missions,
         "FEEL" => Page::Feel,
+        "MCPGUIDE" => Page::McpGuide,
         _ => return,
     };
     // Sub-pages sit beneath the sub-menu card; initial cards stand alone.
     if matches!(
         opened,
-        Page::Tutorial | Page::Info | Page::Settings | Page::Play | Page::Missions | Page::Feel
+        Page::Tutorial
+            | Page::Info
+            | Page::Settings
+            | Page::Play
+            | Page::Missions
+            | Page::Feel
+            | Page::McpGuide
     ) {
         sel.page_stack = vec![Page::Submenu, opened];
     } else {
@@ -670,6 +685,7 @@ fn update_menu_ui(
     aircraft_settings: Res<AircraftSettings>,
     feel_state: Res<FeelState>,
     tutorial_state: Res<TutorialState>,
+    mut guide_state: ResMut<crate::mcp_guide::McpGuideState>,
     mut tops: Query<(&TopLabel, &mut Text, &mut TextColor)>,
     mut bars: Query<(&TopUnderline, &mut BackgroundColor)>,
     mut panel: Query<&mut Node, (With<PanelRoot>, Without<CardRoot>)>,
@@ -763,9 +779,17 @@ fn update_menu_ui(
         Some(Page::Tutorial) => {
             menu_page::freeform(&tutorial::render(sel.aircraft_id(), tutorial_state.scroll))
         }
+        Some(Page::Info) => tutorial::info_lines(sel.aircraft_id()),
+        Some(Page::McpGuide) => crate::mcp_guide::lines(guide_state.topic),
         Some(p) => menu_page::freeform(&page_text(p, &sel)),
         None => Vec::new(),
     };
+    // The diagram layer only shows under its own page (the layer reads this
+    // in its sync system).
+    let want_shown = matches!(sel.current_page(), Some(Page::McpGuide));
+    if guide_state.shown != want_shown {
+        guide_state.shown = want_shown;
+    }
 
     // The hint bar follows the current card, so the player always sees what
     // the next keypress does.
@@ -784,6 +808,9 @@ fn update_menu_ui(
             }
             Some(Page::About) | Some(Page::Info) => "[ENTER]/[ESC] CLOSE   [LEFT/RIGHT] TAB",
             Some(Page::Tutorial) => "[UP/DOWN] SCROLL   [ENTER]/[ESC] CLOSE   [LEFT/RIGHT] TAB",
+            Some(Page::McpGuide) => {
+                "[CLICK] THE PANEL   [UP/DOWN] TOPICS   [ENTER]/[ESC] CLOSE   [LEFT/RIGHT] TAB"
+            }
             None => "[LEFT/RIGHT] BROWSE   [ENTER] OPEN",
         };
         if text.0 != want {
@@ -1107,10 +1134,11 @@ fn exit_lines() -> Vec<PageLine> {
     ]
 }
 
-fn page_text(page: Page, sel: &MenuSelection) -> String {
+fn page_text(page: Page, _sel: &MenuSelection) -> String {
     let close = "\n\n[Enter] or [Esc] to close";
-    let label = AIRCRAFT[sel.aircraft_index().unwrap_or(0)].label;
     match page {
+        // The guide has its own content arm in `update_menu_ui`.
+        Page::McpGuide => String::new(),
         Page::About => format!(
             "myFlightSim\n\n\
              A pure-Rust flight dynamics model driving Bevy-rendered aircraft.\n\
@@ -1120,11 +1148,14 @@ fn page_text(page: Page, sel: &MenuSelection) -> String {
         ),
         // The built-in font is ASCII-only, so no em dashes here (they render as
         // missing-glyph boxes).
-        Page::Info => format!("{label} - INFO\n\nAircraft info coming soon.{close}"),
+        //
+        // INFO and the MCP guide have their own content arms in
+        // `update_menu_ui` (`tutorial::info_lines` / `mcp_guide::lines`).
         // Folded through `menu_page::freeform`. Rendered by `tutorial::render`
         // and the `*_lines` builders, which need live state; `page_text` never
         // sees these.
         Page::Tutorial
+        | Page::Info
         | Page::Settings
         | Page::Global
         | Page::Play
@@ -1144,6 +1175,7 @@ fn menu_input(
     mut settings: ResMut<SettingsState>,
     mut aircraft_settings: ResMut<AircraftSettings>,
     mut tutorial_state: ResMut<TutorialState>,
+    mut guide_state: ResMut<crate::mcp_guide::McpGuideState>,
     mut play: ResMut<PlayState>,
     mut mission_state: ResMut<MissionState>,
     mut feel_state: ResMut<FeelState>,
@@ -1190,6 +1222,9 @@ fn menu_input(
                             Some("TUTORIAL") => {
                                 tutorial_state.scroll = 0;
                                 sel.push_page(Page::Tutorial);
+                            }
+                            Some("MCP GUIDE") => {
+                                sel.push_page(Page::McpGuide);
                             }
                             Some("INFO") => sel.push_page(Page::Info),
                             Some("SETTINGS") => {
@@ -1469,6 +1504,32 @@ fn menu_input(
                     sel.open_initial();
                 }
             }
+            // The MCP guide: the panel carries the clicking; the arrows walk
+            // the topics for the keyboard crowd.
+            Page::McpGuide => {
+                let n = crate::mcp_guide::TOPIC_COUNT;
+                if keys.just_pressed(KeyCode::ArrowUp) {
+                    guide_state.topic = (guide_state.topic + n - 1) % n;
+                }
+                if keys.just_pressed(KeyCode::ArrowDown) {
+                    guide_state.topic = (guide_state.topic + 1) % n;
+                }
+                if enter || esc {
+                    sel.close_card();
+                }
+
+                // Left/Right closes the card and switches tabs.
+                if keys.just_pressed(KeyCode::ArrowLeft) {
+                    sel.close_card();
+                    sel.top = (sel.top + TOP_COUNT - 1) % TOP_COUNT;
+                    sel.open_initial();
+                }
+                if keys.just_pressed(KeyCode::ArrowRight) {
+                    sel.close_card();
+                    sel.top = (sel.top + 1) % TOP_COUNT;
+                    sel.open_initial();
+                }
+            }
             Page::Exit => {
                 if enter {
                     std::process::exit(0);
@@ -1580,6 +1641,9 @@ fn start_flight(
             Some(Lesson::Takeoff) => sim.reset_ground(),
             Some(Lesson::JetTakeoff) => sim.reset_threshold(),
             Some(Lesson::JetLanding) => sim.reset_final_jet(),
+            Some(Lesson::JetGoAround) => sim.reset_go_around_jet(),
+            Some(Lesson::JetRto) => sim.reset_threshold(),
+            Some(Lesson::JetAutomation) => sim.reset_auto_lesson(),
             Some(Lesson::Landing) => sim.reset_final_c172(),
             None => sim.reset_ground(),
         }
@@ -1616,10 +1680,11 @@ fn start_flight(
             b.value = 0.67;
         }
     }
-    // The jet taxi lesson starts at idle with the parking brake holding her:
-    // the profile's 60% taxi throttle would have the 737 rolling before the
-    // first frame.
-    if matches!(active.0, Some(Lesson::JetTaxi)) {
+    // The jet taxi and RTO lessons start at idle with the parking brake
+    // holding her: the profile's 60% taxi throttle would have the 737
+    // rolling before the first frame — and the RTO's SETUP row grades the
+    // thrust the pilot sets himself.
+    if matches!(active.0, Some(Lesson::JetTaxi) | Some(Lesson::JetRto)) {
         if let Some(b) = controls
             .list
             .iter_mut()
@@ -1642,6 +1707,20 @@ fn start_flight(
             }
         }
     }
+    // The jet go-around lesson arrives at landing config: flaps 30 and gear
+    // down (the FDM seat places them after IC — see `sim::reset_go_around_jet`).
+    // The pinned throttle is the FDM's own beam value for this draggy config
+    // (the m4_probe sweep: 0.43 crosses the 1,000 ft gate at −600 fpm and
+    // 144 kt, ~30 s in), so the seat rides the descent until the call.
+    if matches!(active.0, Some(Lesson::JetGoAround)) {
+        for b in controls.list.iter_mut() {
+            match b.action {
+                crate::aircraft_profile::Action::Flap => b.value = 30.0 / 40.0,
+                crate::aircraft_profile::Action::Throttle => b.value = 0.43,
+                _ => {}
+            }
+        }
+    }
     *bindings = controls;
     // Every flight starts under manual control with the MCP at its defaults;
     // the 737's autopilot can be engaged once airborne.
@@ -1654,6 +1733,19 @@ fn start_flight(
     if matches!(active.0, Some(Lesson::JetLanding)) {
         mcp.ias_kts = 160.0;
         mcp.vs_fpm = -950.0;
+    }
+    // The go-around's own plan in the windows: the seat's 140 and the beam's
+    // own sink, so a coupled seat holds the descent until the call.
+    if matches!(active.0, Some(Lesson::JetGoAround)) {
+        mcp.ias_kts = 140.0;
+        mcp.vs_fpm = -700.0;
+    }
+    // The automation lesson arrives at the seat's own cruise: the IAS window
+    // rides 210 so the A/T (once the modes hand it over) holds the seat's
+    // speed until the arrival call dials 180. The rest of the windows stay at
+    // their defaults — setting them is the lesson.
+    if matches!(active.0, Some(Lesson::JetAutomation)) {
+        mcp.ias_kts = 210.0;
     }
     rp.init = false;
 }
@@ -1671,6 +1763,8 @@ fn dev_lesson() -> Option<Lesson> {
         "JETTAXI" | "737TAXI" => Some(Lesson::JetTaxi),
         "JETTAKEOFF" | "737TAKEOFF" => Some(Lesson::JetTakeoff),
         "JETLANDING" | "737LANDING" => Some(Lesson::JetLanding),
+        "JETGOAROUND" | "737GA" => Some(Lesson::JetGoAround),
+        "JETRTO" | "737RTO" => Some(Lesson::JetRto),
         _ => None,
     }
 }
@@ -1727,7 +1821,7 @@ mod tests {
                 ),
                 "737" => assert_eq!(
                     sub_items(top),
-                    &["PLAY", "TUTORIAL", "INFO", "FEEL"],
+                    &["PLAY", "TUTORIAL", "MCP GUIDE", "INFO", "FEEL"],
                     "{}",
                     aircraft.id
                 ),

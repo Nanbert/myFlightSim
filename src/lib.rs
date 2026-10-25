@@ -24,7 +24,10 @@ pub mod hop;
 pub mod hud;
 pub mod ils;
 pub mod input;
+pub mod jet_go_around;
 pub mod jet_landing_lesson;
+pub mod jet_rto;
+pub mod jet_automation;
 pub mod jet_takeoff_lesson;
 pub mod jet_taxi;
 pub mod lesson_flow;
@@ -41,6 +44,7 @@ pub mod mcp_ui;
 pub mod menu;
 pub mod menu_page;
 pub mod mission;
+pub mod mcp_guide;
 pub mod pause;
 pub mod pfd;
 pub mod scoring;
@@ -104,6 +108,7 @@ pub fn run() {
             lens::LensPlugin,
             menu::MenuPlugin,
         ))
+        .add_plugins(mcp_guide::McpGuidePlugin)
         .add_plugins(mcp_panel::McpPanelPlugin)
         .add_plugins(g_strain::GStrainPlugin)
         // After the menu: it builds terrain for whatever mission
@@ -120,6 +125,9 @@ pub fn run() {
         .add_plugins(takeoff_lesson::TakeoffLessonPlugin)
         .add_plugins(jet_takeoff_lesson::JetTakeoffLessonPlugin)
         .add_plugins(jet_landing_lesson::JetLandingLessonPlugin)
+        .add_plugins(jet_go_around::JetGoAroundLessonPlugin)
+        .add_plugins(jet_rto::JetRtoLessonPlugin)
+        .add_plugins(jet_automation::JetAutomationLessonPlugin)
         .add_plugins(landing_lesson::LandingLessonPlugin)
         .add_plugins(approach::ApproachPlugin)
         .add_plugins(hop::HopPlugin)
