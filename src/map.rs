@@ -49,13 +49,13 @@ const AHEAD: [f32; 3] = [700.0, 1_500.0, 2_500.0];
 const MISSION_KT: f64 = 420.0;
 /// Water plane is larger than the arena so its own edge stays beyond the haze.
 const WATER_SIZE: f32 = 140_000.0;
-/// World height the sea plane sits at. 0.3 m below the heightfield's zero:
-/// the shoreline crosses y=0 with arbitrarily shallow slopes, so a plane at
-/// exactly 0 and the beach triangles there fight over depth every frame —
-/// the coast flickered between sand and sea as the camera moved. 0.3 m is
-/// enough to clear the band without visibly moving the shoreline (3 m was
-/// tried and read as the sea climbing the beaches).
-pub const SEA_LEVEL_Y: f32 = -0.3;
+/// World height the sea plane sits at. Drops of 0.3 m and 3 m were both tried
+/// to calm the shoreline flicker and both reverted: the depth fight between
+/// the plane and the near-zero beach triangles was real but not what the eye
+/// catches — the visible flicker is the shader's near-shore parallax wave
+/// field sweeping the waterline across the sand. The constant stays as the
+/// one knob for the sea's height (the rain splashes follow it).
+pub const SEA_LEVEL_Y: f32 = 0.0;
 /// Resolution of the tileable detail texture the terrain shader uses.
 const NOISE_SIZE: u32 = 256;
 
