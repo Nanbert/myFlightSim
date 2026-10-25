@@ -220,6 +220,24 @@ impl Binding {
         (self.value + self.trim + self.assist).clamp(self.min, self.max)
     }
 
+    /// Move the lever straight to `cmd`, clamped to its range. This is the
+    /// clickable-panel entry point: a click or drag on the 2D control stand
+    /// lands on exactly the value a held key would have ramped to, so the two
+    /// paths cannot drift.
+    pub fn set(&mut self, cmd: f64) {
+        self.value = cmd.clamp(self.min, self.max);
+    }
+
+    /// The lever's stop positions, or an empty slice for a continuous axis.
+    pub fn detents(&self) -> &'static [f64] {
+        self.detents
+    }
+
+    /// The axis's range, for a panel that maps pixels to a normalized value.
+    pub fn range(&self) -> (f64, f64) {
+        (self.min, self.max)
+    }
+
     /// +1 / -1 / 0 from which of the bound keys are down.
     fn direction(&self, keys: &ButtonInput<KeyCode>) -> f64 {
         let pos = keys.pressed(self.pos) as i32;
@@ -391,6 +409,24 @@ impl Bindings {
         f.linger_mult = fs.linger;
         f.release_mult = fs.release;
         f.fine_mult = fs.fine;
+    }
+
+    /// The binding for a semantic action, if this aircraft has that axis.
+    pub fn binding(&self, action: Action) -> Option<&Binding> {
+        self.list.iter().find(|b| b.action == action)
+    }
+
+    /// Move a lever from the 2D control stand. Lands on exactly the value the
+    /// keyboard path would ramp to; returns false when the aircraft has no
+    /// such axis.
+    pub fn set(&mut self, action: Action, cmd: f64) -> bool {
+        match self.list.iter_mut().find(|b| b.action == action) {
+            Some(b) => {
+                b.set(cmd);
+                true
+            }
+            None => false,
+        }
     }
 
     /// The knob baselines a settings page shows (the code's defaults for this
@@ -589,70 +625,89 @@ fn read_input(
         .map(|t| t.action)
         .collect();
     for action in fired {
-        match action {
-            ToggleAction::Autopilot => ap.toggle(&*sim.model),
-            ToggleAction::HdgSel
-            | ToggleAction::AltHold
-            | ToggleAction::VsMode
-            | ToggleAction::LvlChg
-            | ToggleAction::AutoThrottle => ap.press_mode(action, &*sim.model),
-            ToggleAction::SpeedMach => mcp.toggle_speed_unit(),
-            // The MCP speed window, one nudge per press (the A/T holds it).
-            ToggleAction::SpeedDown => {
-                mcp.nudge(crate::autopilot::McpWindow::Speed, -1.0, false)
-            }
-            ToggleAction::SpeedUp => {
-                mcp.nudge(crate::autopilot::McpWindow::Speed, 1.0, false)
-            }
-            // The 737's speedbrake handle and reverse thrust. Reverse drops
-            // the autothrottle so it cannot fight the back-up thrust (the pilot
-            // retard the throttles to engage reverse on the real jet anyway).
-            ToggleAction::SpeedBrake => toggle_prop(&mut sim, "fcs/speedbrake-cmd-norm"),
-            ToggleAction::Reverse => {
-                toggle_prop(&mut sim, "fcs/reverse-cmd-norm");
-                ap.disconnect_autothrottle();
-            }
-            ToggleAction::Approach => ap.press_mode(ToggleAction::Approach, &*sim.model),
-            // A no-op on models without these (the FDM ignores the property).
-            ToggleAction::Tvc => toggle_prop(&mut sim, "fcs/tvc-enable"),
-            ToggleAction::Gear => toggle_prop(&mut sim, "gear/gear-cmd-norm"),
-            // Re-trim for the current condition; hand control to the pilot and
-            // adopt the trimmed commands so the per-step writes don't undo it.
-            ToggleAction::Trim => {
-                sim.trim_now();
-                ap.disengage();
-                adopt_trim(&mut bindings, &sim);
-            }
-            ToggleAction::RotorTrim => {
-                sim.trim_now();
-                adopt_trim(&mut bindings, &sim);
-            }
-            // C172 exterior lights pack (nav + beacon + strobe + landing
-            // light). Manual `L` overrides the time-of-day default; the pack
-            // itself reacts in `lights.rs`.
-            ToggleAction::Lights => {
-                lights.toggle(&weather);
-            }
-            // AH-64D arcade helpers. Both are no-ops on models that don't
-            // expose the properties; the realistic helicopter ignores them.
-            ToggleAction::HeliHover => toggle_prop(&mut sim, "fcs/heli-hover-enable"),
-            ToggleAction::HeliBalance => toggle_prop(&mut sim, "fcs/heli-balance-enable"),
-            // C172 cold start: the master switch. Spark alone never fires an
-            // engine — the starter crank (hold I) does the rest of the job.
-            ToggleAction::Master => toggle_prop(&mut sim, "propulsion/ignition-enable"),
-            // Arcade combat keys are edge/held inputs consumed by `combat.rs`
-            // itself (it reads the same bindings, so rebinding still works).
-            ToggleAction::CycleTarget
-            | ToggleAction::CycleWeapon
-            | ToggleAction::RadarRange
-            | ToggleAction::FireMissile
-            | ToggleAction::FireGun
-            | ToggleAction::Flares => {}
-        }
+        apply_toggle(
+            action,
+            &mut sim,
+            &mut ap,
+            &mut mcp,
+            &mut bindings,
+            &mut lights,
+            &weather,
+        );
     }
 
     // Spawns live in the menu (lesson rows / map missions); there are no
     // fly-time relocate keys.
+}
+
+/// Run one edge-triggered toggle. The keyboard's profile bindings and the 2D
+/// control stand's clickable levers both come through here, so a future change
+/// lands on both paths at once.
+pub(crate) fn apply_toggle(
+    action: ToggleAction,
+    sim: &mut crate::sim::Sim,
+    ap: &mut Autopilot,
+    mcp: &mut Mcp,
+    bindings: &mut Bindings,
+    lights: &mut crate::lights::AircraftLights,
+    weather: &crate::weather::Weather,
+) {
+    match action {
+        ToggleAction::Autopilot => ap.toggle(&*sim.model),
+        ToggleAction::HdgSel
+        | ToggleAction::AltHold
+        | ToggleAction::VsMode
+        | ToggleAction::LvlChg
+        | ToggleAction::AutoThrottle => ap.press_mode(action, &*sim.model),
+        ToggleAction::SpeedMach => mcp.toggle_speed_unit(),
+        // The MCP speed window, one nudge per press (the A/T holds it).
+        ToggleAction::SpeedDown => mcp.nudge(crate::autopilot::McpWindow::Speed, -1.0, false),
+        ToggleAction::SpeedUp => mcp.nudge(crate::autopilot::McpWindow::Speed, 1.0, false),
+        // The 737's speedbrake handle and reverse thrust. Reverse drops the
+        // autothrottle so it cannot fight the back-up thrust (the pilot
+        // retards the throttles to engage reverse on the real jet anyway).
+        ToggleAction::SpeedBrake => toggle_prop(sim, "fcs/speedbrake-cmd-norm"),
+        ToggleAction::Reverse => {
+            toggle_prop(sim, "fcs/reverse-cmd-norm");
+            ap.disconnect_autothrottle();
+        }
+        ToggleAction::Approach => ap.press_mode(ToggleAction::Approach, &*sim.model),
+        // A no-op on models without these (the FDM ignores the property).
+        ToggleAction::Tvc => toggle_prop(sim, "fcs/tvc-enable"),
+        ToggleAction::Gear => toggle_prop(sim, "gear/gear-cmd-norm"),
+        // Re-trim for the current condition; hand control to the pilot and
+        // adopt the trimmed commands so the per-step writes don't undo it.
+        ToggleAction::Trim => {
+            sim.trim_now();
+            ap.disengage();
+            adopt_trim(bindings, sim);
+        }
+        ToggleAction::RotorTrim => {
+            sim.trim_now();
+            adopt_trim(bindings, sim);
+        }
+        // C172 exterior lights pack (nav + beacon + strobe + landing light).
+        // Manual `L` overrides the time-of-day default; the pack itself reacts
+        // in `lights.rs`.
+        ToggleAction::Lights => {
+            lights.toggle(weather);
+        }
+        // AH-64D arcade helpers. Both are no-ops on models that don't expose
+        // the properties; the realistic helicopter ignores them.
+        ToggleAction::HeliHover => toggle_prop(sim, "fcs/heli-hover-enable"),
+        ToggleAction::HeliBalance => toggle_prop(sim, "fcs/heli-balance-enable"),
+        // C172 cold start: the master switch. Spark alone never fires an
+        // engine — the starter crank (hold I) does the rest of the job.
+        ToggleAction::Master => toggle_prop(sim, "propulsion/ignition-enable"),
+        // Arcade combat keys are edge/held inputs consumed by `combat.rs`
+        // itself (it reads the same bindings, so rebinding still works).
+        ToggleAction::CycleTarget
+        | ToggleAction::CycleWeapon
+        | ToggleAction::RadarRange
+        | ToggleAction::FireMissile
+        | ToggleAction::FireGun
+        | ToggleAction::Flares => {}
+    }
 }
 
 /// Flip a 0/1 property (`1 - current`), used by the gear and TVC toggles.
@@ -718,7 +773,10 @@ fn ramp(value: &mut f64, target: f64, step: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{adopt_trim, arcade_throttle, manoeuvre_intensity, ramp, Binding, Bindings, Feel};
+    use super::{
+        adopt_trim, apply_toggle, arcade_throttle, manoeuvre_intensity, ramp, Binding, Bindings,
+        Feel,
+    };
     use crate::aircraft_profile::{Action, Axis};
     use crate::config::FeelSetting;
     use bevy::prelude::{ButtonInput, KeyCode};
@@ -1001,6 +1059,87 @@ mod tests {
             .find(|b| b.action == action)
             .unwrap()
             .value
+    }
+
+    #[test]
+    fn a_panel_lever_lands_on_the_keyboard_value() {
+        let mut bindings = Bindings::for_aircraft("737");
+        assert!(bindings.set(Action::Flap, 15.0 / 40.0));
+        assert!((axis_value(&bindings, Action::Flap) - 15.0 / 40.0).abs() < 1e-12);
+
+        // The click path clamps like a real lever instead of writing raw.
+        bindings.set(Action::Throttle, 2.0);
+        assert_eq!(axis_value(&bindings, Action::Throttle), 1.0);
+        bindings.set(Action::Throttle, -1.0);
+        assert_eq!(axis_value(&bindings, Action::Throttle), 0.0);
+
+        // A missing axis reports the miss instead of panicking.
+        assert!(!Bindings::for_aircraft("ah1s").set(Action::Flap, 0.5));
+    }
+
+    #[test]
+    fn the_737_gate_steps_through_its_book_detents() {
+        let mut bindings = Bindings::for_aircraft("737");
+        let flap = bindings.binding(Action::Flap).unwrap();
+        assert_eq!(flap.detents().len(), 9);
+        assert_eq!(flap.range(), (0.0, 1.0));
+        let feel = bindings.feel;
+        let mut keys = ButtonInput::<KeyCode>::default();
+        // F from UP: 1 -> 2 -> 5, then V back to 2.
+        for want in [1.0 / 40.0, 2.0 / 40.0, 5.0 / 40.0] {
+            keys.press(KeyCode::KeyF);
+            for b in &mut bindings.list {
+                b.update(&keys, 1.0 / 60.0, feel, false);
+            }
+            keys.release(KeyCode::KeyF);
+            for b in &mut bindings.list {
+                b.update(&keys, 1.0 / 60.0, feel, false);
+            }
+            assert!(
+                (axis_value(&bindings, Action::Flap) - want).abs() < 1e-9,
+                "wanted {want}, got {}",
+                axis_value(&bindings, Action::Flap)
+            );
+        }
+        keys.press(KeyCode::KeyV);
+        for b in &mut bindings.list {
+            b.update(&keys, 1.0 / 60.0, feel, false);
+        }
+        assert!((axis_value(&bindings, Action::Flap) - 2.0 / 40.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_panel_toggle_path_flips_the_selected_property() {
+        std::env::set_var("FDM_BACKEND", "rust");
+        let mut sim = crate::sim::Sim::new("737");
+        let mut ap = crate::autopilot::Autopilot::default();
+        let mut mcp = crate::autopilot::Mcp::default();
+        let mut bindings = Bindings::for_aircraft("737");
+        let mut lights = crate::lights::AircraftLights::default();
+        let weather = crate::weather::Weather::default();
+
+        let before = sim.model.get("gear/gear-cmd-norm") > 0.5;
+        apply_toggle(
+            crate::aircraft_profile::ToggleAction::Gear,
+            &mut sim,
+            &mut ap,
+            &mut mcp,
+            &mut bindings,
+            &mut lights,
+            &weather,
+        );
+        assert_eq!(sim.model.get("gear/gear-cmd-norm") > 0.5, !before);
+
+        apply_toggle(
+            crate::aircraft_profile::ToggleAction::SpeedBrake,
+            &mut sim,
+            &mut ap,
+            &mut mcp,
+            &mut bindings,
+            &mut lights,
+            &weather,
+        );
+        assert!(sim.model.get("fcs/speedbrake-cmd-norm") > 0.5);
     }
 
     /// One held ramp, at 60 fps, telling how far the axis traveled.

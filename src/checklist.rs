@@ -62,11 +62,11 @@ pub struct Readouts {
     pub engine_running: bool,
     /// Starter motor engaged (`propulsion/engine[0]/starter-cmd-norm`).
     pub starter: bool,
-    /// Commanded flap angle (`fcs/flap-cmd-norm` × 30 deg).
+    /// Commanded flap angle (`fcs/flap-cmd-norm` × the wing's full travel).
     pub flap_cmd_norm: f64,
     /// Actual flap surface deflection, degrees (`aircraft.flap_deg`). The 737
-    /// items judge the trailing edge itself — the continuous lever has no
-    /// detents to aim for.
+    /// items judge the trailing edge itself, so a lever still moving through
+    /// its 22 s travel does not tick the card early.
     pub flap_deg: f64,
     pub throttle: f64,
     pub on_ground: bool,
@@ -167,8 +167,9 @@ fn before_takeoff(r: &Readouts) -> (Phase, Vec<Item>) {
 // --- 737 ----------------------------------------------------------------------
 
 /// The runway card: flaps 5 is the takeoff book setting the tutorial preaches.
-/// The jet's lever is continuous (0..40 deg), so the tick reads the trailing
-/// edge itself with a hand-wide tolerance.
+/// The jet's lever now has the same nine book detents as the real gate, but
+/// the tick still reads the trailing edge itself with a hand-wide tolerance so
+/// the card waits for the 22 s surface travel to finish.
 fn jet_before_takeoff(r: &Readouts) -> (Phase, Vec<Item>) {
     (
         Phase::BeforeTakeoff,
@@ -265,7 +266,8 @@ impl Plugin for ChecklistPlugin {
         app.init_resource::<ChecklistState>()
             .add_systems(Startup, spawn_panel)
             .add_systems(OnEnter(AppState::Flying), reset_checklist)
-            .add_systems(Update, update.run_if(unpaused));
+            .add_systems(Update, update.run_if(unpaused))
+            .add_systems(OnExit(AppState::Flying), hide_panel);
     }
 }
 
@@ -274,6 +276,15 @@ impl Plugin for ChecklistPlugin {
 /// from the live state on the first frame.
 fn reset_checklist(mut state: ResMut<ChecklistState>) {
     state.phase = Phase::Off;
+}
+
+/// The panel is spawned once at `Startup` and its display is written only
+/// while unpaused, so the exit has to hide it — otherwise the last card
+/// lingers over the menu.
+fn hide_panel(mut panel: Query<&mut Node, With<ChecklistPanel>>) {
+    for mut node in &mut panel {
+        node.display = Display::None;
+    }
 }
 
 fn spawn_panel(mut commands: Commands) {

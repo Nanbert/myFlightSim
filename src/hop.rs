@@ -117,7 +117,7 @@ impl Plugin for HopPlugin {
             .add_systems(Startup, spawn_panel)
             .add_systems(OnEnter(AppState::Flying), reset_panel)
             .add_systems(Update, update_panel.run_if(unpaused))
-            .add_systems(OnExit(AppState::Flying), flush);
+            .add_systems(OnExit(AppState::Flying), (flush, hide_ledger));
     }
 }
 
@@ -159,6 +159,15 @@ fn update_panel(
         l.best_streak,
     );
     node.display = Display::Flex;
+}
+
+/// The ledger is spawned once at `Startup` and its display is written only
+/// while unpaused, so the exit has to hide it — otherwise the last flight's
+/// panel lingers over the menu.
+fn hide_ledger(mut panel: Query<&mut Node, With<LedgerPanel>>) {
+    for mut node in &mut panel {
+        node.display = Display::None;
+    }
 }
 
 /// Flight over: fold this flight's grades into the ledger and save once.

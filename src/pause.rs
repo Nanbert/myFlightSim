@@ -74,13 +74,13 @@ fn no_key_owner(
     card: Option<Res<crate::lesson_flow::FlowCard>>,
     ui: Option<Res<crate::view::Ui>>,
 ) -> bool {
-    keys_free(crate::lesson_flow::modal(card), crate::view::mcp_focused(ui.as_deref()))
+    keys_free(crate::lesson_flow::modal(card), crate::view::panel_focused(ui.as_deref()))
 }
 
 /// The pause menu's key line is free while neither a lesson popup nor the
 /// focused MCP panel owns the flight's keys.
-fn keys_free(modal_open: bool, mcp_focus: bool) -> bool {
-    !modal_open && !mcp_focus
+fn keys_free(modal_open: bool, panel_focus: bool) -> bool {
+    !modal_open && !panel_focus
 }
 
 /// Escape owns the pause state machine: open on Esc, resume on Esc, confirm
@@ -223,23 +223,23 @@ fn clear_pause(mut commands: Commands) {
 #[cfg(test)]
 mod tests {
     use super::keys_free;
-    use crate::view::{mcp_focused, Ui};
+    use crate::view::{panel_focused, PanelFocus, Ui};
 
     /// MCP focus owns Esc, so the pause menu must stand aside: one press
     /// closes the panel, not the flight.
     #[test]
-    fn mcp_focus_holds_the_flight_keys() {
+    fn panel_focus_holds_the_flight_keys() {
         let clear = Ui::default();
-        assert!(!mcp_focused(Some(&clear)));
+        assert!(!panel_focused(Some(&clear)));
 
         let focused = Ui {
-            mcp_focus: true,
+            panel_focus: Some(PanelFocus::Mcp),
             ..Default::default()
         };
-        assert!(mcp_focused(Some(&focused)));
+        assert!(panel_focused(Some(&focused)));
 
         // No `Ui` at all (a hangar or menu frame) never blocks the menu.
-        assert!(!mcp_focused(None));
+        assert!(!panel_focused(None));
     }
 
     /// The truth table behind `no_key_owner`. It is used with `run_if` and no

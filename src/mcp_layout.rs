@@ -14,6 +14,8 @@
 
 use bevy::prelude::*;
 
+pub use crate::panel_geom::PRect;
+
 use crate::autopilot::McpWindow;
 
 /// The baked layout's pixel space. The PNG is exactly this crop, at 2x.
@@ -27,56 +29,6 @@ pub const PANEL_H: f32 = 200.0;
 
 /// Engraved label colour, matching the panel's warm amber print.
 pub const LABEL: Color = Color::srgb(1.0, 0.82, 0.50);
-
-/// A rectangle in baked-image pixels.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PRect {
-    pub x0: f32,
-    pub y0: f32,
-    pub x1: f32,
-    pub y1: f32,
-}
-
-impl PRect {
-    pub const fn new(x0: f32, y0: f32, x1: f32, y1: f32) -> Self {
-        Self { x0, y0, x1, y1 }
-    }
-
-    pub fn cx(self) -> f32 {
-        (self.x0 + self.x1) * 0.5
-    }
-
-    pub fn cy(self) -> f32 {
-        (self.y0 + self.y1) * 0.5
-    }
-
-    pub fn w(self) -> f32 {
-        self.x1 - self.x0
-    }
-
-    pub fn h(self) -> f32 {
-        self.y1 - self.y0
-    }
-
-    pub fn contains(self, p: Vec2) -> bool {
-        p.x >= self.x0 && p.x <= self.x1 && p.y >= self.y0 && p.y <= self.y1
-    }
-
-    pub fn expand(self, d: f32) -> Self {
-        Self::new(self.x0 - d, self.y0 - d, self.x1 + d, self.y1 + d)
-    }
-
-    /// `left, top, width, height` for a panel drawn `scale` asset px per
-    /// on-screen pixel.
-    pub fn scaled(self, scale: f32) -> (f32, f32, f32, f32) {
-        (
-            self.x0 * scale,
-            self.y0 * scale,
-            self.w() * scale,
-            self.h() * scale,
-        )
-    }
-}
 
 /// The whole plate.
 pub const PANEL: PRect = PRect::new(0.0, 0.0, CROP_W, CROP_H);
