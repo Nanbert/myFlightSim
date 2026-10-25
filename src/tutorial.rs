@@ -508,6 +508,32 @@ fn b737() -> Vec<String> {
     p.line("  fails. The card grades rotation, centreline, the clean-up,");
     p.line("  the climb speed band and the automation handoff itself.");
 
+    p.heading("M3 LANDING - THE GRADED ARRIVAL (GAME)");
+    p.line("  PLAY > M3 LANDING seats you 4.9 NM out on ZSNM's ILS 36,");
+    p.line("  160 kt, flaps 5, gear up. The centre prompt plays the PM:");
+    p.line("  flaps 15, gear, flaps 30, slow to Vref+5 - the MCP speed");
+    p.line("  window shows how many [ presses take you there. By 1,000 ft");
+    p.line("  you must be stable: gear down, flaps 15 or more, inside");
+    p.line("  Vref+25, sinking no harder than 1,000 fpm. Anything red there");
+    p.line("  is a GO AROUND FAIL naming what broke. Then fly the needles,");
+    p.line("  grease it onto the 300 m mark, and stop: reverse out by 80 kt,");
+    p.line("  throttles idle, brakes to a full stop. Past 600 fpm at the");
+    p.line("  wheels is a hard-landing FAIL; a bounce costs the card.");
+
+    p.heading("M4 GO-AROUND - FLY THE CALL (GAME)");
+    p.line("  PLAY > M4 GO-AROUND seats you 8 km out at landing config,");
+    p.line("  140 kt, flaps 30, gear down. The approach is not graded -");
+    p.line("  fly it stable, and crossing 1,000 ft the sim makes the call");
+    p.line("  for you: GO AROUND. From that frame the drill is graded:");
+    p.line("  thrust (SHIFT, or A/P: 4 LVL CHG with the MCP altitude set to");
+    p.line("  3,000 first), pitch up 8-20 degrees, POSITIVE RATE - GEAR UP");
+    p.line("  (U), FLAPS 15 (F) low, and climb in the band (140-190 kt");
+    p.line("  dirty, the 250-class clean) to a level-off at 3,000 ft.");
+    p.line("  Keep flying the approach and the run fails; so does sinking");
+    p.line("  200 ft past the call, banking past 30 degrees, or bleeding");
+    p.line("  below 130 kt dirty. The card freezes at the capture; Enter");
+    p.line("  re-arms and the next descent through the gate goes again.");
+
     p.heading("GAME CONTROLS (fixed keys)");
     fixed_wing_rows(&mut p, &b);
     p.row("Landing gear", toggle(&b, ToggleAction::Gear));

@@ -118,9 +118,11 @@ fn update_approach(
     };
     // The jet's landing lesson owns its gate: its FAIL card and PM prompt
     // carry the verdict, and the free-flight banner would double them up.
+    // The go-around lesson fires its own scripted call on the same crossing.
     if aircraft_profile::normalized(&sim.name) != "737"
         || map.0.is_some()
         || lesson.0 == Some(crate::mission::Lesson::JetLanding)
+        || lesson.0 == Some(crate::mission::Lesson::JetGoAround)
     {
         node.display = Display::None;
         return;

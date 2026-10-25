@@ -19,6 +19,9 @@
 //! - **M2 TAKEOFF** (737) — lined up on ZSNM's numbers: the PM callout flow
 //!   (80 KT, V1, ROTATE, POSITIVE RATE), the acceleration-altitude clean-up,
 //!   and the handoff — A/P on and clean by 5,000 ft.
+//! - **M4 GO-AROUND** (737) — a mid-range ILS final, flown into the scripted
+//!   GO AROUND call at the 1,000 ft gate: thrust, pitch, gear, flaps 15, the
+//!   climb and the missed-approach level-off, all graded.
 //!
 //! The old M4 FINAL (a full cold-start-to-touchdown run) stayed on the
 //! drawing board: the landing lesson alone is the grind, and the full flight
@@ -30,13 +33,14 @@
 use bevy::prelude::*;
 
 /// The lesson HUD tags, in menu order (`Lesson::label`).
-const LESSON_LABELS: [&str; 6] = [
+const LESSON_LABELS: [&str; 7] = [
     "M1 TAXI",
     "M2 TAKEOFF",
     "M3 LANDING",
     "M1 TAXI",
     "M2 TAKEOFF",
     "M3 LANDING",
+    "M4 GO-AROUND",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -56,6 +60,9 @@ pub enum Lesson {
     /// The 737's arrival drill: a mid-range ILS final, the stabilized gate,
     /// the touchdown and the full stop.
     JetLanding,
+    /// The 737's missed-approach drill: the scripted GO AROUND call at the
+    /// 1,000 ft gate, flown through thrust, gear, flaps and the level-off.
+    JetGoAround,
 }
 
 impl Lesson {
@@ -110,7 +117,7 @@ pub const PLAY_MENU: [PlayRow; 4] = [
 
 /// The 737's PLAY page rows: free flight plus its own graded lessons at
 /// ZSNM.
-pub const PLAY_MENU_JET: [PlayRow; 4] = [
+pub const PLAY_MENU_JET: [PlayRow; 5] = [
     PlayRow {
         label: "FREE FLIGHT",
         lesson: None,
@@ -130,6 +137,11 @@ pub const PLAY_MENU_JET: [PlayRow; 4] = [
         label: "M3 LANDING",
         lesson: Some(Lesson::JetLanding),
         hint: "4.9 NM final: config, the 1000 ft gate, grease it, full stop",
+    },
+    PlayRow {
+        label: "M4 GO-AROUND",
+        lesson: Some(Lesson::JetGoAround),
+        hint: "fly the final into the GO AROUND call: thrust, gear, flaps, level off",
     },
 ];
 
@@ -192,6 +204,10 @@ mod tests {
         assert!(!Lesson::JetTaxi.cold_start(), "the jet taxi drill is warm");
         assert!(!Lesson::JetTakeoff.cold_start(), "the jet departs warm");
         assert!(!Lesson::JetLanding.cold_start(), "the jet arrives warm");
+        assert!(
+            !Lesson::JetGoAround.cold_start(),
+            "the jet's go-around arrives warm"
+        );
     }
 
     #[test]
@@ -203,15 +219,18 @@ mod tests {
         assert_eq!(PLAY_MENU_JET[2].label, "M2 TAKEOFF");
         assert_eq!(PLAY_MENU_JET[3].lesson, Some(Lesson::JetLanding));
         assert_eq!(PLAY_MENU_JET[3].label, "M3 LANDING");
+        assert_eq!(PLAY_MENU_JET[4].lesson, Some(Lesson::JetGoAround));
+        assert_eq!(PLAY_MENU_JET[4].label, "M4 GO-AROUND");
     }
 
     #[test]
     fn rows_for_picks_the_aircrafts_own_menu() {
         assert_eq!(rows_for("c172p").len(), 4);
-        assert_eq!(rows_for("737").len(), 4);
+        assert_eq!(rows_for("737").len(), 5);
         assert_eq!(rows_for("737")[1].lesson, Some(Lesson::JetTaxi));
         assert_eq!(rows_for("737")[2].lesson, Some(Lesson::JetTakeoff));
         assert_eq!(rows_for("737")[3].lesson, Some(Lesson::JetLanding));
+        assert_eq!(rows_for("737")[4].lesson, Some(Lesson::JetGoAround));
         // Anything else: free flight only.
         assert_eq!(rows_for("f22").len(), 1);
         assert_eq!(rows_for("f22")[0].lesson, None);

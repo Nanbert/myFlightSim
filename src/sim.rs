@@ -337,6 +337,31 @@ impl Sim {
         self.origin_lon = 0.0;
     }
 
+    /// The 737 M4 seat: a mid-range final for ZSNM's ILS 36 — 8 km out ON
+    /// the 3° beam (1,370 ft), 140 kt, flaps 30, gear DOWN: landing config
+    /// and stable, ~30 s from the 1,000 ft gate the scripted GO AROUND call
+    /// fires on. The approach itself is not graded — the seat only has to
+    /// hold the beam from the first frame, so it is trimmed on its own wing
+    /// exactly like the M3 seat.
+    pub fn reset_go_around_jet(&mut self) {
+        let dlat = -(8000.0 / 0.3048) / fdm::FT_PER_DEG_LAT;
+        self.model.set("ic/lat-gc-deg", dlat);
+        self.model.set("ic/long-gc-deg", 0.0);
+        self.model.set("ic/vc-kts", 140.0);
+        self.model.set("ic/h-sl-ft", 1370.0);
+        self.model.set("ic/psi-true-deg", 0.0);
+        self.model.set("gear/gear-cmd-norm", 1.0);
+        self.model.apply_ic();
+        self.model.set("fcs/flap-cmd-norm", 30.0 / 40.0);
+        self.model.set("fcs/flap-pos-norm", 30.0 / 40.0);
+        self.model.set("gear/gear-pos-norm", 1.0);
+        self.light_engine();
+        self.model.trim(140.0, 1370.0);
+        self.reset_hud_memory();
+        self.origin_lat = 0.0;
+        self.origin_lon = 0.0;
+    }
+
     /// Spawn the engine per the flight's engine plan: running (the tutorial
     /// flow's 60 %-throttle hands-on start) or cold and dark for the cold
     /// lessons — spark off, prop stopped, and the start flow is the pilot's.
@@ -1085,6 +1110,151 @@ mod m3_probe {
             }
         }
         panic!("the recipe never reached the gate");
+    }
+}
+
+#[cfg(test)]
+mod m4_probe {
+    use super::*;
+    use crate::aircraft_profile::ToggleAction;
+    use crate::airfield::AirfieldSpec;
+    use crate::autopilot::{Autopilot, Mcp, advance};
+    use crate::ils;
+
+    /// The M4 seat, headless: the pinned approach power (the 0.30 preset)
+    /// must carry the landing-config final down through the 1,000 ft gate —
+    /// the scripted call's trigger — sinking, but neither stalling nor
+    /// plunging. The approach is not graded; it only has to reach the call.
+    /// The M4 seat, headless: the pinned approach power (the 0.43 preset,
+    /// the sweep's beam value) must carry the landing-config final down
+    /// through the 1,000 ft gate — the scripted call's trigger — sinking
+    /// near the beam's own pace, neither stalling nor plunging. The approach
+    /// is not graded; it only has to reach the call.
+    #[test]
+    fn the_m4_seat_descends_through_the_gate() {
+        std::env::set_var("FDM_BACKEND", "rust");
+        let mut sim = Sim::new("737");
+        sim.reset_go_around_jet();
+        for _ in 0..120 {
+            sim.model.set("fcs/throttle-cmd-norm", 0.43);
+            sim.model.step();
+        }
+        let dt = 1.0 / 120.0;
+        let mut t = 0.0f64;
+        let mut vs_trend = 0.0f64;
+        for _ in 0..120 * 120 {
+            sim.model.set("fcs/throttle-cmd-norm", 0.43);
+            sim.model.step();
+            t += dt;
+            let vs_raw = sim.model.get("velocities/h-dot-fps") * 60.0;
+            vs_trend += (vs_raw - vs_trend) * (dt / 2.0);
+            let alt = sim.model.get("position/h-sl-ft");
+            let cas = sim.model.get("velocities/vc-kts");
+            assert!(cas > 120.0, "the seat bled off on the final: t={t} cas={cas}");
+            if t > 5.0 && alt < 1000.0 {
+                eprintln!("gate t={t:.0} alt={alt:.0} cas={cas:.1} vs={vs_trend:.0}");
+                assert!(vs_trend < -100.0, "the seat must still be descending: {vs_trend}");
+                assert!(vs_trend > -1200.0, "the seat plunged through the gate: {vs_trend}");
+                assert!(cas >= 130.0, "on speed at the gate: {cas}");
+                return;
+            }
+        }
+        panic!("the M4 seat never reached the gate (t={t:.0})");
+    }
+
+    /// The coupled go-around, headless — the lesson's own pass path. Seat on
+    /// the beam (G, V/S, APP armed as a crew would fly it), the call at the
+    /// gate, then 4 LVL CHG with the MCP altitude set: gear up on the rate,
+    /// flaps 15 low, and the climb must capture the 3,000 ft window.
+    #[test]
+    fn the_coupled_go_around_captures_the_missed_altitude() {
+        std::env::set_var("FDM_BACKEND", "rust");
+        let mut sim = Sim::new("737");
+        sim.reset_go_around_jet();
+        for _ in 0..120 {
+            sim.model.set("fcs/throttle-cmd-norm", 0.43);
+            sim.model.step();
+        }
+        let spec = AirfieldSpec::zsnm();
+        let mut ap = Autopilot::default();
+        let mut mcp = Mcp {
+            ias_kts: 140.0,
+            vs_fpm: -700.0,
+            ..Default::default()
+        };
+        ap.toggle(&*sim.model);
+        ap.press_mode(ToggleAction::VsMode, &*sim.model);
+        ap.press_mode(ToggleAction::Approach, &*sim.model);
+        assert!(ap.engaged, "the seat must not refuse the A/P");
+        let dt = 1.0 / 120.0;
+        let mut t = 0.0f64;
+        let mut called = false;
+        let mut rate_at: Option<f64> = None;
+        let mut captured_at: Option<f64> = None;
+        let mut last_log = -10.0;
+        for _ in 0..120 * 420 {
+            let alt = sim.model.get("position/h-sl-ft");
+            // The scripted call: the same crossing the meter fires on.
+            if !called && alt < 1000.0 {
+                called = true;
+                mcp.alt_ft = 3000.0;
+                ap.press_mode(ToggleAction::LvlChg, &*sim.model);
+                eprintln!("CALL t={t:.0} alt={alt:.0} cas={:.0}", sim.model.get("velocities/vc-kts"));
+            }
+            // Before the call the pinned approach power; after it the A/T N1
+            // the LVL CHG press set drives the throttles itself.
+            if !called {
+                sim.model.set("fcs/throttle-cmd-norm", 0.43);
+            }
+            let beams = ils::compute(&sim, &spec);
+            advance(&mut *sim.model, &mcp, &mut ap, dt, &beams);
+            sim.model.step();
+            t += dt;
+            if !called {
+                continue;
+            }
+            let vs = sim.model.get("velocities/h-dot-fps") * 60.0;
+            if rate_at.is_none() && vs > 100.0 {
+                rate_at = Some(t);
+            }
+            if let Some(r) = rate_at {
+                // Gear up on the rate (the PM call), flaps 15 shortly after.
+                sim.model.set("gear/gear-cmd-norm", 0.0);
+                if t - r > 6.0 {
+                    sim.model.set("fcs/flap-cmd-norm", 15.0 / 40.0);
+                }
+            }
+            if captured_at.is_none() && alt >= 2900.0 && vs < 500.0 {
+                captured_at = Some(t);
+            }
+            if t - last_log >= 20.0 {
+                last_log = t;
+                eprintln!(
+                    "[m4] t={t:5.0} alt={alt:6.0} cas={:6.1} vs={vs:6.0} pitch={:5.1} gear={:3.0} vert={:?}",
+                    sim.model.get("velocities/vc-kts"),
+                    sim.model.get("attitude/theta-deg"),
+                    sim.model.get("gear/gear-pos-norm") * 30.0,
+                    ap.vert,
+                );
+            }
+            if let Some(c) = captured_at {
+                if t - c > 20.0 {
+                    let alt = sim.model.get("position/h-sl-ft");
+                    let gear = sim.model.get("gear/gear-pos-norm");
+                    eprintln!("CAPTURE t={c:.0} settled alt={alt:.0} vs={vs:.0} gear={gear:.2}");
+                    assert!(
+                        (alt - 3000.0).abs() <= 250.0,
+                        "the missed-approach capture held the window: {alt}"
+                    );
+                    assert!(gear < 0.05, "gear up by the capture: {gear}");
+                    assert!(vs.abs() < 600.0, "settled at the capture: {vs}");
+                    return;
+                }
+            }
+        }
+        panic!(
+            "the coupled go-around never captured (t={t:.0}, called={called}, rate_at={rate_at:?}, captured_at={captured_at:?})"
+        );
     }
 }
 

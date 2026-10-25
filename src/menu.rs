@@ -1580,6 +1580,7 @@ fn start_flight(
             Some(Lesson::Takeoff) => sim.reset_ground(),
             Some(Lesson::JetTakeoff) => sim.reset_threshold(),
             Some(Lesson::JetLanding) => sim.reset_final_jet(),
+            Some(Lesson::JetGoAround) => sim.reset_go_around_jet(),
             Some(Lesson::Landing) => sim.reset_final_c172(),
             None => sim.reset_ground(),
         }
@@ -1642,6 +1643,20 @@ fn start_flight(
             }
         }
     }
+    // The jet go-around lesson arrives at landing config: flaps 30 and gear
+    // down (the FDM seat places them after IC — see `sim::reset_go_around_jet`).
+    // The pinned throttle is the FDM's own beam value for this draggy config
+    // (the m4_probe sweep: 0.43 crosses the 1,000 ft gate at −600 fpm and
+    // 144 kt, ~30 s in), so the seat rides the descent until the call.
+    if matches!(active.0, Some(Lesson::JetGoAround)) {
+        for b in controls.list.iter_mut() {
+            match b.action {
+                crate::aircraft_profile::Action::Flap => b.value = 30.0 / 40.0,
+                crate::aircraft_profile::Action::Throttle => b.value = 0.43,
+                _ => {}
+            }
+        }
+    }
     *bindings = controls;
     // Every flight starts under manual control with the MCP at its defaults;
     // the 737's autopilot can be engaged once airborne.
@@ -1654,6 +1669,12 @@ fn start_flight(
     if matches!(active.0, Some(Lesson::JetLanding)) {
         mcp.ias_kts = 160.0;
         mcp.vs_fpm = -950.0;
+    }
+    // The go-around's own plan in the windows: the seat's 140 and the beam's
+    // own sink, so a coupled seat holds the descent until the call.
+    if matches!(active.0, Some(Lesson::JetGoAround)) {
+        mcp.ias_kts = 140.0;
+        mcp.vs_fpm = -700.0;
     }
     rp.init = false;
 }
@@ -1671,6 +1692,7 @@ fn dev_lesson() -> Option<Lesson> {
         "JETTAXI" | "737TAXI" => Some(Lesson::JetTaxi),
         "JETTAKEOFF" | "737TAKEOFF" => Some(Lesson::JetTakeoff),
         "JETLANDING" | "737LANDING" => Some(Lesson::JetLanding),
+        "JETGOAROUND" | "737GA" => Some(Lesson::JetGoAround),
         _ => None,
     }
 }
