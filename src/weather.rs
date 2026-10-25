@@ -274,7 +274,7 @@ fn setup_splashes(
             },
             Mesh3d(mesh.clone()),
             MeshMaterial3d(material),
-            Transform::from_translation(random_disk(&mut rng, Vec3::ZERO, SPLASH_SPREAD, SPLASH_Y))
+            Transform::from_translation(random_disk(&mut rng, Vec3::ZERO, SPLASH_SPREAD))
                 .with_rotation(flat),
             Visibility::Hidden,
         ));
@@ -337,7 +337,6 @@ fn update_rain(
 fn update_splashes(
     time: Res<Time>,
     weather: Res<Weather>,
-    active: Res<crate::map::ActiveMap>,
     mut rng: Local<Lcg>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     camera: Query<
@@ -359,12 +358,6 @@ fn update_splashes(
     let visible = rain > 0.02 && cam.y < SPLASH_MAX_CAM_H;
     // More rain → more of the pool active.
     let shown = (rain * SPLASHES as f32) as usize;
-    // The ripples land where the rain does: on the archipelago that is the sea
-    // plane, which sits below the heightfield's zero (see `map::SEA_LEVEL_Y`).
-    let splash_y = match active.0 {
-        Some(crate::map::MapId::Archipelago) => crate::map::SEA_LEVEL_Y + SPLASH_Y,
-        _ => SPLASH_Y,
-    };
 
     for (i, (mut tf, mut vis, mut splash)) in splashes.iter_mut().enumerate() {
         if !visible || i >= shown {
@@ -376,7 +369,7 @@ fn update_splashes(
         splash.age += dt;
         if splash.age >= splash.life {
             splash.age -= splash.life;
-            tf.translation = random_disk(&mut rng, cam, SPLASH_SPREAD, splash_y);
+            tf.translation = random_disk(&mut rng, cam, SPLASH_SPREAD);
         }
 
         let t = (splash.age / splash.life).clamp(0.0, 1.0);
@@ -389,12 +382,12 @@ fn update_splashes(
     }
 }
 
-/// A uniformly random point `y` metres above the world origin plane, within
-/// `radius` of `centre`, by the usual `sqrt` trick for a uniform disk.
-fn random_disk(rng: &mut Lcg, centre: Vec3, radius: f32, y: f32) -> Vec3 {
+/// A uniformly random point on the ground (`y = SPLASH_Y`) within `radius` of
+/// `centre`, by the usual `sqrt` trick for a uniform disk.
+fn random_disk(rng: &mut Lcg, centre: Vec3, radius: f32) -> Vec3 {
     let ang = rng.range(0.0, std::f32::consts::TAU);
     let r = radius * rng.next().sqrt();
-    Vec3::new(centre.x + r * ang.cos(), y, centre.z + r * ang.sin())
+    Vec3::new(centre.x + r * ang.cos(), SPLASH_Y, centre.z + r * ang.sin())
 }
 
 /// Wrap `v` into `[-h, h)`.
@@ -563,7 +556,7 @@ mod tests {
         let mut rng = Lcg::new(42);
         let centre = Vec3::new(100.0, 5.0, -30.0);
         for _ in 0..500 {
-            let p = random_disk(&mut rng, centre, SPLASH_SPREAD, SPLASH_Y);
+            let p = random_disk(&mut rng, centre, SPLASH_SPREAD);
             assert_eq!(p.y, SPLASH_Y, "splashes sit on the ground plane");
             let d = ((p.x - centre.x).powi(2) + (p.z - centre.z).powi(2)).sqrt();
             assert!(d <= SPLASH_SPREAD + 1e-3, "outside the spawn disk: {d}");

@@ -49,13 +49,6 @@ const AHEAD: [f32; 3] = [700.0, 1_500.0, 2_500.0];
 const MISSION_KT: f64 = 420.0;
 /// Water plane is larger than the arena so its own edge stays beyond the haze.
 const WATER_SIZE: f32 = 140_000.0;
-/// World height the sea plane sits at. Drops of 0.3 m and 3 m were both tried
-/// to calm the shoreline flicker and both reverted: the depth fight between
-/// the plane and the near-zero beach triangles was real but not what the eye
-/// catches — the visible flicker is the shader's near-shore parallax wave
-/// field sweeping the waterline across the sand. The constant stays as the
-/// one knob for the sea's height (the rain splashes follow it).
-pub const SEA_LEVEL_Y: f32 = 0.0;
 /// Resolution of the tileable detail texture the terrain shader uses.
 const NOISE_SIZE: u32 = 256;
 
@@ -106,9 +99,13 @@ impl MapId {
     }
 
     /// High-angle afternoon light over the islands; a low sun rakes the snow.
+    /// The archipelago carries the terrain lab's reworked sun (about 25° up),
+    /// which rakes the island ridges for longer shadows.
     fn sun(self) -> (f32, f32) {
         match self {
-            MapId::Archipelago => (0.62, -0.65),
+            // SUN_DIR (-0.640, 0.420, 0.644): elevation asin(0.42), bearing
+            // atan2(-0.64, 0.644).
+            MapId::Archipelago => (0.4334, -0.7824),
             MapId::Alpine => (0.40, -1.15),
             // Low, cold north-west light, as in the terrain lab: it rakes the
             // valleys so the arêtes throw long shadows over the ice.
@@ -303,6 +300,9 @@ fn enter_mission(
     mut images: ResMut<Assets<Image>>,
     mut terrain_mats: ResMut<Assets<TerrainMaterial>>,
     mut water_mats: ResMut<Assets<WaterMaterial>>,
+    mut island_terrain_mats: ResMut<Assets<crate::island::TerrainMaterial>>,
+    mut island_water_mats: ResMut<Assets<crate::island::WaterMaterial>>,
+    mut island_handles: ResMut<crate::island::IslandHandles>,
     weather: Res<crate::weather::Weather>,
     cloud: Res<CloudField>,
     mut pose: ResMut<SunPose>,
@@ -311,6 +311,25 @@ fn enter_mission(
         return;
     };
     active.0 = Some(map);
+
+    if map == MapId::Archipelago {
+        // The ported terrain-lab map: a pre-baked 80 m height field, a painted
+        // coastline and the transparent sea. Its materials drive their own
+        // per-frame uniforms (see `island::update_params`), so `MapHandles`
+        // stays empty and `update_map_params` has nothing to do here.
+        crate::island::build(
+            &mut commands,
+            &mut meshes,
+            &mut images,
+            &mut island_terrain_mats,
+            &mut island_water_mats,
+            &mut island_handles,
+            &weather,
+        );
+        let (el, az) = map.sun();
+        pose.rot = (-el, az);
+        return;
+    }
 
     let pal = map.palette();
     let fog = fog_color(0.0, weather.night_factor());
@@ -342,38 +361,10 @@ fn enter_mission(
         DespawnOnExit(AppState::Flying),
     ));
 
-    if map == MapId::Archipelago {
-        let water = water_mats.add(WaterMaterial {
-            params: WaterParams {
-                camera: Vec4::ZERO,
-                sun: Vec4::new(0.0, 1.0, 0.0, 0.0),
-                deep: Vec4::new(0.006, 0.028, 0.052, 1.0),
-                fog: Vec4::new(fog[0], fog[1], fog[2], HAZE),
-                // Fine waves survive ~1.7x farther out than the raw footprint
-                // LOD, so the sea keeps the detail of the near-surface renders.
-                tune: Vec4::new(0.6, 1.05, 1.1, 65.0),
-                cloud: cloud_params,
-                night: weather.night_factor(),
-            },
-            cloud_noise: cloud.noise.clone(),
-        });
-        commands.spawn((
-            Mesh3d(meshes.add(Plane3d::default().mesh().size(WATER_SIZE, WATER_SIZE))),
-            MeshMaterial3d(water.clone()),
-            // [`SEA_LEVEL_Y`]: well clear of the shoreline's z-fight band.
-            Transform::from_xyz(0.0, SEA_LEVEL_Y, 0.0),
-            DespawnOnExit(AppState::Flying),
-        ));
-        commands.insert_resource(MapHandles {
-            terrain: Some(material),
-            water: Some(water),
-        });
-    } else {
-        commands.insert_resource(MapHandles {
-            terrain: Some(material),
-            water: None,
-        });
-    }
+    commands.insert_resource(MapHandles {
+        terrain: Some(material),
+        water: None,
+    });
 
     let (el, az) = map.sun();
     pose.rot = (-el, az);
@@ -438,7 +429,7 @@ fn vec4_rgb(rgb: [f32; 3]) -> Vec4 {
 
 /// Linear-light horizon colour for the current weather, matching
 /// `sky_color` in `cloud_sky.wesl` so haze and sky meet seamlessly.
-fn fog_color(rain: f32, night: f32) -> [f32; 3] {
+pub fn fog_color(rain: f32, night: f32) -> [f32; 3] {
     let horizon = Vec3::new(0.55, 0.70, 0.87);
     let l = 0.299 * horizon.x + 0.587 * horizon.y + 0.114 * horizon.z;
     let grey = Vec3::new(l * 0.96, l, l * 1.04);
@@ -454,7 +445,7 @@ fn fog_color(rain: f32, night: f32) -> [f32; 3] {
 /// Ground height (metres above sea level) at world x/z.
 pub fn ground_height(map: MapId, x: f32, z: f32) -> f32 {
     match map {
-        MapId::Archipelago => archipelago_height(x, z),
+        MapId::Archipelago => crate::island::ground_height(x, z),
         MapId::Alpine => alpine_height(x, z),
         MapId::Glacial => {
             let base = glacial_height(x, z);
@@ -532,29 +523,6 @@ fn glacial_peak(x: f32, z: f32, base: f32) -> f32 {
     (glacial_summit() - base) * (1.0 - skirt) + peak_only * skirt
 }
 
-/// Scattered islands over open sea: a domain-warped continent field decides
-/// where land exists, ridged noise builds volcanic interiors, and everything
-/// under the sea is pushed into a shelf.
-fn archipelago_height(x: f32, z: f32) -> f32 {
-    let (wx, wz) = warp(x, z, 0.00016, 3_200.0, 1011);
-    let cont = fbm(wx * 0.00006, wz * 0.00006, 4, 2021);
-    let r = ((x * x + z * z).sqrt() / ARENA_HALF).clamp(0.0, 1.0);
-    // The main landmass sits near the spawn; the edges open into empty sea.
-    let central = (1.0 - r).powi(2) * 0.16;
-    let land = smoothstep(0.51, 0.60, cont + central);
-
-    let ridge = ridged(wx * 0.00030, wz * 0.00030, 5, 3031);
-    // A second, tighter ridge set gives the volcanic flanks their spines.
-    let crags = ridged(wx * 0.00070, wz * 0.00070, 4, 3121);
-    let hills = fbm(wx * 0.0011, wz * 0.0011, 3, 4041);
-    let fine = fbm(x * 0.004, z * 0.004, 2, 5051);
-    let inland =
-        ridge * ridge * 760.0 + crags.powf(2.0) * 90.0 + hills * 90.0 + (fine - 0.5) * 12.0;
-    land * inland - (1.0 - land) * 55.0
-}
-
-/// Snow-capped massif over a high plateau: broad mass plus sharp ridged peaks,
-/// with a low-frequency valley term so the ridges are cut by passes.
 fn alpine_height(x: f32, z: f32) -> f32 {
     let (wx, wz) = warp(x, z, 0.00012, 3_600.0, 6067);
     let mass = fbm(wx * 0.00005, wz * 0.00005, 4, 7077);
