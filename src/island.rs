@@ -39,9 +39,6 @@ const WATER_SIZE: f32 = 140_000.0;
 const NOISE_SIZE: u32 = 512;
 /// Aerial haze density, 1/m.
 const HAZE: f32 = 0.000018;
-/// World height the sea plane sits at, a hair below the height field's zero
-/// so the shoreline edge leaves the shared depth band (see the water spawn).
-const SEA_LEVEL_Y: f32 = -0.3;
 /// Afternoon sun of the archipelago mission (35° up, north-west) — the lab's
 /// reworked angle, which rakes the ridges for longer shadows.
 const SUN_DIR: Vec3 = Vec3::new(-0.640, 0.420, 0.644);
@@ -330,12 +327,10 @@ pub fn build(
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(WATER_SIZE, WATER_SIZE))),
         MeshMaterial3d(water.clone()),
-        // 0.3 m below the height field's zero. The shoreline crosses y=0 with
-        // arbitrarily shallow slopes, so a plane at exactly 0 and the beach
-        // triangles there share a depth band; without desktop MSAA to average
-        // the edge, the boundary shimmers between sand and sea. The waves are
-        // shader normals, not mesh displacement, so nothing else moves.
-        Transform::from_xyz(0.0, SEA_LEVEL_Y, 0.0),
+        // Exactly the terrain lab's placement: y = 0, no offset. A -0.3 m
+        // drop was tried for the shoreline depth band and reverted — it only
+        // moved the near-coplanar band to the new waterline.
+        Transform::default(),
         DespawnOnExit(AppState::Flying),
     ));
 

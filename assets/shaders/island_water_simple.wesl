@@ -103,7 +103,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let H = normalize(L + V);
     let nh = max(dot(n, H), 0.0);
     let glitter = pow(nh, 420.0) * 3.0 + pow(nh, 48.0) * 0.12;
-    col += vec3<f32>(1.0, 0.86, 0.62) * glitter * u.sun.w * u.tune.z;
+    col += vec3<f32>(1.0, 0.86, 0.62) * glitter * (1.0 - 0.55 * u.sun.w) * u.tune.z;
 
     // Sparse, small whitecaps close to the camera only.
     let cap_n = textureSampleLevel(detail_tex, detail_samp, p * 0.040 + vec2<f32>(t * 0.010, t * 0.006), 1.0).b;

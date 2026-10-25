@@ -911,7 +911,15 @@ fn setup_scene(mut commands: Commands) {
         // >1 hot core glows — the sky and the sunlit airframe stay untouched.
         // The F-22's paint is matted at runtime (see `tame_airframe_materials`),
         // so the remaining intensity is a gentle halo, not a screen wash.
+        //
+        // Web build: neither. The HDR target + MSAA resolve + bloom chain is
+        // the one render-path difference left against the terrain lab (whose
+        // shoreline is clean), so the web flies the lab's plain sRGB pipeline
+        // while the boundary flicker hunt narrows. The exhaust keeps its
+        // emissive punch; only the glow halo is lost.
+        #[cfg(not(target_arch = "wasm32"))]
         Hdr,
+        #[cfg(not(target_arch = "wasm32"))]
         Bloom {
             intensity: 0.5,
             low_frequency_boost: 0.35,
