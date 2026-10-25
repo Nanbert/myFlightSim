@@ -49,6 +49,13 @@ const AHEAD: [f32; 3] = [700.0, 1_500.0, 2_500.0];
 const MISSION_KT: f64 = 420.0;
 /// Water plane is larger than the arena so its own edge stays beyond the haze.
 const WATER_SIZE: f32 = 140_000.0;
+/// World height the sea plane sits at. 0.3 m below the heightfield's zero:
+/// the shoreline crosses y=0 with arbitrarily shallow slopes, so a plane at
+/// exactly 0 and the beach triangles there fight over depth every frame —
+/// the coast flickered between sand and sea as the camera moved. 0.3 m is
+/// enough to clear the band without visibly moving the shoreline (3 m was
+/// tried and read as the sea climbing the beaches).
+pub const SEA_LEVEL_Y: f32 = -0.3;
 /// Resolution of the tileable detail texture the terrain shader uses.
 const NOISE_SIZE: u32 = 256;
 
@@ -353,14 +360,8 @@ fn enter_mission(
         commands.spawn((
             Mesh3d(meshes.add(Plane3d::default().mesh().size(WATER_SIZE, WATER_SIZE))),
             MeshMaterial3d(water.clone()),
-            // 0.3 m below the heightfield's zero: the shoreline crosses y=0
-            // with arbitrarily shallow slopes, so a plane at exactly 0 and the
-            // beach triangles there fight over depth every frame — the coast
-            // flickers between sand and sea as the camera moves. Dropping the
-            // sea clear of the band (the waves live in the shader's normals,
-            // not the mesh) silences the fight; the shoreline silhouette
-            // barely moves.
-            Transform::from_xyz(0.0, -0.3, 0.0),
+            // [`SEA_LEVEL_Y`]: well clear of the shoreline's z-fight band.
+            Transform::from_xyz(0.0, SEA_LEVEL_Y, 0.0),
             DespawnOnExit(AppState::Flying),
         ));
         commands.insert_resource(MapHandles {

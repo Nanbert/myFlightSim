@@ -893,9 +893,12 @@ fn setup_scene(mut commands: Commands) {
         // Keep the sky's authored colours (the default filmic tonemapper washes
         // the gradient toward grey).
         Tonemapping::None,
-        // Speed cue: `camera_feel` drives the shutter angle from airspeed. At
-        // rest it is 0 (no blur); the component stays put so the render pipeline
-        // never changes shape as the jet accelerates.
+        // Speed-cue motion blur is a desktop-only "feel": its ghosting drags
+        // the airframe's silhouette across the frame, and at the web build's
+        // lower frame rate the smear read as torn dark shapes hanging in the
+        // scene. `camera_feel`/`reset_camera_feel` take the component via
+        // `Option`, so its absence is already handled everywhere.
+        #[cfg(not(target_arch = "wasm32"))]
         MotionBlur {
             shutter_angle: 0.0,
             samples: 1,
