@@ -228,8 +228,19 @@ pub struct WaterMaterial {
 }
 
 impl Material for WaterMaterial {
+    /// The web build binds the simple wave variant: the dynamic shader's
+    /// ray-marched height field is what flickered there (the desktop runs the
+    /// full Seascape port). Both programs share the uniform block and the
+    /// binding layout of this struct, so the switch is a pure shader swap.
     fn fragment_shader() -> ShaderRef {
-        "shaders/island_water.wesl".into()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            "shaders/island_water.wesl".into()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            "shaders/island_water_simple.wesl".into()
+        }
     }
     fn enable_prepass() -> bool {
         false

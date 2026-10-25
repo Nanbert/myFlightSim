@@ -43,7 +43,7 @@
 The same attribution for each model is carried inside the file itself
 (`asset.extras` in the glTF JSON).
 
-## Shader — `assets/shaders/water.wesl`
+## Shader — `assets/shaders/island_water.wesl`
 
 - **Title:** Seascape
 - **Author:** Alexander Alekseev aka TDM (https://www.shadertoy.com/user/TDM)

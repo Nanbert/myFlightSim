@@ -48,7 +48,6 @@ const AHEAD: [f32; 3] = [700.0, 1_500.0, 2_500.0];
 /// Spawn cruise speed for every mission, knots.
 const MISSION_KT: f64 = 420.0;
 /// Water plane is larger than the arena so its own edge stays beyond the haze.
-const WATER_SIZE: f32 = 140_000.0;
 /// Resolution of the tileable detail texture the terrain shader uses.
 const NOISE_SIZE: u32 = 256;
 
@@ -197,7 +196,6 @@ pub struct ActiveMap(pub Option<MapId>);
 #[derive(Resource, Default)]
 struct MapHandles {
     terrain: Option<Handle<TerrainMaterial>>,
-    water: Option<Handle<WaterMaterial>>,
 }
 
 // --- shader parameters ------------------------------------------------------
@@ -242,36 +240,6 @@ struct TerrainMaterial {
 
 opaque_material!(TerrainMaterial, "shaders/terrain.wesl");
 
-#[derive(Clone, Copy, ShaderType, Default)]
-struct WaterParams {
-    /// xyz = camera position, w = time (s).
-    camera: Vec4,
-    /// xyz = direction toward the sun, w = rain (0..1).
-    sun: Vec4,
-    /// Deep-water colour.
-    deep: Vec4,
-    /// Haze colour.
-    fog: Vec4,
-    /// x = wave-LOD scale, y = swell gain, z = glitter gain, w = glitter exponent.
-    tune: Vec4,
-    /// x = cloud base, y = cloud top, z = coverage, w = wind (m/s).
-    cloud: Vec4,
-    /// Night factor (0 day .. 1 deep night); dims the sea like the sky does.
-    night: f32,
-}
-
-#[derive(Asset, TypePath, AsBindGroup, Clone)]
-struct WaterMaterial {
-    #[uniform(0)]
-    params: WaterParams,
-    /// The cloud volume, sampled upward along the sun to cast cloud shadows.
-    #[texture(1, dimension = "3d")]
-    #[sampler(2)]
-    #[dependency]
-    cloud_noise: Handle<Image>,
-}
-
-opaque_material!(WaterMaterial, "shaders/water.wesl");
 
 // --- plugin -----------------------------------------------------------------
 
@@ -279,10 +247,7 @@ pub struct MapPlugin;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((
-            MaterialPlugin::<TerrainMaterial>::default(),
-            MaterialPlugin::<WaterMaterial>::default(),
-        ))
+        app.add_plugins(MaterialPlugin::<TerrainMaterial>::default())
         .init_resource::<PendingMission>()
         .init_resource::<ActiveMap>()
         .init_resource::<MapHandles>()
@@ -302,7 +267,6 @@ fn enter_mission(
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut terrain_mats: ResMut<Assets<TerrainMaterial>>,
-    mut water_mats: ResMut<Assets<WaterMaterial>>,
     mut island_terrain_mats: ResMut<Assets<crate::island::TerrainMaterial>>,
     mut island_water_mats: ResMut<Assets<crate::island::WaterMaterial>>,
     mut island_handles: ResMut<crate::island::IslandHandles>,
@@ -369,7 +333,6 @@ fn enter_mission(
 
     commands.insert_resource(MapHandles {
         terrain: Some(material),
-        water: None,
     });
 
     let (el, az) = map.sun();
@@ -394,7 +357,6 @@ fn update_map_params(
     handles: Res<MapHandles>,
     cloud: Res<CloudField>,
     mut terrain_mats: ResMut<Assets<TerrainMaterial>>,
-    mut water_mats: ResMut<Assets<WaterMaterial>>,
 ) {
     let (Ok(cam), Ok(sun)) = (camera.single(), sun.single()) else {
         return;
@@ -415,15 +377,6 @@ fn update_map_params(
             // rules.w is the shader's previously unused fourth slot, now the
             // night factor: terrain sweeps to its navy night fill with it.
             mat.params.rules.w = night;
-            mat.params.cloud = cloud_params;
-        }
-    }
-    if let Some(handle) = &handles.water {
-        if let Some(mut mat) = water_mats.get_mut(handle) {
-            mat.params.camera = Vec4::new(pos.x, pos.y, pos.z, t);
-            mat.params.sun = Vec4::new(sun_dir.x, sun_dir.y, sun_dir.z, rain);
-            mat.params.fog = Vec4::new(fog[0], fog[1], fog[2], HAZE);
-            mat.params.night = night;
             mat.params.cloud = cloud_params;
         }
     }
