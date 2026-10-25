@@ -1581,6 +1581,7 @@ fn start_flight(
             Some(Lesson::JetTakeoff) => sim.reset_threshold(),
             Some(Lesson::JetLanding) => sim.reset_final_jet(),
             Some(Lesson::JetGoAround) => sim.reset_go_around_jet(),
+            Some(Lesson::JetRto) => sim.reset_threshold(),
             Some(Lesson::Landing) => sim.reset_final_c172(),
             None => sim.reset_ground(),
         }
@@ -1617,10 +1618,11 @@ fn start_flight(
             b.value = 0.67;
         }
     }
-    // The jet taxi lesson starts at idle with the parking brake holding her:
-    // the profile's 60% taxi throttle would have the 737 rolling before the
-    // first frame.
-    if matches!(active.0, Some(Lesson::JetTaxi)) {
+    // The jet taxi and RTO lessons start at idle with the parking brake
+    // holding her: the profile's 60% taxi throttle would have the 737
+    // rolling before the first frame — and the RTO's SETUP row grades the
+    // thrust the pilot sets himself.
+    if matches!(active.0, Some(Lesson::JetTaxi) | Some(Lesson::JetRto)) {
         if let Some(b) = controls
             .list
             .iter_mut()
@@ -1693,6 +1695,7 @@ fn dev_lesson() -> Option<Lesson> {
         "JETTAKEOFF" | "737TAKEOFF" => Some(Lesson::JetTakeoff),
         "JETLANDING" | "737LANDING" => Some(Lesson::JetLanding),
         "JETGOAROUND" | "737GA" => Some(Lesson::JetGoAround),
+        "JETRTO" | "737RTO" => Some(Lesson::JetRto),
         _ => None,
     }
 }

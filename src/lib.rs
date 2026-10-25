@@ -26,6 +26,7 @@ pub mod ils;
 pub mod input;
 pub mod jet_go_around;
 pub mod jet_landing_lesson;
+pub mod jet_rto;
 pub mod jet_takeoff_lesson;
 pub mod jet_taxi;
 pub mod lesson_flow;
@@ -122,6 +123,7 @@ pub fn run() {
         .add_plugins(jet_takeoff_lesson::JetTakeoffLessonPlugin)
         .add_plugins(jet_landing_lesson::JetLandingLessonPlugin)
         .add_plugins(jet_go_around::JetGoAroundLessonPlugin)
+        .add_plugins(jet_rto::JetRtoLessonPlugin)
         .add_plugins(landing_lesson::LandingLessonPlugin)
         .add_plugins(approach::ApproachPlugin)
         .add_plugins(hop::HopPlugin)

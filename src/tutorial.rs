@@ -534,6 +534,17 @@ fn b737() -> Vec<String> {
     p.line("  below 130 kt dirty. The card freezes at the capture; Enter");
     p.line("  re-arms and the next descent through the gate goes again.");
 
+    p.heading("M5 RTO - THE REJECTED TAKEOFF (GAME)");
+    p.line("  PLAY > M5 RTO lines you up on ZSNM's numbers, engines idling.");
+    p.line("  Set flaps 5 (F) and takeoff thrust, roll through the 80 KT");
+    p.line("  crosscheck - and at 100 kt the sim makes the call: STOP.");
+    p.line("  From that frame: throttles to idle at once (the REACT clock),");
+    p.line("  brakes (B), reverse (K) out early, and hold the centreline to");
+    p.line("  a full stop. The card grades the setup, the reaction, how far");
+    p.line("  past the call the roll ran, the call-to-stop clock, the");
+    p.line("  centreline and the buckets. Roll through V1 or fly the call to");
+    p.line("  a liftoff and the run fails. Enter re-arms on the runway.");
+
     p.heading("GAME CONTROLS (fixed keys)");
     fixed_wing_rows(&mut p, &b);
     p.row("Landing gear", toggle(&b, ToggleAction::Gear));

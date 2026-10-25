@@ -115,6 +115,7 @@ pub struct LessonMeters<'w> {
     pub jtk: ResMut<'w, crate::jet_takeoff_lesson::JetTakeoffMeter>,
     pub jll: ResMut<'w, crate::jet_landing_lesson::JetLandingMeter>,
     pub jga: ResMut<'w, crate::jet_go_around::JetGoAroundMeter>,
+    pub jrt: ResMut<'w, crate::jet_rto::JetRtoMeter>,
 }
 
 pub(crate) fn watch(
@@ -165,6 +166,7 @@ pub(crate) fn watch(
                 Lesson::JetTakeoff => meters.jtk.rearm(),
                 Lesson::JetLanding => meters.jll.rearm(),
                 Lesson::JetGoAround => meters.jga.rearm(),
+                Lesson::JetRto => meters.jrt.rearm(),
                 _ => meters.hs.settled = false,
             }
         }
@@ -331,6 +333,25 @@ pub(crate) fn watch(
                 return;
             }
             show_prompt(&mut prompt, meters.jga.live.clone());
+        }
+        return;
+    }
+    // --- the 737's M5: the RTO meter owns the triggers here, like the M2/M3
+    // pair before it. The stop freezes the card; Enter re-arms on the runway.
+    if matches!(lesson, Lesson::JetRto) {
+        if no_popup {
+            if let Some(reason) = meters.jrt.fail {
+                open_fail(&mut flow, &mut commands, reason);
+                return;
+            }
+            if meters.jrt.settled && meters.jrt.done.is_some() {
+                let body = meters.jrt.finals_text();
+                flow.kind = Some(Card::Grade);
+                commands.insert_resource(Paused);
+                spawn_popup(&mut commands, "RTO - GRADED", body, true);
+                return;
+            }
+            show_prompt(&mut prompt, meters.jrt.live.clone());
         }
         return;
     }

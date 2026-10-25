@@ -1259,6 +1259,78 @@ mod m4_probe {
 }
 
 #[cfg(test)]
+mod m5_probe {
+    use super::*;
+
+    /// The M5 RTO drill, headless: takeoff thrust from the numbers, the
+    /// scripted STOP call at 100 kt, then the quick pilot — idle at +0.5 s,
+    /// brakes at +1.0 s, reverse at +1.5 s (speedbrake with it). The stop
+    /// time and distance this probe finds are the STOP row's own budget;
+    /// the no-reverse run shows what the buckets are worth on the drill.
+    #[test]
+    fn the_rto_stops() {
+        std::env::set_var("FDM_BACKEND", "rust");
+        for reverse in [true, false] {
+            let mut sim = Sim::new("737");
+            sim.reset_threshold();
+            for _ in 0..120 {
+                sim.model.set("fcs/throttle-cmd-norm", 0.0);
+                sim.model.step();
+            }
+            sim.model.set("fcs/flap-cmd-norm", 5.0 / 40.0);
+            sim.model.set("fcs/flap-pos-norm", 5.0 / 40.0);
+            let dt = 1.0 / 120.0;
+            let mut t = 0.0f64;
+            let mut called_at: Option<f64> = None;
+            let mut peak = 0.0f64;
+            let mut dist = 0.0f64;
+            for _ in 0..120 * 180 {
+                let gs = sim.model.get("velocities/vg-fps") * FPS_TO_KT;
+                if called_at.is_none() && gs >= 100.0 {
+                    called_at = Some(t);
+                }
+                let call_t = called_at.unwrap_or(f64::INFINITY);
+                let throttle = if t >= call_t + 0.5 { 0.0 } else { 1.0 };
+                sim.model.set("fcs/throttle-cmd-norm", throttle);
+                let braking = called_at.is_some() && t >= call_t + 1.0;
+                let brake = if braking { 1.0 } else { 0.0 };
+                sim.model.set("fcs/left-brake-cmd-norm", brake);
+                sim.model.set("fcs/right-brake-cmd-norm", brake);
+                let rev = if reverse && t >= call_t + 1.5 { 1.0 } else { 0.0 };
+                sim.model.set("fcs/reverse-cmd-norm", rev);
+                if braking {
+                    sim.model.set("fcs/speedbrake-cmd-norm", 1.0);
+                }
+                sim.model.step();
+                t += dt;
+                let gs = sim.model.get("velocities/vg-fps") * FPS_TO_KT;
+                peak = peak.max(gs);
+                dist += gs * 0.5144 * dt;
+                if let Some(call) = called_at {
+                    if gs < 5.0 {
+                        eprintln!(
+                            "[rto reverse={reverse}] STOPPED t={:.1} (call+{:.1}) peak={peak:.1} dist={dist:.0} m",
+                            t,
+                            t - call
+                        );
+                        assert!(
+                            t - call <= 20.0,
+                            "the quick pilot stopped in time: call+{:.1}",
+                            t - call
+                        );
+                        assert!(
+                            peak <= 115.0,
+                            "the quick pilot held the peak: {peak}"
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod trim_probe {
     use super::*;
 
