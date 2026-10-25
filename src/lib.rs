@@ -41,6 +41,7 @@ pub mod mcp_ui;
 pub mod menu;
 pub mod menu_page;
 pub mod mission;
+pub mod panel_geom;
 pub mod pause;
 pub mod pfd;
 pub mod scoring;
