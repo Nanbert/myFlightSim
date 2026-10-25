@@ -10,7 +10,7 @@
 //!
 //! The land material paints a proper coastline (wet sand → beach → scrub →
 //! jungle → rock) with triplanar rock detail, height-field AO, height-field
-//! sun shadows and animated surf, driven by the tileable RGBA noise texture
+//! sun shadows, driven by the tileable RGBA noise texture
 //! the lab generates. Only the archipelago lives here — Alpine and Glacial
 //! stay on `map.rs`'s procedural fields.
 //!
@@ -34,6 +34,7 @@ use crate::weather::Weather;
 /// Half-width of the square arena, metres. The baked height field must agree.
 const ARENA_HALF: f32 = 48_000.0;
 /// Water plane is larger than the arena so its edge stays beyond the haze.
+#[cfg(not(target_arch = "wasm32"))]
 const WATER_SIZE: f32 = 140_000.0;
 /// Resolution of the tileable RGBA detail texture.
 const NOISE_SIZE: u32 = 512;
@@ -191,6 +192,7 @@ pub struct WaterParams {
     night: f32,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl WaterParams {
     fn new(fog: Vec4) -> Self {
         Self {
@@ -228,19 +230,14 @@ pub struct WaterMaterial {
 }
 
 impl Material for WaterMaterial {
-    /// The web build binds the simple wave variant: the dynamic shader's
-    /// ray-marched height field is what flickered there (the desktop runs the
-    /// full Seascape port). Both programs share the uniform block and the
-    /// binding layout of this struct, so the switch is a pure shader swap.
+    /// Desktop keeps the 823a025 full Seascape pass with every water effect.
+    /// The web build deliberately does not spawn a water plane at all: the
+    /// f4a26be shader it used to bind referenced `u.night` without declaring
+    /// the field, so the program never compiled and the stable "sea" users
+    /// saw was the terrain's painted seabed. Keeping that path avoids both the
+    /// shader failure and the web-only shoreline shimmer.
     fn fragment_shader() -> ShaderRef {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            "shaders/island_water.wesl".into()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            "shaders/island_water_simple.wesl".into()
-        }
+        "shaders/island_water.wesl".into()
     }
     fn enable_prepass() -> bool {
         false
@@ -311,32 +308,46 @@ pub fn build(
         DespawnOnExit(AppState::Flying),
     ));
 
-    let water = water_mats.add(WaterMaterial {
-        params: {
-            let mut p = WaterParams::new(fog);
-            // The water shader reads the haze density from fog.w.
-            p.fog.w = HAZE;
-            p.cloud = cloud;
-            p.night = weather.night_factor();
-            p
-        },
-        noise,
-        height,
-        cloud_noise,
-    });
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(WATER_SIZE, WATER_SIZE))),
-        MeshMaterial3d(water.clone()),
-        // Exactly the terrain lab's placement: y = 0, no offset. A -0.3 m
-        // drop was tried for the shoreline depth band and reverted — it only
-        // moved the near-coplanar band to the new waterline.
-        Transform::default(),
-        DespawnOnExit(AppState::Flying),
-    ));
+    #[cfg(not(target_arch = "wasm32"))]
+    let water = {
+        let water = water_mats.add(WaterMaterial {
+            params: {
+                let mut p = WaterParams::new(fog);
+                // The water shader reads the haze density from fog.w.
+                p.fog.w = HAZE;
+                p.cloud = cloud;
+                p.night = weather.night_factor();
+                p
+            },
+            noise,
+            height,
+            cloud_noise,
+        });
+        commands.spawn((
+            Mesh3d(meshes.add(Plane3d::default().mesh().size(WATER_SIZE, WATER_SIZE))),
+            MeshMaterial3d(water.clone()),
+            // Exactly the terrain lab's placement: y = 0, no offset. A -0.3 m
+            // drop was tried for the shoreline depth band and reverted — it only
+            // moved the near-coplanar band to the new waterline.
+            Transform::default(),
+            DespawnOnExit(AppState::Flying),
+        ));
+        Some(water)
+    };
+
+    // Web: no water pass. The f4a26be shader this used to bind never compiled
+    // (it read `u.night` without declaring it), so the stable web sea has
+    // always been the terrain shader's painted seabed. Keep that instead of
+    // resurrecting a fragile transparent surface on WebGL2.
+    #[cfg(target_arch = "wasm32")]
+    let water = {
+        let _ = (&noise, &height, water_mats, cloud_noise, cloud);
+        None
+    };
 
     *handles = IslandHandles {
         terrain: Some(terrain),
-        water: Some(water),
+        water,
     };
 }
 
