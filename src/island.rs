@@ -34,7 +34,6 @@ use crate::weather::Weather;
 /// Half-width of the square arena, metres. The baked height field must agree.
 const ARENA_HALF: f32 = 48_000.0;
 /// Water plane is larger than the arena so its edge stays beyond the haze.
-#[cfg(not(target_arch = "wasm32"))]
 const WATER_SIZE: f32 = 140_000.0;
 /// Resolution of the tileable RGBA detail texture.
 const NOISE_SIZE: u32 = 512;
@@ -192,7 +191,6 @@ pub struct WaterParams {
     night: f32,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl WaterParams {
     fn new(fog: Vec4) -> Self {
         Self {
@@ -230,14 +228,19 @@ pub struct WaterMaterial {
 }
 
 impl Material for WaterMaterial {
-    /// Desktop keeps the 823a025 full Seascape pass with every water effect.
-    /// The web build deliberately does not spawn a water plane at all: the
-    /// f4a26be shader it used to bind referenced `u.night` without declaring
-    /// the field, so the program never compiled and the stable "sea" users
-    /// saw was the terrain's painted seabed. Keeping that path avoids both the
-    /// shader failure and the web-only shoreline shimmer.
+    /// Desktop keeps the 823a025 full Seascape pass. The web build binds a
+    /// small, WebGL2-safe program: 2D height texture, analytic swells, no
+    /// ray-march, no 3D texture, no foam. Both programs share this material's
+    /// uniform block and bindings.
     fn fragment_shader() -> ShaderRef {
-        "shaders/island_water.wesl".into()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            "shaders/island_water.wesl".into()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            "shaders/island_water_web.wesl".into()
+        }
     }
     fn enable_prepass() -> bool {
         false
@@ -308,46 +311,32 @@ pub fn build(
         DespawnOnExit(AppState::Flying),
     ));
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let water = {
-        let water = water_mats.add(WaterMaterial {
-            params: {
-                let mut p = WaterParams::new(fog);
-                // The water shader reads the haze density from fog.w.
-                p.fog.w = HAZE;
-                p.cloud = cloud;
-                p.night = weather.night_factor();
-                p
-            },
-            noise,
-            height,
-            cloud_noise,
-        });
-        commands.spawn((
-            Mesh3d(meshes.add(Plane3d::default().mesh().size(WATER_SIZE, WATER_SIZE))),
-            MeshMaterial3d(water.clone()),
-            // Exactly the terrain lab's placement: y = 0, no offset. A -0.3 m
-            // drop was tried for the shoreline depth band and reverted — it only
-            // moved the near-coplanar band to the new waterline.
-            Transform::default(),
-            DespawnOnExit(AppState::Flying),
-        ));
-        Some(water)
-    };
-
-    // Web: no water pass. The f4a26be shader this used to bind never compiled
-    // (it read `u.night` without declaring it), so the stable web sea has
-    // always been the terrain shader's painted seabed. Keep that instead of
-    // resurrecting a fragile transparent surface on WebGL2.
-    #[cfg(target_arch = "wasm32")]
-    let water = {
-        let _ = (&noise, &height, water_mats, cloud_noise, cloud);
-        None
-    };
+    let water = water_mats.add(WaterMaterial {
+        params: {
+            let mut p = WaterParams::new(fog);
+            // The water shader reads the haze density from fog.w.
+            p.fog.w = HAZE;
+            p.cloud = cloud;
+            p.night = weather.night_factor();
+            p
+        },
+        noise,
+        height,
+        cloud_noise,
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(WATER_SIZE, WATER_SIZE))),
+        MeshMaterial3d(water.clone()),
+        // Exactly the terrain lab's placement: y = 0, no offset. A -0.3 m
+        // drop was tried for the shoreline depth band and reverted — it only
+        // moved the near-coplanar band to the new waterline.
+        Transform::default(),
+        DespawnOnExit(AppState::Flying),
+    ));
 
     *handles = IslandHandles {
         terrain: Some(terrain),
-        water,
+        water: Some(water),
     };
 }
 
@@ -443,9 +432,9 @@ fn terrain_mesh_and_height_image() -> (Mesh, Image) {
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_indices(Indices::U32(indices));
 
-    let mut data = Vec::with_capacity(hs.len() * 4);
+    let mut data = Vec::with_capacity(hs.len() * 2);
     for h in hs {
-        data.extend_from_slice(&h.to_le_bytes());
+        data.extend_from_slice(&f32_to_f16(*h).to_le_bytes());
     }
     let mut image = Image::new_uninit(
         Extent3d {
@@ -454,7 +443,10 @@ fn terrain_mesh_and_height_image() -> (Mesh, Image) {
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        TextureFormat::R32Float,
+        // R16Float is filterable in core WebGL2; R32Float needs
+        // OES_texture_float_linear, which is exactly what made the old web
+        // water path fragile.
+        TextureFormat::R16Float,
         RenderAssetUsages::RENDER_WORLD,
     );
     image.data = Some(data);
@@ -468,6 +460,67 @@ fn terrain_mesh_and_height_image() -> (Mesh, Image) {
     });
 
     (mesh, image)
+}
+
+// --- height texture encoding -------------------------------------------------
+
+/// Round-to-nearest-even conversion to IEEE 754 binary16. Heights are in
+/// `-55..3090`, so the half range is plenty; near the shoreline the ~6e-5 m
+/// step is far finer than the 80 m terrain grid.
+fn f32_to_f16(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 0xff) as i32;
+    let mant = bits & 0x007f_ffff;
+
+    if exp == 0xff {
+        // Preserve NaN-ness; none of the baked heights are inf/NaN.
+        let payload = if mant == 0 { 0 } else { 0x0200 };
+        return sign | 0x7c00 | payload;
+    }
+    if exp == 0 {
+        // f32 subnormal (common only for heights within a hair of sea level).
+        if mant == 0 {
+            return sign;
+        }
+        let mut m = mant;
+        let mut unbiased = -126;
+        while m & 0x0080_0000 == 0 {
+            m <<= 1;
+            unbiased -= 1;
+        }
+        return encode_f16(sign, m & 0x007f_ffff, unbiased);
+    }
+    encode_f16(sign, mant, exp - 127)
+}
+
+fn encode_f16(sign: u16, mant: u32, unbiased: i32) -> u16 {
+    if unbiased > 15 {
+        return sign | 0x7c00;
+    }
+    let e = unbiased + 15;
+    if e <= 0 {
+        // Subnormal binary16. `shift` is 14 at e=0 (2^-15) and grows as the
+        // value gets smaller.
+        let shift = 14 - e;
+        if shift >= 32 {
+            return sign;
+        }
+        let m = 0x0080_0000 | mant;
+        let mut half = (m >> shift) as u16;
+        let rem = m & ((1u32 << shift) - 1);
+        let halfway = 1u32 << (shift - 1);
+        if rem > halfway || (rem == halfway && (half & 1) != 0) {
+            half += 1;
+        }
+        return sign | half;
+    }
+    let mut half = ((e as u16) << 10) | ((mant >> 13) as u16);
+    let rem = mant & 0x1fff;
+    if rem > 0x1000 || (rem == 0x1000 && (half & 1) != 0) {
+        half += 1;
+    }
+    sign | half
 }
 
 // --- tileable detail texture -------------------------------------------------
@@ -655,5 +708,19 @@ mod tests {
         }
         assert!(sea > samples / 10, "expected open sea, got {sea}/{samples}");
         assert!(high > samples / 50, "expected islands, got {high}/{samples}");
+    }
+
+    #[test]
+    fn f16_encoding_has_expected_bits_and_precision() {
+        assert_eq!(f32_to_f16(0.0), 0x0000);
+        assert_eq!(f32_to_f16(-0.0), 0x8000);
+        assert_eq!(f32_to_f16(0.5), 0x3800);
+        assert_eq!(f32_to_f16(1.0), 0x3c00);
+        assert_eq!(f32_to_f16(-2.0), 0xc000);
+        assert_eq!(f32_to_f16(0.1), 0x2e66);
+        assert_eq!(f32_to_f16(65_504.0), 0x7bff);
+        assert_eq!(f32_to_f16(65_536.0), 0x7c00);
+        assert_eq!(f32_to_f16(2.0f32.powi(-14)), 0x0400); // smallest normal
+        assert_eq!(f32_to_f16(2.0f32.powi(-15)), 0x0200); // subnormal
     }
 }

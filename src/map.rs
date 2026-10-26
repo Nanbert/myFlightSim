@@ -193,6 +193,10 @@ pub struct PendingMission(pub Option<MapId>);
 #[derive(Resource, Default)]
 pub struct ActiveMap(pub Option<MapId>);
 
+/// Ordering hook for systems that need the mission's map/terrain to exist.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct EnterMissionSet;
+
 #[derive(Resource, Default)]
 struct MapHandles {
     terrain: Option<Handle<TerrainMaterial>>,
@@ -252,7 +256,10 @@ impl Plugin for MapPlugin {
         .init_resource::<ActiveMap>()
         .init_resource::<MapHandles>()
         .init_resource::<SunPose>()
-        .add_systems(OnEnter(AppState::Flying), enter_mission.after(StartFlight))
+        .add_systems(
+            OnEnter(AppState::Flying),
+            enter_mission.after(StartFlight).in_set(EnterMissionSet),
+        )
         .add_systems(OnExit(AppState::Flying), leave_mission)
         .add_systems(Update, update_map_params.run_if(unpaused));
     }
@@ -387,7 +394,7 @@ fn vec4_rgb(rgb: [f32; 3]) -> Vec4 {
 }
 
 /// Linear-light horizon colour for the current weather, matching
-/// `sky_color` in `cloud_sky.wesl` so haze and sky meet seamlessly.
+/// `sky_color` in `sky.wesl` so haze and sky meet seamlessly.
 pub fn fog_color(rain: f32, night: f32) -> [f32; 3] {
     let horizon = Vec3::new(0.55, 0.70, 0.87);
     let l = 0.299 * horizon.x + 0.587 * horizon.y + 0.114 * horizon.z;

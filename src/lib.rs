@@ -13,6 +13,11 @@ pub mod assist;
 pub mod autopilot;
 pub mod checklist;
 pub mod cloud_camera;
+// Volumetric clouds need a custom `Core3d` pass, a 3D density texture and an
+// HDR target; the web build keeps the card clouds (`clouds.rs`) instead.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cloud_volume;
+pub mod clouds;
 pub mod cockpit;
 pub mod combat;
 pub mod config;
@@ -147,6 +152,7 @@ pub fn run() {
         // `start_flight` just launched. (A separate call: Bevy's plugin tuples
         // top out at 15.)
         .add_plugins(map::MapPlugin)
+        .add_plugins(clouds::CloudPlugin)
         .add_plugins(island::IslandPlugin)
         .add_plugins(statue::StatuePlugin)
         .add_plugins(cockpit::CockpitPlugin)
