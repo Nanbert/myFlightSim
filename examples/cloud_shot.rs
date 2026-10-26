@@ -86,6 +86,13 @@ fn main() {
     } else {
         0.0
     };
+    // NIGHT=1 dusk, NIGHT=2 deep night (indexes `NIGHT_FACTORS`); 0 keeps the
+    // day sky so the two presets compare against the same harness.
+    let night = std::env::var("NIGHT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(2);
     let poses = parse_poses();
 
     let mut app = App::new();
@@ -100,6 +107,7 @@ fn main() {
     .insert_resource(WinitSettings::continuous())
     .insert_resource(weather::Weather {
         rain,
+        time_level: night,
         ..Default::default()
     })
     .add_plugins(sky::SkyPlugin)
