@@ -573,6 +573,9 @@ pub struct AircraftState {
     pub master_on: bool,
     /// Engine making power (`propulsion/engine[0]/running`).
     pub engine_running: bool,
+    /// Prop/engine shaft speed (`propulsion/engine[0]/engine-rpm`); 0 on
+    /// backends without the property. Drives the prop-loop crossfade.
+    pub engine_rpm: f64,
 }
 
 /// The two most recent *fixed-step* poses. The FDM advances at 120 Hz while the
@@ -805,6 +808,7 @@ pub(crate) fn publish_state(
         fuel_capacity_lb: m.get("propulsion/tank-capacity-lbs"),
         master_on: m.get("propulsion/ignition-enable") > 0.5,
         engine_running: m.get("propulsion/engine[0]/running") > 0.5,
+        engine_rpm: m.get("propulsion/engine[0]/engine-rpm"),
     };
 }
 

@@ -22,6 +22,7 @@ pub mod cockpit;
 pub mod combat;
 pub mod config;
 pub mod controls;
+pub mod engine_audio;
 pub mod fx;
 pub mod g_strain;
 pub mod gauge;
@@ -161,6 +162,7 @@ pub fn run() {
         ))
         // Separate call: Bevy's plugin tuples top out at 15.
         .add_plugins(ui_audio::UiAudioPlugin)
+        .add_plugins(engine_audio::EngineAudioPlugin)
         .add_plugins(mcp_guide::McpGuidePlugin)
         .add_plugins(mcp_panel::McpPanelPlugin)
         .add_plugins(pedestal_ui::PedestalUiPlugin)
