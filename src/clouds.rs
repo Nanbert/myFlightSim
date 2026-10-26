@@ -503,6 +503,7 @@ fn update_cloud_card_params(
 
 fn update_cloud_fog(
     camera: Query<&GlobalTransform, (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>)>,
+    weather: Res<Weather>,
     mut fog: ResMut<ActiveCloudFog>,
     mut overlay: Query<&mut BackgroundColor, With<CloudFogOverlay>>,
 ) {
@@ -521,9 +522,23 @@ fn update_cloud_fog(
     let altitude_fade = 1.0 - smoothstep(fog.top_y - 300.0, fog.top_y + 500.0, pos.y);
     let strength = ((density * 1.35).clamp(0.0, 0.82) * altitude_fade).clamp(0.0, 0.82);
     fog.strength = strength;
+    let tint = veil_tint(weather.night_factor());
     for mut bg in &mut overlay {
-        bg.0 = Color::srgba(0.82, 0.86, 0.90, strength);
+        bg.0 = tint.with_alpha(strength);
     }
+}
+
+/// The in-cloud veil's colour by night factor: a bright bluish white by day —
+/// that is what a sunlit deck looks like from inside — sweeping to a dark
+/// blue-grey at night, the same tone the cloud cards themselves take (see
+/// `cloud_card.wesl`'s night sweep). A white veil at night would glow like
+/// snow, so the veil darkens with the deck.
+fn veil_tint(night: f32) -> Color {
+    const DAY: Vec3 = Vec3::new(0.82, 0.86, 0.90);
+    const NIGHT: Vec3 = Vec3::new(0.13, 0.14, 0.16);
+    let t = night.clamp(0.0, 1.0);
+    let c = DAY.lerp(NIGHT, t);
+    Color::srgb(c.x, c.y, c.z)
 }
 
 fn cloud_texture() -> Image {
@@ -630,5 +645,27 @@ mod tests {
         let image = cloud_texture();
         let data = image.data.as_ref().expect("cloud texture data");
         assert_eq!(data.len(), (CLOUD_TEX * CLOUD_TEX * 4) as usize);
+    }
+
+    #[test]
+    fn the_veil_darkens_with_the_night() {
+        // Day keeps the sunlit white; night sweeps to the cloud cards' dark
+        // blue-grey, so an in-cloud veil never glows like snow after dark.
+        let day = veil_tint(0.0);
+        let night = veil_tint(1.0);
+        let mid = veil_tint(0.5);
+        let lum = |c: Color| {
+            let s = c.to_srgba();
+            0.2126 * s.red + 0.7152 * s.green + 0.0722 * s.blue
+        };
+        assert!(lum(day) > 0.8, "day veil is bright white, {day:?}");
+        assert!(lum(night) < 0.2, "night veil is dark grey, {night:?}");
+        assert!(
+            lum(mid) < lum(day) && lum(mid) > lum(night),
+            "the sweep is monotonic between the two"
+        );
+        // Out-of-range night factors clamp rather than overshoot the sweep.
+        assert_eq!(veil_tint(2.0), night);
+        assert_eq!(veil_tint(-1.0), day);
     }
 }
