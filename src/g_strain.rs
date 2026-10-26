@@ -10,7 +10,16 @@
 //! The strain is smoothed with a fast attack and a slower recovery, so a
 //! momentary spike does not flicker the overlay and the grey takes a moment to
 //! clear after the pull is released.
+//!
+//! Over-G also has a voice. A real pilot does not pant — panting lowers G
+//! tolerance — they fly the AGSM: a tense, held body and a forced "hook"
+//! exhale every few seconds. This module plays exactly that, gated on the same
+//! smoothed strain as the grey-out: a strained exhale above ~7 G (interval
+//! shrinking as the pull deepens) and one deep recovery inhale when the pull is
+//! released. The clips are pre-rendered one-shots (no loop), so repetitions
+//! never read as a tape.
 
+use bevy::audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
@@ -30,6 +39,23 @@ const OVER_G_DELAY: f32 = 0.8;
 /// Grey-out onset / recovery time constants (s).
 const ATTACK_TAU: f32 = 0.18;
 const RECOVER_TAU: f32 = 0.9;
+
+/// Breathing: first exhale once the displayed strain passes ~7 G, and the
+/// recovery inhale once it falls back below `INHALE_STRAIN`.
+const EXHALE_STRAIN: f32 = 0.25;
+const INHALE_STRAIN: f32 = 0.05;
+/// Wait this long after the pull starts before the first strained exhale.
+const EXHALE_FIRST_S: f32 = 0.2;
+/// Exhale cadence at the onset of strain and at full tunnel, seconds. The
+/// interval tightens with strain, and a small deterministic jitter keeps the
+/// rhythm from sounding metronomic.
+const EXHALE_BASE_S: f32 = 3.4;
+const EXHALE_TIGHTEN_S: f32 = 0.8;
+/// Mix gains (sources are mastered to -20 LUFS; these sit under the airflow).
+const EXHALE_VOLUME: f32 = 0.40;
+const INHALE_VOLUME: f32 = 0.40;
+/// A recovery inhale is a once-per-unload event, not a machine gun.
+const INHALE_COOLDOWN_S: f32 = 1.0;
 
 #[derive(Clone, Copy, ShaderType, Default)]
 struct GStrainParams {
@@ -55,6 +81,22 @@ struct GStrainOverlay;
 #[derive(Component)]
 struct OverGCaution;
 
+/// The AGSM breath clips and their cadence state.
+#[derive(Resource)]
+struct BreathSfx {
+    exhale: Handle<AudioSource>,
+    inhale: Handle<AudioSource>,
+    /// Seconds until the next exhale while the pull is held; 0 means idle.
+    exhale_in: f32,
+    /// The pull went deep enough that releasing it owes a recovery breath.
+    strained: bool,
+    inhale_cd: f32,
+    /// LCG state for the exhale-interval jitter (no `rand` dependency).
+    seed: u32,
+    /// One diagnostic print per flight: proves the breath chain armed.
+    logged: bool,
+}
+
 #[derive(Resource, Default)]
 struct Strain {
     /// Smoothed display value, 0..1.
@@ -74,9 +116,22 @@ impl Plugin for GStrainPlugin {
             ..default()
         })
         .add_plugins(UiMaterialPlugin::<GStrainMaterial>::default())
-            .add_systems(Startup, spawn_overlay)
+            .add_systems(Startup, (spawn_overlay, setup_breath_sfx))
             .add_systems(Update, update_strain);
     }
+}
+
+/// Load the three AGSM breath one-shots once.
+fn setup_breath_sfx(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.insert_resource(BreathSfx {
+        exhale: assets.load("audio/f22/breath_exhale.wav"),
+        inhale: assets.load("audio/f22/breath_inhale.wav"),
+        exhale_in: 0.0,
+        strained: false,
+        inhale_cd: 0.0,
+        seed: 0x5eed_1e55,
+        logged: false,
+    });
 }
 
 fn spawn_overlay(mut commands: Commands, mut materials: ResMut<Assets<GStrainMaterial>>) {
@@ -119,10 +174,12 @@ fn spawn_overlay(mut commands: Commands, mut materials: ResMut<Assets<GStrainMat
 }
 
 fn update_strain(
+    mut commands: Commands,
     time: Res<Time>,
     app_state: Res<State<AppState>>,
     state: Res<AircraftState>,
     mut strain: ResMut<Strain>,
+    breath: Option<ResMut<BreathSfx>>,
     mut materials: ResMut<Assets<GStrainMaterial>>,
     overlays: Query<(&MaterialNode<GStrainMaterial>, &mut Node), With<GStrainOverlay>>,
     mut caution: Query<&mut Visibility, With<OverGCaution>>,
@@ -182,6 +239,87 @@ fn update_strain(
             *vis = want;
         }
     }
+
+    if let Some(mut breath) = breath {
+        breathe(
+            &mut commands,
+            &mut breath,
+            dt,
+            flying,
+            strain.shown,
+            target,
+        );
+    }
+}
+
+/// Drive the AGSM breath cadence from the same smoothed strain the grey-out
+/// uses. Both sounds are one-shots: a loop would read as a tape within
+/// seconds, and a breath is naturally intermittent anyway.
+fn breathe(
+    commands: &mut Commands,
+    sfx: &mut BreathSfx,
+    dt: f32,
+    flying: bool,
+    strain: f32,
+    // The unsmoothed strain target: the inhale must land on the *release*,
+    // not two seconds later after the grey has slowly cleared.
+    target: f32,
+) {
+    if !flying {
+        sfx.exhale_in = 0.0;
+        sfx.strained = false;
+        sfx.inhale_cd = 0.0;
+        sfx.logged = false;
+        return;
+    }
+    sfx.inhale_cd = (sfx.inhale_cd - dt).max(0.0);
+
+    // Hook breaths: one shortly after the pull starts, then every few seconds,
+    // tighter as the tunnel closes in.
+    if strain > EXHALE_STRAIN {
+        if sfx.exhale_in <= 0.0 {
+            sfx.exhale_in = EXHALE_FIRST_S;
+        }
+        sfx.exhale_in -= dt;
+        if sfx.exhale_in <= 0.0 {
+            play_breath(commands, &sfx.exhale, EXHALE_VOLUME);
+            if !sfx.logged {
+                sfx.logged = true;
+                info!("g audio: first hook breath at strain={strain:.2}");
+            }
+            let base = EXHALE_BASE_S - EXHALE_TIGHTEN_S * strain;
+            sfx.exhale_in = base + 0.6 * jitter(&mut sfx.seed);
+        }
+    } else {
+        sfx.exhale_in = 0.0;
+    }
+
+    // Recovery inhale: only after a real pull, and only once the grey has
+    // mostly cleared, so it lands on the release rather than on the pull.
+    if target > 0.3 {
+        sfx.strained = true;
+    }
+    if sfx.strained && target < INHALE_STRAIN && sfx.inhale_cd <= 0.0 {
+        play_breath(commands, &sfx.inhale, INHALE_VOLUME);
+        sfx.strained = false;
+        sfx.inhale_cd = INHALE_COOLDOWN_S;
+    }
+}
+
+/// Spawn one breath one-shot; it despawns itself, and leaving the flight takes
+/// any tail with it.
+fn play_breath(commands: &mut Commands, handle: &Handle<AudioSource>, volume: f32) {
+    commands.spawn((
+        AudioPlayer::new(handle.clone()),
+        PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)),
+        DespawnOnExit(AppState::Flying),
+    ));
+}
+
+/// Deterministic -1..1 jitter for the exhale interval.
+fn jitter(seed: &mut u32) -> f32 {
+    *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+    (*seed >> 8) as f32 / 16_777_216.0 - 1.0
 }
 
 /// Smooth onset: nothing below `ONSET_G`, full tunnel at `FULL_G`.
@@ -193,6 +331,24 @@ fn strain_target(g: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exhale_tightens_with_strain() {
+        let at_onset = EXHALE_BASE_S - EXHALE_TIGHTEN_S * EXHALE_STRAIN;
+        let at_tunnel = EXHALE_BASE_S - EXHALE_TIGHTEN_S;
+        assert!(at_onset > 2.5, "onset cadence {at_onset} too fast");
+        assert!(at_tunnel > 2.0, "full-tunnel cadence {at_tunnel} too fast");
+        assert!(at_tunnel < at_onset, "cadence must tighten with strain");
+    }
+
+    #[test]
+    fn exhale_jitter_stays_within_its_band() {
+        let mut seed = 1u32;
+        for _ in 0..200 {
+            let j = jitter(&mut seed);
+            assert!((-1.0..=1.0).contains(&j), "jitter {j} escaped");
+        }
+    }
 
     #[test]
     fn strain_starts_at_six_g_and_saturates() {
