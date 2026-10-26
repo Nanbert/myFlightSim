@@ -7,6 +7,12 @@
 //!
 //! Run: `cargo run --features shots --example ah64_cockpit_shot`
 //! Open `/tmp/opencode/ah64_cockpit_bevy.png`.
+//!
+//! Eye calibration knobs (matching `src/view.rs`'s game defaults): the
+//! camera starts 0.42 m above the authored origin, pitched 10° down, 65°
+//! FOV — the same pose the in-game cockpit view rests at. `AH64_EYE_Y`
+//! (metres), `AH64_PITCH` (degrees, positive up), `AH64_FOV` (degrees) and
+//! `AH64_OUT` (file name) override them for dialling in a new eye height.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::{Camera, ClearColorConfig, RenderTarget};
@@ -73,7 +79,11 @@ fn setup(
     ));
 
     // Camera at the pilot's eye, looking down the nose (+Z). Bevy cameras look
-    // down -Z, hence the 180° yaw.
+    // down -Z, hence the 180° yaw. Eye height/pitch/FOV overridable for eye
+    // calibration: AH64_EYE_Y=m, AH64_PITCH=deg (positive up), AH64_FOV=deg.
+    let eye_y = std::env::var("AH64_EYE_Y").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+    let pitch = std::env::var("AH64_PITCH").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+    let fov = std::env::var("AH64_FOV").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(65.0);
     commands.spawn((
         Camera3d::default(),
         Camera {
@@ -82,13 +92,16 @@ fn setup(
         },
         RenderTarget::Image(target.into()),
         Projection::Perspective(PerspectiveProjection {
-            fov: 55_f32.to_radians(),
+            fov: fov.to_radians(),
             near: 0.01,
             far: 20_000.0,
             ..default()
         }),
         bevy::core_pipeline::tonemapping::Tonemapping::None,
-        Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
+        Transform::from_xyz(0.0, eye_y, 0.0).with_rotation(
+            Quat::from_rotation_y(std::f32::consts::PI)
+                * Quat::from_rotation_x(pitch.to_radians()),
+        ),
     ));
 
     // A neutral outdoor environment outside the canopy.
@@ -150,10 +163,12 @@ fn shot(
 ) {
     frames.0 += 1;
     if frames.0 == 480 {
+        let out = std::env::var("AH64_OUT")
+            .unwrap_or_else(|_| "ah64_cockpit_bevy.png".to_string());
         commands
             .spawn(Screenshot::image(target.0.clone()))
-            .observe(save_to_disk("/tmp/opencode/ah64_cockpit_bevy.png"));
-        info!("screenshot -> /tmp/opencode/ah64_cockpit_bevy.png");
+            .observe(save_to_disk(format!("/tmp/opencode/{out}")));
+        info!("screenshot -> /tmp/opencode/{out}");
     }
     if frames.0 >= 560 {
         exit.write(AppExit::Success);

@@ -182,12 +182,14 @@ fn cockpit_spec(name: &str) -> Option<ModelSpec> {
             drop: 0.0,
             offset: [0.0, 1.05, -2.0],
             yaw: std::f32::consts::PI,
-            // Eye 0.18 m above the authored origin: enough to see the
-            // windscreen/skylights without craning, while the MPDs stay in
-            // view when looking down.
-            eye: Some([0.0, 0.18, 0.0]),
+            // Eye 0.42 m above the authored origin, resting gaze 10° down:
+            // the windscreen then frames the horizon in its upper half and
+            // the MPDs stay readable along the bottom edge. At the old 0.18
+            // the panel filled three quarters of the frame and the flat
+            // windows needed craning up to see anything outside.
+            eye: Some([0.0, 0.42, 0.0]),
             eye_yaw: 0.0,
-            eye_pitch: -5.0_f32.to_radians(),
+            eye_pitch: -10.0_f32.to_radians(),
         }),
         // `drop` lowers the 737 section so the eye sits ~2.9 m above the runway.
         "737" | "b737" => Some(ModelSpec {

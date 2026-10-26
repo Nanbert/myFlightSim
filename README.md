@@ -459,7 +459,8 @@ ah1s = 1
 - `cargo run --features shots --example ah64_cockpit_shot` —— 在引擎里加载 AH-64D 座舱 GLB，
   用固定 1600×900 的离屏相机渲染一张主视角图（窗口只负责事件循环，画面写到
   `/tmp/opencode/ah64_cockpit_bevy.png`）。用来核对材质、透明座舱玻璃和发光 MPD
-  在 Bevy 里的实际观感。
+  在 Bevy 里的实际观感。调眼位用 `AH64_EYE_Y`（米）/`AH64_PITCH`（度）/`AH64_FOV`
+  （度）/`AH64_OUT`（文件名）覆盖，默认与游戏内座舱静息视角一致。
 - `cargo run --features shots --example ah64_cockpit_view` —— **实时环视** AH-64D 座舱：右键拖拽
   转头，`WASD` 平移，`E`/`Q` 升降，`1`–`6` 预设视角，`R` 回眼点，`F5` 重新加载
   GLB，`G` 隐藏/显示座舱玻璃，`P` 截图，`Esc` 退出。
