@@ -1554,10 +1554,13 @@ fn dim_lights(
             Color::srgb(1.0, 0.90, 0.82),
         ),
         _ => (
-            -0.95, // moonlight from high up
+            -0.95, // moonlight from high up — the "blue night" cheat, not
+                   // real moon lux: ~6% of daylight key so the airframe
+                   // keeps form shading, ambient high enough that no face
+                   // bottoms out black (dark albedos would read as a blob)
             Color::srgb(0.62, 0.72, 0.95),
-            80.0,
-            30.0,
+            500.0,
+            90.0,
             Color::srgb(0.60, 0.68, 1.0),
         ),
     };
