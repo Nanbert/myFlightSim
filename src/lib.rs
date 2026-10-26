@@ -66,6 +66,7 @@ pub mod takeoff;
 pub mod takeoff_lesson;
 pub mod taxi;
 pub mod tutorial;
+pub mod ui_audio;
 pub mod ui_theme;
 pub mod vapor;
 pub mod view;
@@ -158,6 +159,8 @@ pub fn run() {
             lens::LensPlugin,
             menu::MenuPlugin,
         ))
+        // Separate call: Bevy's plugin tuples top out at 15.
+        .add_plugins(ui_audio::UiAudioPlugin)
         .add_plugins(mcp_guide::McpGuidePlugin)
         .add_plugins(mcp_panel::McpPanelPlugin)
         .add_plugins(pedestal_ui::PedestalUiPlugin)

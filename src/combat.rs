@@ -557,7 +557,9 @@ fn launch_tone_wav() -> Vec<u8> {
 }
 
 /// Minimal 16-bit mono PCM WAV container, which Bevy's `wav` feature decodes.
-fn wav_bytes(samples: &[i16]) -> Vec<u8> {
+/// Shared with `ui_audio`, whose menu blips use the same self-contained
+/// synthesis approach.
+pub(crate) fn wav_bytes(samples: &[i16]) -> Vec<u8> {
     let data_len = (samples.len() * 2) as u32;
     let mut out = Vec::with_capacity(44 + data_len as usize);
     out.extend_from_slice(b"RIFF");

@@ -23,6 +23,7 @@ use crate::menu_page::{self, PageLine};
 use crate::mission::{Lesson, PendingLesson};
 use crate::sim::{RenderPose, Sim};
 use crate::tutorial;
+use crate::ui_audio::{UiSfx, UiSfxEvent, UiSfxKind};
 use crate::ui_theme;
 use crate::view::spawn_model_child;
 use crate::weather::Weather;
@@ -338,6 +339,7 @@ impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<AppState>()
             .init_resource::<MenuSelection>()
+            .init_resource::<MenuSfxPrev>()
             .init_resource::<MenuCamLook>()
             .init_resource::<SettingsState>()
             .init_resource::<AircraftSettings>()
@@ -372,7 +374,11 @@ impl Plugin for MenuPlugin {
             .add_systems(
                 Update,
                 (
-                    menu_input.run_if(in_state(AppState::Menu)),
+                    // The sfx diff trails `menu_input` in the same chain: one
+                    // frame's input lands in `MenuSelection`, the diff sees it.
+                    (menu_input, menu_sfx_diff)
+                        .chain()
+                        .run_if(in_state(AppState::Menu)),
                     // `update_menu_ui` writes the row model, `render_page_lines`
                     // paints it — chained so one frame's state reaches both.
                     (update_menu_ui, menu_page::render_page_lines)
@@ -381,7 +387,13 @@ impl Plugin for MenuPlugin {
                     auto_open_page.run_if(in_state(AppState::Menu)),
                     menu_camera.run_if(in_state(AppState::Menu)),
                 ),
-            );
+            )
+            // Re-entering the menu (e.g. after a flight) would diff against a
+            // stale snapshot and blip for nothing; re-arm silently instead.
+            .add_systems(OnEnter(AppState::Menu), menu_sfx_rearm)
+            // The launch moment itself: the menu's last word is the confirm
+            // blip, played unscoped so it survives the state switch.
+            .add_systems(OnExit(AppState::Menu), menu_sfx_launch);
     }
 }
 
@@ -1202,6 +1214,72 @@ fn page_text(page: Page, _sel: &MenuSelection) -> String {
         | Page::Missions
         | Page::Submenu
         | Page::Exit => String::new(),
+    }
+}
+
+/// The diff system's last-seen selection, shared so [`menu_sfx_rearm`] can
+/// clear it when the menu is re-entered.
+#[derive(Resource, Default)]
+struct MenuSfxPrev(Option<MenuSelSnap>);
+#[derive(Clone, Copy, PartialEq)]
+struct MenuSelSnap {
+    top: usize,
+    sub: usize,
+    page: Option<Page>,
+    depth: usize,
+}
+
+impl From<&MenuSelection> for MenuSelSnap {
+    fn from(sel: &MenuSelection) -> Self {
+        Self {
+            top: sel.top,
+            sub: sel.sub,
+            page: sel.current_page().copied(),
+            depth: sel.page_stack.len(),
+        }
+    }
+}
+
+/// Turn selection movement into menu blips without touching `menu_input`'s
+/// branches: any state change means the cursor moved (hover), the page stack
+/// grew (Enter opened a card) or shrank (Escape closed one). No-ops — a clamped
+/// arrow at the list edge, holding a key — change nothing and stay silent.
+fn menu_sfx_diff(
+    sel: Res<MenuSelection>,
+    mut prev: ResMut<MenuSfxPrev>,
+    mut events: MessageWriter<UiSfxEvent>,
+) {
+    let cur = MenuSelSnap::from(&*sel);
+    let Some(old) = prev.0 else {
+        // First frame / re-entry: snapshot silently instead of blipping.
+        prev.0 = Some(cur);
+        return;
+    };
+    let kind = if cur.depth > old.depth {
+        Some(UiSfxKind::Select)
+    } else if cur.depth < old.depth {
+        Some(UiSfxKind::Back)
+    } else if cur != old {
+        Some(UiSfxKind::Hover)
+    } else {
+        None
+    };
+    if let Some(kind) = kind {
+        events.write(UiSfxEvent(kind));
+    }
+    prev.0 = Some(cur);
+}
+
+/// Clear the sfx snapshot so re-entering the menu doesn't diff against a
+/// stale selection from the last visit.
+fn menu_sfx_rearm(mut prev: ResMut<MenuSfxPrev>) {
+    prev.0 = None;
+}
+
+/// The flight-launch blip: the menu's last word as it hands over to `Flying`.
+fn menu_sfx_launch(mut commands: Commands, sfx: Option<Res<UiSfx>>) {
+    if let Some(sfx) = sfx {
+        crate::ui_audio::play(&mut commands, &sfx, UiSfxKind::Confirm);
     }
 }
 
