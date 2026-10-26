@@ -1300,6 +1300,7 @@ fn menu_input(
     mut pending: ResMut<PendingMission>,
     mut lesson_pending: ResMut<PendingLesson>,
     sink: Res<ConfigSink>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     let enter = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
     let esc = keys.just_pressed(KeyCode::Escape);
@@ -1656,10 +1657,16 @@ fn menu_input(
             }
             Page::Exit => {
                 if enter {
-                    // Web builds have no process to exit — killing the page's
-                    // main loop just traps the tab — so only the desktop quits.
-                    #[cfg(not(target_arch = "wasm32"))]
-                    std::process::exit(0);
+                    // Route through Bevy's `AppExit` rather than
+                    // `std::process::exit(0)`: the latter runs while the winit
+                    // loop, wgpu, the cpal audio thread and the C++ JSBSim
+                    // globals are all still live, so it skips Rust drops and
+                    // tears the app down out of order — the process segfaulted
+                    // on exit. `AppExit::Success` lets `App::run()` return,
+                    // which drops every resource in Rust order and reports a
+                    // clean exit code. Web builds take the same path: the
+                    // message stops the loop without trapping the tab.
+                    exit.write(AppExit::Success);
                 }
                 if esc {
                     sel.close_card();
