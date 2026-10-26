@@ -3638,6 +3638,35 @@ mod heli_arcade_tests {
     }
 
     #[test]
+    fn heli_arcade_forward_cyclic_flies_a_cruise_leg() {
+        // Balance mode makes the cyclic a velocity command: full forward stick
+        // accelerates to the cruise band along the nose (psi 0 = due north),
+        // and releasing it settles back into a hands-free hover.
+        let mut m = parked_heli();
+        m.set("fcs/heli-hover-enable", 1.0);
+        for _ in 0..120 * 8 {
+            m.step();
+        }
+        assert!(m.get("gear/wow") < 0.5, "should be in a hover first");
+
+        m.set("fcs/elevator-cmd-norm", 1.0);
+        for _ in 0..120 * 10 {
+            m.step();
+        }
+        let cruise = m.get("velocities/vg-fps") / KT_TO_FPS;
+        assert!(cruise > 35.0, "should cruise forward, got {cruise} kt");
+        let north = m.get("position/lat-gc-deg");
+        assert!(north > 0.001, "should have moved north, got {north} deg");
+
+        m.set("fcs/elevator-cmd-norm", 0.0);
+        for _ in 0..120 * 8 {
+            m.step();
+        }
+        let stop = m.get("velocities/vg-fps") / KT_TO_FPS;
+        assert!(stop < 5.0, "should settle back to a hover, got {stop} kt");
+    }
+
+    #[test]
     fn heli_arcade_auto_balance_levels_after_a_bank() {
         let mut m = parked_heli();
         m.set("ic/vc-kts", 0.0);

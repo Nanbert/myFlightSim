@@ -97,6 +97,8 @@ trunk build --release --no-default-features  # 发布：dist/ 即静态站点目
 | `Space` | 直升机悬停配平（AH-64D 真实模式） | — |
 | `J` | AH-64D 街机：自动悬停 / 垂直起降 / 降落 | `fcs/heli-hover-enable` |
 | `B` | AH-64D 街机：自动平衡（松杆回平） | `fcs/heli-balance-enable` |
+| `S` / `W` | AH-64D 街机（自动平衡开）：前进 / 后退速度指令——全杆前推 ≈47 kt，松杆回停悬停 | `fcs/elevator-cmd-norm` |
+| `D` / `A` | AH-64D 街机（自动平衡开）：右 / 左侧移（≈24 kt），悬停横挪用 | `fcs/aileron-cmd-norm` |
 | `G` | 切换自动驾驶（仅 737） | — |
 | `U` | 起落架收放（F-22 / 737） | `gear/gear-cmd-norm` |
 | `J` | 推力矢量开关（仅 F-22） | `fcs/tvc-enable` |

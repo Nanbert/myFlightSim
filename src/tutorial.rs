@@ -400,8 +400,11 @@ fn ah64() -> Vec<String> {
     p.line("     lift off; the rotor needs a moment to build thrust.");
     p.line("  2. Press Space to solve a hands-free hover. The trim keeps the");
     p.line("     current airspeed, so at a stop it is a hover trim.");
-    p.line("  3. Move with the cyclic: tap S to lower the nose and");
-    p.line("     accelerate, W to raise it and slow down. Use small inputs.");
+    p.line("  3. Move with the cyclic. Arcade + auto balance: holding S");
+    p.line("     commands forward speed along the nose (full stick is");
+    p.line("     about 47 kt) and releasing it settles back to a hover;");
+    p.line("     D/A sidestep left and right. Realistic: tap S to lower");
+    p.line("     the nose and accelerate, W to raise it and slow down.");
     p.line("  4. Steer with Q/E. Add collective (Shift) to climb and reduce");
     p.line("     it (Ctrl) to descend. Press Space again after a stable");
     p.line("     change to re-trim.");
