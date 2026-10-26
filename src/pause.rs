@@ -42,7 +42,9 @@ impl Plugin for PausePlugin {
             // Development hook: `PAUSE=1` boots the flight paused (with the
             // dialog up), so a screenshot pass can inspect the card without
             // driving keys.
-            .add_systems(OnEnter(AppState::Flying), dev_pause);
+            // After `start_flight`: the card names the lesson being retried, and
+            // `ActiveLesson` is only final by the end of the StartFlight set.
+            .add_systems(OnEnter(AppState::Flying), dev_pause.after(crate::sim::StartFlight));
     }
 }
 

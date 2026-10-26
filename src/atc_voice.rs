@@ -179,6 +179,10 @@ fn play_for_active_lesson(
         commands.spawn((
             AudioPlayer::new(handle.clone()),
             PlaybackSettings::DESPAWN.with_volume(Volume::Linear(VOICE_VOLUME)),
+            // A callout is part of the flight, not the menu: leaving mid-call
+            // (Esc → Enter is one keystroke away, and the M1 clearance runs 17 s)
+            // must not leave the controller talking over the hangar.
+            DespawnOnExit(AppState::Flying),
         ));
     }
 }
@@ -195,6 +199,7 @@ fn play_atc_voice_event(
             commands.spawn((
                 AudioPlayer::new(handle.clone()),
                 PlaybackSettings::DESPAWN.with_volume(Volume::Linear(VOICE_VOLUME)),
+                DespawnOnExit(AppState::Flying),
             ));
         }
     }

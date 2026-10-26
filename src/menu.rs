@@ -1720,10 +1720,28 @@ fn menu_input(
     }
 }
 
-/// Fly the selected aircraft: rebuild the FDM only if the aircraft changed,
-/// then seat the spawn — a plain PLAY/FREE FLY parks on the runway, a lesson
-/// mission moves to its own state (stand / threshold / final), each with the
-/// engine plan the lesson prescribes.
+/// Build the flight model for `id` — always from scratch, never by reusing the
+/// one the last flight left behind.
+///
+/// Reuse is the tempting optimisation and it is wrong: the model carries state
+/// no `Sim::reset_*` seat clears. Tanks stay part-empty from the last cruise,
+/// the speedbrake handle stays where it was left, thrust reverse stays
+/// commanded, the engine keeps its shutdown/ignition state and the trims keep
+/// their offsets. The symptom is a lesson that "starts wrong" only after a
+/// *different* flight (free fly → M1, or RETRY after a failed approach), and it
+/// disappears whenever the aircraft actually changes, because that path rebuilt
+/// the model. So the model is rebuilt on every flight; `start_flight` then
+/// seats it, which is cheap next to the frame it saves.
+///
+/// Missions always rebuild on the Rust engine, where the arcade dynamics they
+/// fly actually exist.
+fn seat_flight(slot: &mut Sim, id: &str, mission: bool) {
+    *slot = if mission { Sim::new_arcade(id) } else { Sim::new(id) };
+}
+
+/// Fly the selected aircraft: build a fresh FDM, then seat the spawn — a plain
+/// PLAY/FREE FLY parks on the runway, a lesson mission moves to its own state
+/// (stand / threshold / final), each with the engine plan the lesson prescribes.
 fn start_flight(
     mut sim: ResMut<Sim>,
     mut ap: ResMut<Autopilot>,
@@ -1748,14 +1766,9 @@ fn start_flight(
         .filter(|_| mission.is_none());
     *active = crate::mission::ActiveLesson(lesson);
     // Map missions fly the arcade F-22, airborne; every other entry uses the
-    // selected aircraft. Missions always rebuild on the Rust engine, where
-    // arcade dynamics exist.
+    // selected aircraft.
     let id = mission.map_or_else(|| sel.aircraft_id(), |_| "f22");
-    if mission.is_some() {
-        *sim = Sim::new_arcade(id);
-    } else if sim.name != id {
-        *sim = Sim::new(id);
-    }
+    seat_flight(&mut sim, id, mission.is_some());
     // The cold-start plan is the mission's, not a global setting: M1 starts
     // cold and dark, everything else runs. A fresh FDM starts with the flag
     // unset, so only the cold lessons need this.
@@ -1938,6 +1951,52 @@ fn menu_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The regression behind "the lesson starts wrong": re-flying the *same*
+    /// aircraft reused the previous flight's FDM, so whatever that flight left
+    /// behind — boards out, reverse commanded, tanks drawn down — was still
+    /// there when the next lesson's first frame ran. Every flight now builds a
+    /// fresh model, which is what this pins down.
+    #[test]
+    fn reselecting_the_same_aircraft_gets_a_clean_model() {
+        let mut slot = Sim::new("737");
+        slot.model.set("fcs/speedbrake-cmd-norm", 1.0);
+        slot.model.set("fcs/reverse-cmd-norm", 1.0);
+        for _ in 0..240 {
+            slot.model.step();
+        }
+        assert!(slot.model.get("fcs/speedbrake-cmd-norm") > 0.5, "boards set");
+        assert!(
+            slot.model.get("fcs/speedbrake-pos-norm") > 0.5,
+            "boards travelled to their stop"
+        );
+        assert!(slot.model.get("fcs/reverse-cmd-norm") > 0.5, "reverse set");
+
+        seat_flight(&mut slot, "737", false);
+        // The M1 seat, exactly as `start_flight` runs it.
+        slot.set_engine_cold(false);
+        slot.reset_stand();
+
+        assert_eq!(slot.model.get("fcs/speedbrake-cmd-norm"), 0.0);
+        assert_eq!(slot.model.get("fcs/speedbrake-pos-norm"), 0.0);
+        assert_eq!(slot.model.get("fcs/reverse-cmd-norm"), 0.0);
+        assert_eq!(slot.model.get("fcs/reverse-pos-norm"), 0.0);
+        // Seated at the stand, on the wheels, at rest — not still rolling out
+        // from wherever the last flight ended.
+        assert!(slot.model.get("gear/wow") > 0.5, "on the wheels");
+        // The parked airframe still sways a touch on its gear springs right after
+        // the settle (~1 ft/s), so "at rest" means "not rolling out", not "0.0".
+        assert!(
+            slot.model.get("velocities/vg-fps").abs() < 3.0,
+            "at rest, not rolling out of the last flight"
+        );
+        // Tanks come back full: the previous flight's burn is not this
+        // flight's fuel plan.
+        assert_eq!(
+            slot.model.get("propulsion/tank-0-contents-lbs"),
+            slot.model.get("propulsion/tank-capacity-lbs"),
+        );
+    }
 
     #[test]
     fn the_f22_offers_free_fly_missions_and_combat_settings_while_other_aircraft_keep_play() {
