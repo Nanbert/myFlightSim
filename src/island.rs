@@ -122,6 +122,9 @@ pub struct TerrainParams {
     rules: Vec4,
     /// x = cloud coverage, y = wind, z = shadow strength, w = surf strength.
     cloud: Vec4,
+    /// The sky's cloud deck: x = base, y = top, z = coverage, w = wind (m/s).
+    /// Drives the fly-through whiteout, matching the sea's veil.
+    deck: Vec4,
 }
 
 impl TerrainParams {
@@ -138,6 +141,10 @@ impl TerrainParams {
             rules: Vec4::new(500.0, 0.0, HAZE, 0.0),
             // coverage / wind / shadow strength / surf strength.
             cloud: Vec4::new(0.34, 1.0, 0.55, 1.0),
+            // No deck until the per-frame update fills it in: a zero deck
+            // keeps the whiteout's altitude gate closed (a no-op), never a
+            // spurious white flash on the first frame.
+            deck: Vec4::ZERO,
         }
     }
 }
@@ -156,6 +163,13 @@ pub struct TerrainMaterial {
     #[sampler(4)]
     #[dependency]
     height: Handle<Image>,
+    /// The sky's 3D weather field, for the fly-through whiteout: the sea's
+    /// shader has one, and without the same veil here the islands stayed
+    /// crisp while the water around them dissolved into the deck.
+    #[texture(5, dimension = "3d")]
+    #[sampler(6)]
+    #[dependency]
+    cloud_noise: Handle<Image>,
 }
 
 impl Material for TerrainMaterial {
@@ -309,9 +323,13 @@ pub fn build(
     let fog = Vec4::new(f3[0], f3[1], f3[2], 0.0);
 
     let terrain = terrain_mats.add(TerrainMaterial {
-        params: TerrainParams::new(fog),
+        params: TerrainParams {
+            deck: cloud,
+            ..TerrainParams::new(fog)
+        },
         noise: noise.clone(),
         height: height.clone(),
+        cloud_noise: cloud_noise.clone(),
     });
     commands.spawn((
         Mesh3d(meshes.add(mesh)),
@@ -374,6 +392,15 @@ fn update_params(
             mat.params.camera = Vec4::new(pos.x, pos.y, pos.z, t);
             mat.params.sun.w = rain;
             mat.params.rules.w = night;
+            // The deck rides the sky's field, exactly like the water's —
+            // the terrain's whiteout has to gate on the same layer the
+            // aircraft is flying through.
+            mat.params.deck = Vec4::new(
+                cloud.base,
+                cloud.top,
+                crate::sky::coverage_for(rain),
+                cloud.wind,
+            );
         }
     }
     if let Some(handle) = &handles.water {

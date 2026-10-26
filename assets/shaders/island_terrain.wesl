@@ -27,6 +27,8 @@ struct TerrainParams {
     rules: vec4<f32>,
     // x = cloud coverage, y = wind, z = shadow strength, w = surf strength
     cloud: vec4<f32>,
+    // The sky's cloud deck: x = base, y = top, z = coverage, w = wind (m/s).
+    deck: vec4<f32>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> u: TerrainParams;
@@ -34,8 +36,54 @@ struct TerrainParams {
 @group(constants::MATERIAL_BIND_GROUP) @binding(2) var detail_samp: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(3) var height_tex: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(4) var height_samp: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(5) var cloud_noise: texture_3d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(6) var cloud_samp: sampler;
 
 const ARENA_HALF: f32 = 48000.0;
+
+/// Whiteout when the camera is inside the layer — the same fly-through
+/// integral the sea shader runs, ported so the islands dissolve into the
+/// deck exactly when the water around them does. Without it the land stayed
+/// crisp behind the cloud the aircraft is flying through. Five taps over the
+/// first ~560 m of the view ray; the altitude gate makes it free while the
+/// aircraft is clear of the layer.
+fn cam_veil(rd: vec3<f32>) -> f32 {
+    if (u.camera.y < u.deck.x - 200.0 || u.camera.y > u.deck.y + 200.0) {
+        return 0.0;
+    }
+    var tau = 0.0;
+    var walk = 0.0;
+    var seg = 10.0;
+    for (var i = 0; i < 5; i = i + 1) {
+        let p = u.camera.xyz + rd * walk;
+        let q = p + vec3<f32>(u.camera.w * u.deck.w, 0.0, u.camera.w * u.deck.w * 0.35);
+        let a = textureSampleLevel(cloud_noise, cloud_samp, q / 18000.0, 0.0).r;
+        let b = textureSampleLevel(
+            cloud_noise,
+            cloud_samp,
+            q / 5000.0 + vec3<f32>(0.53, 0.19, 0.91),
+            0.0,
+        ).r;
+        let threshold = mix(0.72, 0.30, u.deck.z);
+        let cover = smoothstep(threshold - 0.06, threshold + 0.06, a * 0.55 + b * 0.45);
+
+        let h = clamp((p.y - u.deck.x) / (u.deck.y - u.deck.x), 0.0, 1.0);
+        let raw = textureSampleLevel(
+            cloud_noise,
+            cloud_samp,
+            vec3<f32>(q.x / 2600.0, q.y / 780.0, q.z / 2600.0),
+            0.0,
+        ).r;
+        let billow = 1.0 - abs(raw * 2.0 - 1.0);
+        let body = smoothstep(0.45, 0.70, mix(raw, billow, 0.5));
+        let prof = smoothstep(0.0, 0.06, h) * (1.0 - smoothstep(0.85, 1.0, h));
+
+        tau += cover * body * prof * seg * 0.0045;
+        walk += seg;
+        seg *= 2.4;
+    }
+    return 1.0 - exp(-tau);
+}
 
 /// Bilinear height sample from the arena height field.
 fn terrain_height(xz: vec2<f32>) -> f32 {
@@ -302,6 +350,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let alt_fade = clamp(1.0 - (u.camera.y - 600.0) / 14000.0, 0.55, 1.0);
     let haze = 1.0 - exp(-dist * u.rules.z * height_fade * alt_fade);
     col = mix(col, u.fog.rgb, clamp(haze, 0.0, 1.0));
+
+    // Fly-through whiteout, applied last so the ground dissolves into the
+    // cloud rather than into the horizon fog — the same veil and the same
+    // white the sea shader mixes toward.
+    let veil = cam_veil((p - u.camera.xyz) / max(dist, 1e-4));
+    col = mix(col, vec3<f32>(0.90, 0.94, 1.0) * (1.0 - 0.22 * u.sun.w), veil * 0.85);
 
     // 8-bit dither against banding in the big gradients.
     let dither = fract(sin(dot(p.xz, vec2<f32>(12.9898, 78.233))) * 43758.5453) - 0.5;
