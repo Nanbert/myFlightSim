@@ -17,11 +17,12 @@ use bevy::prelude::*;
 use bevy::text::FontSize;
 
 use crate::aircraft_profile::ToggleAction;
-use crate::app_state::{unpaused, AppState};
+use crate::app_state::{flying, unpaused, AppState, Paused};
 use crate::config::{AmmoSetting, CombatConfig, GameConfig};
 use crate::input::Bindings;
-use crate::map::ActiveMap;
+use crate::map::{ActiveMap, ARENA_HALF, MapId, ground_height};
 use crate::sim::{AircraftState, Sim};
+use crate::ui_theme;
 use crate::view::{model_to_body, AircraftRoot};
 
 /// The IR lock envelope: the target must sit inside this cone and range.
@@ -76,21 +77,37 @@ const SMOKE_LIFE_S: f32 = 1.6;
 const FLAME_LEN: f32 = 2.6;
 
 const BANDIT_HP: i32 = 8;
-/// Target drones: a lazy orbit (~1.7 G) instead of the 5 G fighter turn v1 had,
-/// so the lock cone is flyable and a gun pass is possible.
+/// Target drones: every bandit is the same red airframe, wandering on a lazy
+/// random walk (~1.7 G turns) leashed to its anchor, so the lock cone stays
+/// flyable and a gun pass is possible.
 const DRONE_SPEED: f32 = 180.0;
-const DRONE_RADIUS: f32 = 1800.0;
-/// Escorts chase the player at ~3 G. They are faster than the jet's cruise so
-/// they can close, but a boosted F-22 can still run away.
-const ESCORT_SPEED: f32 = 260.0;
-const ESCORT_TURN_RAD_S: f32 = 0.14;
-const ESCORT_FIRE_RANGE: f32 = 2600.0;
-const ESCORT_FIRE_CONE_DEG: f32 = 18.0;
-const ESCORT_FIRE_CD_S: f32 = 6.0;
-/// The settings page can put up to ten bandits in a wave; one is always the
-/// escort, the rest orbit as drones.
+/// The wander's leash: how far a drone roams from its anchor, metres.
+const LEASH_M: f32 = 1800.0;
+/// Turn rate of the wander, rad/s — the old orbit's ~1.7 G.
+const TURN_RAD_S: f32 = 0.1;
+/// Seconds between random heading rolls.
+const WANDER_ROLL_S: (f32, f32) = (3.0, 7.0);
+/// The wander's climb slope band: lazy altitude changes, never a dive.
+const WANDER_CLIMB: f32 = 0.12;
+/// How far above its anchor a drone may wander, metres.
+const WANDER_CEIL_M: f32 = 300.0;
+/// Bandits seat above the terrain at spawn and keep a floor while they
+/// wander: the leash area has to clear the highest ground it roams over,
+/// or drones hide inside the mountain and can only be found on the TSD.
+const FLOOR_M: f32 = 200.0;
+/// Ground samples around a drone's leash circle when seating it. The
+/// highest crossing governs; 8 catches every ridge it can straddle.
+const RING_SAMPLES: usize = 8;
+/// Bandits seat this far inside the mission boundary, metres: a leash parked
+/// across the circle would put half its roam where the jet cannot follow.
+const BOUNDARY_SEAT_M: f32 = 500.0;
+/// Every drone shoots from the tail, on its own cooldown: the missile warning
+/// is the first thing the player hears about the drone behind the jet.
+const FIRE_RANGE_M: f32 = 2600.0;
+const FIRE_CONE_DEG: f32 = 18.0;
+const FIRE_CD_S: f32 = 6.0;
+/// The settings page can put up to ten drones in a wave.
 const MAX_ENEMIES: usize = 10;
-const WAVE_DELAY_S: f32 = 4.0;
 
 /// Incoming IR missile: slower and less agile than the player's AIM-9, so a
 /// hard break or a flare can defeat it.
@@ -120,6 +137,16 @@ const RADAR_RADIUS_PX: f32 = 88.0;
 const RADAR_CENTRE_PX: f32 = 95.0;
 /// One dot per possible bandit in a wave.
 const RADAR_DOTS: usize = MAX_ENEMIES;
+
+/// The mission boundary: the arena's inscribed circle, radius 48 km. Beyond
+/// it the mission fails; the mesh square's four corners legitimately poke
+/// past the ring and are unreachable.
+const BOUNDARY_R_M: f32 = ARENA_HALF;
+/// Dashes tracing the boundary circle on the TSD.
+const BOUNDARY_DOTS: usize = 72;
+/// A boundary warning shows on the TSD readout this close to the ring,
+/// metres — useful while a low range setting keeps the circle off-scope.
+const BOUNDARY_WARN_M: f32 = 10_000.0;
 
 /// Door travel rate (fraction of full travel per second): 0.3 s to open.
 const BAY_RATE: f32 = 3.4;
@@ -164,7 +191,7 @@ pub struct Combat {
     pub bvr: i32,
     pub rounds: i32,
     pub flares: i32,
-    /// The menu's loadout, applied at spawn and after a respawn.
+    /// The menu's loadout, applied at spawn and on a mission retry.
     settings: CombatConfig,
     /// Infinite stores never decrement (the HUD shows a full block).
     missiles_inf: bool,
@@ -183,10 +210,9 @@ pub struct Combat {
     gun_cd: f32,
     /// Eased bay-door travel, 0 closed … 1 open.
     bay: f32,
-    /// Countdown to the next wave, or 0 when a wave is alive.
-    respawn: f32,
-    /// "Shot down / respawned" banner timer, seconds.
-    down: f32,
+    /// The wave was destroyed and success was recorded. Enter's free flight
+    /// must not win the mission a second time; a later crash still fails.
+    wave_done: bool,
 }
 
 impl Default for Combat {
@@ -211,11 +237,66 @@ impl Default for Combat {
             radar_range_m: RADAR_RANGES_M[1],
             gun_cd: 0.0,
             bay: 0.0,
-            respawn: 0.0,
-            down: 0.0,
+            wave_done: false,
         }
     }
 }
+
+/// How a finished mission ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Outcome {
+    /// The wave is destroyed: the mission is won.
+    Success,
+    /// The jet flew into terrain or the sea.
+    Terrain,
+    /// The jet left the arena's boundary circle.
+    Boundary,
+    /// A drone's missile connected: the jet is destroyed.
+    ShotDown,
+}
+
+impl Outcome {
+    /// The card's reason line.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Outcome::Success => "All bandits destroyed.",
+            Outcome::Terrain => "You flew into the terrain.",
+            Outcome::Boundary => "You left the mission area.",
+            Outcome::ShotDown => "You were shot down.",
+        }
+    }
+
+    /// The card title and its colour: success in the accent, a failure in
+    /// warning amber.
+    pub fn title(self) -> (&'static str, Color) {
+        match self {
+            Outcome::Success => ("MISSION SUCCESS", ui_theme::accent()),
+            Outcome::Terrain | Outcome::Boundary | Outcome::ShotDown => {
+                ("MISSION FAILED", ui_theme::amber())
+            }
+        }
+    }
+}
+
+/// Set when the mission is over, however it ended. While it exists the combat
+/// loop freezes (see [`combat_runnable`]); the card's keys answer to it
+/// (Enter/R/Esc) and `pause` stands aside, so Esc never opens the pause
+/// dialog while the card is up.
+#[derive(Resource)]
+pub struct MissionOver(pub Outcome);
+
+#[derive(Component)]
+struct MissionCard;
+
+/// The combat overlay root, spawned once per flight. Retry must not spawn a
+/// second HUD over the first.
+#[derive(Component)]
+struct CombatHud;
+
+/// One dash of the boundary circle traced on the TSD. The circle is the
+/// arena's inscribed 48 km ring; dashes outside the scope face hide.
+#[derive(Component)]
+struct BoundaryDot(usize);
 
 /// The procedural meshes and materials, built with the first wave and reused
 /// for every missile, tracer, explosion and flare afterwards.
@@ -224,7 +305,6 @@ struct CombatAssets {
     bandit_body: Handle<Mesh>,
     bandit_wing: Handle<Mesh>,
     bandit_mat: Handle<StandardMaterial>,
-    escort_mat: Handle<StandardMaterial>,
     missile_mesh: Handle<Mesh>,
     missile_mat: Handle<StandardMaterial>,
     bvr_mesh: Handle<Mesh>,
@@ -242,25 +322,38 @@ struct CombatAssets {
     flash_mat: Handle<StandardMaterial>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum BanditRole {
-    /// Circles a fixed orbit; the easy targets.
-    Drone,
-    /// Chases the player and launches IR missiles when it has a shot.
-    Escort,
-}
-
 #[derive(Component)]
 struct Bandit {
-    role: BanditRole,
-    /// Orbit centre/radius/phase — only meaningful for a drone.
+    /// The home anchor the wander is leashed to.
     center: Vec3,
+    /// Leash radius from home, metres.
     radius: f32,
-    angle: f32,
     speed: f32,
     vel: Vec3,
     hp: i32,
+    /// Seconds until this drone's next IR shot is allowed (and its cooldown
+    /// after firing).
     fire_cd: f32,
+    /// Seconds until the next random heading roll.
+    wander: f32,
+    /// The heading the drone currently steers toward.
+    want: Vec3,
+}
+
+/// The drones' wander PRNG: a tiny deterministic LCG (the weather drop
+/// field's recipe), so the random walk needs no rand crate and stays
+/// reproducible.
+#[derive(Resource, Default)]
+struct Wander(u64);
+
+impl Wander {
+    fn range(&mut self, a: f32, b: f32) -> f32 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        a + (b - a) * ((self.0 >> 40) as f32) / (1u64 << 24) as f32
+    }
 }
 
 #[derive(Component)]
@@ -277,7 +370,7 @@ struct Missile {
     flame: Option<Entity>,
 }
 
-/// An IR missile fired by an escort at the player.
+/// An IR missile fired by a drone at the player.
 #[derive(Component)]
 struct EnemyMissile {
     vel: Vec3,
@@ -378,6 +471,7 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Combat>()
+            .init_resource::<Wander>()
             .add_systems(Startup, setup_launch_tone)
             .add_systems(
                 Update,
@@ -390,7 +484,8 @@ impl Plugin for CombatPlugin {
                     guide_threats,
                     update_tracers,
                     update_effects,
-                    respawn_wave,
+                    mission_complete,
+                    terrain_impact,
                     drive_bays,
                     update_hud,
                     update_threat_marks,
@@ -398,10 +493,24 @@ impl Plugin for CombatPlugin {
                     update_radar,
                 )
                     .chain()
-                    .run_if(unpaused),
+                    .run_if(combat_runnable),
             )
+            // The mission card answers its keys whether the combat loop is
+            // frozen or not, exactly like the pause dialog.
+            .add_systems(Update, mission_keys.run_if(flying))
             .add_systems(OnEnter(AppState::Flying), reset_combat);
     }
+}
+
+/// The combat loop's own gate: the flight must be live and unpaused, and the
+/// mission card must not be up — once the mission is over the fight freezes
+/// until the player chooses.
+fn combat_runnable(
+    state: Res<State<AppState>>,
+    paused: Option<Res<Paused>>,
+    over: Option<Res<MissionOver>>,
+) -> bool {
+    unpaused(state, paused) && over.is_none()
 }
 
 /// Build the launch tone once, in memory: a synthesized WAV keeps the warning
@@ -470,7 +579,9 @@ fn wav_bytes(samples: &[i16]) -> Vec<u8> {
     out
 }
 
-fn reset_combat(mut combat: ResMut<Combat>, config: Res<GameConfig>) {
+fn reset_combat(mut commands: Commands, mut combat: ResMut<Combat>, config: Res<GameConfig>) {
+    // A fresh flight forgets any mission card the previous one raised.
+    commands.remove_resource::<MissionOver>();
     *combat = Combat::default();
     combat.settings = config.combat("f22");
     apply_stores(&mut combat);
@@ -487,7 +598,7 @@ fn ammo_value(choice: AmmoSetting, stock: i32) -> (i32, bool) {
     }
 }
 
-/// Apply the menu's loadout to the live stores (spawn and respawn).
+/// Apply the menu's loadout to the live stores (spawn and retry).
 fn apply_stores(combat: &mut Combat) {
     let settings = combat.settings;
     (combat.missiles, combat.missiles_inf) = ammo_value(settings.missiles, SIDEWINDER_ROUNDS);
@@ -516,14 +627,6 @@ fn combat_assets(meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>)
             metallic: 0.3,
             perceptual_roughness: 0.6,
             emissive: LinearRgba::new(0.05, 0.01, 0.0, 1.0),
-            ..default()
-        }),
-        // Escorts read hotter than the drones: they are the ones that shoot.
-        escort_mat: mats.add(StandardMaterial {
-            base_color: Color::srgb(0.62, 0.22, 0.06),
-            metallic: 0.35,
-            perceptual_roughness: 0.5,
-            emissive: LinearRgba::new(0.12, 0.02, 0.0, 1.0),
             ..default()
         }),
         missile_mesh: meshes.add(Cuboid::new(0.16, 0.16, 2.0)),
@@ -584,6 +687,8 @@ fn spawn_combat(
     map: Res<ActiveMap>,
     root: Query<&Transform, With<AircraftRoot>>,
     existing: Query<(), With<Bandit>>,
+    hud: Query<(), With<CombatHud>>,
+    mut wander: ResMut<Wander>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -599,9 +704,15 @@ fn spawn_combat(
         &assets,
         root,
         combat.settings.enemies as usize,
+        map.0,
+        &mut wander,
     );
     commands.insert_resource(assets);
-    spawn_hud(&mut commands);
+    // The HUD lives for the whole flight; retry re-enters here with it
+    // already on screen, and a second overlay would double every element.
+    if hud.is_empty() {
+        spawn_hud(&mut commands);
+    }
     combat.spawned = true;
     combat.wave = 1;
     // Screenshot hooks: hold the first bandit locked, and optionally start on
@@ -614,79 +725,118 @@ fn spawn_combat(
     }
 }
 
-/// Wave layout: `enemies - 1` drones fanned across the forward arc, plus the
-/// escort behind the jet (the missile warning is the first thing the player
-/// hears about it). Always at least one bandit, at most [`MAX_ENEMIES`].
-fn wave_offsets(enemies: usize) -> Vec<(f32, f32, f32, BanditRole)> {
+/// Wave layout: `enemies` drones fanned across the arc — the last one behind
+/// the jet, so the first missile warning has an owner. Always at least one
+/// drone, at most [`MAX_ENEMIES`].
+fn wave_offsets(enemies: usize) -> Vec<(f32, f32, f32)> {
     let n = enemies.clamp(1, MAX_ENEMIES);
-    let drones = n - 1;
+    let fan = n - 1;
     let mut out = Vec::with_capacity(n);
-    for i in 0..drones {
-        let lane = i as f32 - drones.saturating_sub(1) as f32 * 0.5;
+    for i in 0..fan {
+        let lane = i as f32 - fan.saturating_sub(1) as f32 * 0.5;
         out.push((
             2500.0 + 350.0 * (i % 4) as f32,
             lane * 900.0,
             if i % 2 == 0 { 120.0 } else { -80.0 },
-            BanditRole::Drone,
         ));
     }
-    out.push((-2500.0, 0.0, 200.0, BanditRole::Escort));
+    out.push((-2500.0, 0.0, 200.0));
     out
 }
 
-/// Spawn one wave ahead of the jet: up to nine orbiting drones plus one escort
-/// that turns into the player and shoots. Escorts are the orange airframes.
-/// The settings page picks how many bandits fly in a wave (1-10).
+/// Seat a bandit's anchor over the terrain and inside the mission circle:
+/// the offset fan is relative to the jet's spawn pose and knows nothing about
+/// the ridges ahead of it. The whole leash circle has to clear the ground it
+/// roams over — otherwise drones start buried in the mountain and can only be
+/// found on the TSD.
+fn seat_bandit(mut center: Vec3, map: Option<MapId>) -> Vec3 {
+    let Some(map) = map else {
+        return center;
+    };
+    // Keep the anchor inside the boundary: a leash parked across the circle
+    // would put part of the roam where the jet cannot follow.
+    let seat = BOUNDARY_R_M - BOUNDARY_SEAT_M - LEASH_M;
+    let flat_sq = center.x * center.x + center.z * center.z;
+    let limit_sq = seat * seat;
+    if flat_sq > limit_sq {
+        let k = seat / flat_sq.sqrt();
+        center.x *= k;
+        center.z *= k;
+    }
+    // Then the floor: the leash area's highest crossing governs.
+    let floor = ring_floor(map, center, LEASH_M);
+    center.y = center.y.max(floor);
+    center
+}
+
+/// The altitude a drone's leash area must sit at to keep its whole roam clear
+/// of the terrain, metres: the highest ground the anchor and the leash circle
+/// cross, plus margin.
+fn ring_floor(map: MapId, center: Vec3, radius: f32) -> f32 {
+    let mut highest = ground_height(map, center.x, center.z);
+    for i in 0..RING_SAMPLES {
+        let t = i as f32 / RING_SAMPLES as f32 * std::f32::consts::TAU;
+        highest = highest.max(ground_height(
+            map,
+            center.x + radius * t.cos(),
+            center.z + radius * t.sin(),
+        ));
+    }
+    highest + FLOOR_M
+}
+
+/// Spawn one wave ahead of the jet: up to ten wandering drones, the last one
+/// behind the jet so the first missile warning has an owner. All are the same
+/// red airframe. The settings page picks how many fly in a wave (1-10), and
+/// every drone is seated over the mesh (see [`seat_bandit`]) so none starts
+/// buried in a ridge.
 fn spawn_wave(
     commands: &mut Commands,
     assets: &CombatAssets,
     root: &Transform,
     enemies: usize,
+    map: Option<MapId>,
+    wander: &mut Wander,
 ) -> Vec<Entity> {
     let fwd = root.rotation * Vec3::NEG_Z;
     let side = root.rotation * Vec3::X;
     let offsets = wave_offsets(enemies);
     let mut spawned = Vec::with_capacity(offsets.len());
-    for (i, (ahead, lateral, up, role)) in offsets.into_iter().enumerate() {
-        let center = root.translation + fwd * ahead + side * lateral + Vec3::Y * up;
-        let (speed, radius, angle) = match role {
-            BanditRole::Drone => (DRONE_SPEED, DRONE_RADIUS, i as f32 * 2.1),
-            BanditRole::Escort => (ESCORT_SPEED, 0.0, 0.0),
-        };
-        let vel = match role {
-            BanditRole::Drone => Vec3::new(-angle.sin(), 0.0, angle.cos()) * speed,
-            // The escort starts pointed at the jet.
-            BanditRole::Escort => (root.translation - center).normalize_or_zero() * speed,
-        };
-        let mat = match role {
-            BanditRole::Drone => assets.bandit_mat.clone(),
-            BanditRole::Escort => assets.escort_mat.clone(),
-        };
+    for (ahead, lateral, up) in offsets.into_iter() {
+        let center = seat_bandit(
+            root.translation + fwd * ahead + side * lateral + Vec3::Y * up,
+            map,
+        );
+        // A random initial heading and a staggered shot clock, so the flight
+        // does not move or fire in lockstep.
+        let t = wander.range(0.0, std::f32::consts::TAU);
+        let want = Vec3::new(t.cos(), 0.0, t.sin());
+        let vel = want * DRONE_SPEED;
         let mut entity = commands.spawn((
             Bandit {
-                role,
                 center,
-                radius,
-                angle,
-                speed,
+                radius: LEASH_M,
+                speed: DRONE_SPEED,
                 vel,
                 hp: BANDIT_HP,
-                fire_cd: ESCORT_FIRE_CD_S,
+                fire_cd: wander.range(FIRE_CD_S * 0.6, FIRE_CD_S * 1.6),
+                wander: wander.range(0.5, 3.0),
+                want,
             },
             Mesh3d(assets.bandit_body.clone()),
-            MeshMaterial3d(mat.clone()),
+            MeshMaterial3d(assets.bandit_mat.clone()),
             Transform::from_translation(center),
             DespawnOnExit(AppState::Flying),
         ));
         entity.with_children(|p| {
             p.spawn((
                 Mesh3d(assets.bandit_wing.clone()),
-                MeshMaterial3d(mat.clone()),
+                MeshMaterial3d(assets.bandit_mat.clone()),
                 Transform::from_xyz(0.0, 0.0, 0.6),
             ));
             p.spawn((
                 Mesh3d(assets.bandit_wing.clone()),
-                MeshMaterial3d(mat.clone()),
+                MeshMaterial3d(assets.bandit_mat.clone()),
                 Transform::from_xyz(0.0, 0.0, 2.6).with_scale(Vec3::new(0.45, 1.0, 0.5)),
             ));
         });
@@ -707,10 +857,11 @@ fn spawn_hud(commands: &mut Commands) {
                 ..default()
             },
             GlobalZIndex(21),
+            CombatHud,
             DespawnOnExit(AppState::Flying),
         ))
         .with_children(|root| {
-            // Incoming-missile / respawn banner.
+            // Inbound-missile edge warnings (see `update_threat_marks`).
             root.spawn(Node {
                 position_type: PositionType::Absolute,
                 left: Val::Percent(50.0),
@@ -886,6 +1037,23 @@ fn spawn_hud(commands: &mut Commands) {
                         GlobalZIndex(23),
                     ));
                 }
+                // The mission boundary, traced as a red dashed circle at its
+                // true scaled radius. Crossing it ends the mission.
+                for i in 0..BOUNDARY_DOTS {
+                    panel.spawn((
+                        BoundaryDot(i),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            display: Display::None,
+                            width: Val::Px(4.0),
+                            height: Val::Px(4.0),
+                            border_radius: BorderRadius::all(Val::Percent(50.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(1.0, 0.25, 0.15, 0.9)),
+                        GlobalZIndex(23),
+                    ));
+                }
             });
             // Locked-contact telemetry under the scope.
             root.spawn(Node {
@@ -995,7 +1163,8 @@ fn angle_off(fwd: Vec3, to: Vec3) -> f32 {
 fn update_bandits(
     mut commands: Commands,
     time: Res<Time>,
-    state: Res<AircraftState>,
+    map: Res<ActiveMap>,
+    mut wander: ResMut<Wander>,
     assets: Option<Res<CombatAssets>>,
     launch_tone: Option<Res<LaunchTone>>,
     player: Query<&Transform, (With<AircraftRoot>, Without<Bandit>)>,
@@ -1008,82 +1177,91 @@ fn update_bandits(
     };
     let player_pos = player_tf.translation;
     let player_fwd = player_tf.rotation * Vec3::NEG_Z;
-    let player_vel = player_fwd * (state.cas_kts * 0.514_444) as f32;
     let inbound = threats.iter().filter(|m| m.decoy.is_none()).count();
 
     for (mut bandit, mut tf) in &mut q {
-        match bandit.role {
-            BanditRole::Drone => {
-                bandit.angle += bandit.speed / bandit.radius * dt;
-                let (s, c) = bandit.angle.sin_cos();
-                let pos = bandit.center + Vec3::new(c * bandit.radius, 0.0, s * bandit.radius);
-                let tangent = Vec3::new(-s, 0.0, c);
-                bandit.vel = tangent * bandit.speed;
-                tf.translation = pos;
-                // Nose along the tangent (model forward is -Z), banked in.
-                let base = Transform::from_translation(pos).looking_to(tangent, Vec3::Y);
-                tf.rotation = base.rotation * Quat::from_rotation_z(0.55);
+        bandit.fire_cd = (bandit.fire_cd - dt).max(0.0);
+        // The wander: a lazy random walk. Every few seconds the drone rolls a
+        // new heading — mostly level, a gentle climb or descent — and steers
+        // toward it at the turn rate, so paths are smooth arcs instead of a
+        // rigid carousel.
+        bandit.wander -= dt;
+        if bandit.wander <= 0.0 {
+            bandit.wander = wander.range(WANDER_ROLL_S.0, WANDER_ROLL_S.1);
+            let t = wander.range(0.0, std::f32::consts::TAU);
+            let climb = wander.range(-WANDER_CLIMB, WANDER_CLIMB);
+            bandit.want = Vec3::new(t.cos(), climb, t.sin()).normalize_or_zero();
+        }
+        let current = bandit.vel.normalize_or_zero();
+        let to_home = bandit.center - tf.translation;
+        // The leash: outside the home radius, curving back toward the anchor
+        // wins over the roll, so the flight stays where the fight is.
+        if to_home.length() > bandit.radius {
+            bandit.want = to_home.normalize_or_zero();
+        } else if tf.translation.y - bandit.center.y > WANDER_CEIL_M {
+            bandit.want.y = bandit.want.y.min(0.0);
+        }
+        let angle = current.dot(bandit.want).clamp(-1.0, 1.0).acos();
+        let dir = if angle > 1e-4 {
+            let axis = current.cross(bandit.want).normalize_or_zero();
+            let turn = (TURN_RAD_S * dt).min(angle);
+            Quat::from_axis_angle(axis, turn) * current
+        } else {
+            bandit.want
+        };
+        bandit.vel = dir * bandit.speed;
+        tf.translation += bandit.vel * dt;
+        // No ground sense: the wander could ride a drone into the hillside.
+        // Clamp above the mesh and level the climb-out; the steering curves
+        // it back down next frame.
+        if let Some(map) = map.0 {
+            let floor =
+                ground_height(map, tf.translation.x, tf.translation.z) + FLOOR_M;
+            if tf.translation.y < floor {
+                tf.translation.y = floor;
+                bandit.vel.y = bandit.vel.y.max(0.0);
             }
-            BanditRole::Escort => {
-                bandit.fire_cd = (bandit.fire_cd - dt).max(0.0);
-                let to = player_pos - tf.translation;
-                let dist = to.length();
-                let speed = bandit.speed.max(1.0);
-                // Lead the chase a little so it does not sit behind a fast jet.
-                let desired =
-                    (player_pos + player_vel * (dist / speed) - tf.translation).normalize_or_zero();
-                let current = bandit.vel.normalize_or_zero();
-                let angle = current.dot(desired).clamp(-1.0, 1.0).acos();
-                let dir = if angle > 1e-4 {
-                    let axis = current.cross(desired).normalize_or_zero();
-                    let turn = (ESCORT_TURN_RAD_S * dt).min(angle);
-                    Quat::from_axis_angle(axis, turn) * current
-                } else {
-                    desired
-                };
-                bandit.vel = dir * speed;
-                tf.translation += bandit.vel * dt;
-                let base = Transform::from_translation(tf.translation).looking_to(dir, Vec3::Y);
-                let bank = current.cross(desired).dot(Vec3::Y).clamp(-1.0, 1.0) * 0.9;
-                tf.rotation = base.rotation * Quat::from_rotation_z(bank);
+        }
+        let bank = current.cross(dir).dot(Vec3::Y).clamp(-1.0, 1.0) * 0.9;
+        let base = Transform::from_translation(tf.translation).looking_to(dir, Vec3::Y);
+        tf.rotation = base.rotation * Quat::from_rotation_z(bank);
 
-                // A tail shot: the escort must actually be behind the jet, not
-                // firing head-on through it. Cap the rounds in the air so the
-                // fight stays readable.
-                let behind = behind_the_tail(player_pos, player_fwd, tf.translation);
-                if bandit.fire_cd <= 0.0
-                    && behind
-                    && can_escort_fire(dir, to, dist)
-                    && inbound < MAX_INBOUND
-                {
-                    bandit.fire_cd = ESCORT_FIRE_CD_S;
-                    spawn_threat(
-                        &mut commands,
-                        &assets,
-                        launch_tone.as_deref(),
-                        tf.translation + dir * 5.0,
-                        bandit.vel,
-                        dir,
-                    );
-                }
-            }
+        // A tail shot: a drone only fires from behind the jet, not head-on
+        // through it. Cap the rounds in the air so the fight stays readable.
+        let to = player_pos - tf.translation;
+        let dist = to.length();
+        let behind = behind_the_tail(player_pos, player_fwd, tf.translation);
+        if bandit.fire_cd <= 0.0
+            && behind
+            && can_bandit_fire(dir, to, dist)
+            && inbound < MAX_INBOUND
+        {
+            bandit.fire_cd = wander.range(FIRE_CD_S * 0.6, FIRE_CD_S * 1.6);
+            spawn_threat(
+                &mut commands,
+                &assets,
+                launch_tone.as_deref(),
+                tf.translation + dir * 5.0,
+                bandit.vel,
+                dir,
+            );
         }
     }
 }
 
 /// True when `other` sits aft of the player's beam, i.e. the player would have
-/// to look back to see it. Escorts only shoot from there.
+/// to look back to see it. Drones only shoot from there.
 fn behind_the_tail(player_pos: Vec3, player_fwd: Vec3, other: Vec3) -> bool {
     (other - player_pos).dot(player_fwd) < 0.0
 }
 
-/// The escort's shot gate: the jet has to sit in the nose cone and inside the
+/// The drone's shot gate: the jet has to sit in the nose cone and inside the
 /// missile's useful range.
-fn can_escort_fire(forward: Vec3, to_player: Vec3, dist: f32) -> bool {
-    dist < ESCORT_FIRE_RANGE && angle_off(forward, to_player) < ESCORT_FIRE_CONE_DEG
+fn can_bandit_fire(forward: Vec3, to_player: Vec3, dist: f32) -> bool {
+    dist < FIRE_RANGE_M && angle_off(forward, to_player) < FIRE_CONE_DEG
 }
 
-/// Fire one IR missile from an escort: the same body as the player's round,
+/// Fire one IR missile from a drone: the same body as the player's round,
 /// but slower, less agile and with a shorter motor.
 fn spawn_threat(
     commands: &mut Commands,
@@ -1518,17 +1696,15 @@ fn service_flame<F: QueryFilter>(
     }
 }
 
-/// Guide the escorts' incoming rounds, seduce them with flares, and respawn the
-/// pilot when one connects.
+/// Guide the drones' incoming rounds, seduce them with flares, and fail the
+/// mission when one connects.
 #[allow(clippy::too_many_arguments)]
 fn guide_threats(
     mut commands: Commands,
     time: Res<Time>,
     state: Res<AircraftState>,
     assets: Option<Res<CombatAssets>>,
-    mut sim: ResMut<Sim>,
-    map: Res<ActiveMap>,
-    mut combat: ResMut<Combat>,
+    combat: Res<Combat>,
     player: Query<
         &Transform,
         (
@@ -1557,7 +1733,6 @@ fn guide_threats(
     >,
 ) {
     let dt = time.delta_secs();
-    combat.down = (combat.down - dt).max(0.0);
     let (Ok(player_tf), Some(assets)) = (player.single(), assets) else {
         return;
     };
@@ -1650,18 +1825,12 @@ fn guide_threats(
             }
             despawn_flying(&mut commands, entity, &mut m.flame);
             boom(&mut commands, &assets, at);
-            // Arcade respawn: a fresh jet at the mission spawn, score and wave
-            // intact. The camera snaps over the next fixed step.
-            let (alt, kts) = map
-                .0
-                .map(|m| (m.spawn_alt_ft(), m.spawn_kts()))
-                .unwrap_or((9_000.0, 350.0));
-            sim.reset_air(alt, kts);
-            combat.lock = None;
-            combat.weapon = Weapon::Ir;
-            apply_stores(&mut combat);
-            combat.bay = 0.0;
-            combat.down = 3.0;
+            // A hit ends the mission: the same boom, freeze and card flow as
+            // flying into the hill. `R` restarts the mission from the spawn;
+            // there is no mid-air respawn.
+            commands.insert_resource(MissionOver(Outcome::ShotDown));
+            commands.insert_resource(Paused);
+            spawn_mission_card(&mut commands, Outcome::ShotDown, combat.kills);
         }
     }
 }
@@ -1869,42 +2038,232 @@ fn update_effects(
     }
 }
 
-fn respawn_wave(
+/// One wave, one mission: when the last bandit falls, the fight is over. Any
+/// rounds still inbound are swept so nothing reaches the jet behind the card,
+/// the success card goes up, and the combat loop freezes until the player
+/// chooses (Enter → free flight, Esc → the hangar).
+fn mission_complete(
     mut commands: Commands,
-    time: Res<Time>,
+    mut combat: ResMut<Combat>,
+    over: Option<Res<MissionOver>>,
+    bandits: Query<(), With<Bandit>>,
+    threats: Query<(Entity, &EnemyMissile)>,
+) {
+    if over.is_some() || !combat.spawned || combat.wave_done || bandits.iter().next().is_some() {
+        return;
+    }
+    for (entity, threat) in &threats {
+        commands.entity(entity).despawn();
+        if let Some(flame) = threat.flame {
+            commands.entity(flame).despawn();
+        }
+    }
+    combat.wave_done = true;
+    commands.insert_resource(MissionOver(Outcome::Success));
+    spawn_mission_card(&mut commands, Outcome::Success, combat.kills);
+}
+
+/// The mission card: the pause plate's look, with the flight's scoreboard
+/// and the exits — a success offers Enter (free flight), a failure offers
+/// R (retry).
+fn spawn_mission_card(commands: &mut Commands, outcome: Outcome, kills: u32) {
+    let (title, title_color) = outcome.title();
+    let root = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                display: Display::Flex,
+                ..default()
+            },
+            // The scene dims under the card, same as the hangar's panel.
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+            // Same layering as the pause plate: above the cockpit overlay and
+            // HUD panes (z 15-21), below combat/MCP (30+).
+            GlobalZIndex(25),
+            MissionCard,
+            DespawnOnExit(AppState::Flying),
+        ))
+        .id();
+    let card = commands
+        .spawn((
+            Node {
+                flex_direction: FlexDirection::Column,
+                width: Val::Px(640.0),
+                padding: UiRect {
+                    left: Val::Px(40.0),
+                    right: Val::Px(40.0),
+                    top: Val::Px(28.0),
+                    bottom: Val::Px(24.0),
+                },
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(10.0)),
+                ..default()
+            },
+            BorderColor::all(ui_theme::accent_soft()),
+            BackgroundColor(ui_theme::panel_bg()),
+            BoxShadow::new(
+                ui_theme::panel_glow(),
+                Val::ZERO,
+                Val::ZERO,
+                Val::Px(18.0),
+                Val::Px(56.0),
+            ),
+            ChildOf(root),
+        ))
+        .id();
+    let kills_line = format!("{kills} KILLS");
+    for (text, color, size, gap) in [
+        (title, title_color, 26.0, 0.0),
+        (outcome.reason(), ui_theme::dim(), 18.0, 8.0),
+        (kills_line.as_str(), ui_theme::accent(), 18.0, 4.0),
+    ] {
+        commands.spawn((
+            Node {
+                margin: UiRect::top(Val::Px(gap)),
+                ..default()
+            },
+            Text::new(text.to_string()),
+            TextFont {
+                font_size: FontSize::Px(size),
+                ..default()
+            },
+            TextColor(color),
+            ChildOf(card),
+        ));
+    }
+    let rows: &[(&str, &str)] = match outcome {
+        Outcome::Success => &[("Enter", "Continue flying"), ("Esc", "Back to menu")],
+        Outcome::Terrain | Outcome::Boundary | Outcome::ShotDown => {
+            &[("R", "Retry mission"), ("Esc", "Back to menu")]
+        }
+    };
+    ui_theme::key_footer(commands, card, 20.0, rows);
+}
+
+/// The mission card's keys. A success: Enter dismisses it into free flight
+/// (the mission stays over — no new bandits spawn this flight). A failure:
+/// R restarts the mission in place. Esc always leaves for the hangar.
+fn mission_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    state: Res<State<AppState>>,
+    over: Option<Res<MissionOver>>,
+    card: Query<Entity, With<MissionCard>>,
+    bandits: Query<Entity, With<Bandit>>,
+    missiles: Query<(Entity, &Missile)>,
+    threats: Query<(Entity, &EnemyMissile)>,
+    leftovers: Query<Entity, Or<(With<Tracer>, With<Explosion>, With<Smoke>, With<Flare>, With<MuzzleFlash>)>>,
+    mut sim: ResMut<Sim>,
+    mut combat: ResMut<Combat>,
+    map: Res<ActiveMap>,
+    mut next: ResMut<NextState<AppState>>,
+    mut commands: Commands,
+) {
+    let Some(outcome) = over.map(|o| o.0) else {
+        return;
+    };
+    if *state.get() != AppState::Flying {
+        return;
+    }
+    if keys.just_pressed(KeyCode::Escape) {
+        // Leaving to the hangar: `DespawnOnExit` drops the card and
+        // `clear_pause` (OnExitFlying) drops the freeze.
+        next.set(AppState::Menu);
+    } else if outcome == Outcome::Success
+        && (keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter))
+    {
+        commands.remove_resource::<MissionOver>();
+        if let Ok(e) = card.single() {
+            commands.entity(e).despawn();
+        }
+    } else if outcome != Outcome::Success && keys.just_pressed(KeyCode::KeyR) {
+        commands.remove_resource::<MissionOver>();
+        commands.remove_resource::<Paused>();
+        if let Ok(e) = card.single() {
+            commands.entity(e).despawn();
+        }
+        // A fresh mission: sweep whatever the crash left flying, put a fresh
+        // jet at the spawn point, and let `spawn_combat` re-arm the wave.
+        for entity in bandits.iter() {
+            commands.entity(entity).despawn();
+        }
+        for (entity, missile) in &missiles {
+            commands.entity(entity).despawn();
+            if let Some(flame) = missile.flame {
+                commands.entity(flame).despawn();
+            }
+        }
+        for (entity, threat) in &threats {
+            commands.entity(entity).despawn();
+            if let Some(flame) = threat.flame {
+                commands.entity(flame).despawn();
+            }
+        }
+        for entity in &leftovers {
+            commands.entity(entity).despawn();
+        }
+        retry_mission(&mut sim, &mut combat, &map);
+    }
+}
+
+/// Restart the mission in place: a fresh jet at the mission spawn, stores per
+/// the settings, score and wave reset. `spawned` dropping is what re-arms
+/// `spawn_combat`.
+fn retry_mission(sim: &mut Sim, combat: &mut Combat, map: &ActiveMap) {
+    let (alt, kts) = map
+        .0
+        .map(|m| (m.spawn_alt_ft(), m.spawn_kts()))
+        .unwrap_or((9_000.0, 350.0));
+    sim.reset_air(alt, kts);
+    let settings = combat.settings;
+    *combat = Combat::default();
+    combat.settings = settings;
+    apply_stores(combat);
+}
+
+/// Ground contact and the arena boundary. A combat mission flies with the
+/// avoidance assist disabled, so nothing catches the jet: touching terrain or
+/// the sea, or leaving the 48 km circle, ends the mission in a fireball. One
+/// `ground_height` probe a frame — the same function the terrain mesh was
+/// sampled from, so a hit really is the mesh.
+fn terrain_impact(
+    mut commands: Commands,
     sim: Res<Sim>,
     state: Res<AircraftState>,
     map: Res<ActiveMap>,
-    root: Query<&Transform, With<AircraftRoot>>,
-    bandits: Query<(), With<Bandit>>,
+    over: Option<Res<MissionOver>>,
     assets: Option<Res<CombatAssets>>,
-    mut combat: ResMut<Combat>,
+    combat: Res<Combat>,
 ) {
-    if !combat.spawned || bandits.iter().next().is_some() {
+    if over.is_some() || !combat.spawned {
         return;
     }
-    if combat.respawn <= 0.0 {
-        combat.respawn = WAVE_DELAY_S;
+    // The COMBAT=1 screenshot hook flies over the flat test grid with no
+    // arena: nothing to hit, no edge to cross.
+    if !combat_active(&sim, &state, &map) || map.0.is_none() {
         return;
     }
-    combat.respawn -= time.delta_secs();
-    if combat.respawn > 0.0 {
-        return;
-    }
-    combat.respawn = 0.0;
-    let (Some(assets), Ok(root)) = (assets, root.single()) else {
+    let (pos, _, _) = sim.pose();
+    let cause = if pos.x * pos.x + pos.z * pos.z > BOUNDARY_R_M * BOUNDARY_R_M {
+        Outcome::Boundary
+    } else if pos.y <= ground_height(map.0.unwrap(), pos.x, pos.z).max(0.0) {
+        // The sea counts as ground: without the `.max`, a splashdown would
+        // keep sinking to the navy floor before it registered.
+        Outcome::Terrain
+    } else {
         return;
     };
-    if !combat_active(&sim, &state, &map) {
-        return;
+    if let Some(assets) = assets {
+        boom(&mut commands, &assets, pos);
     }
-    combat.wave += 1;
-    spawn_wave(
-        &mut commands,
-        &assets,
-        root,
-        combat.settings.enemies as usize,
-    );
+    commands.insert_resource(MissionOver(cause));
+    // The failure freezes the whole flight, exactly like the pause dialog —
+    // the jet must not keep flying through the hill behind the card.
+    commands.insert_resource(Paused);
+    spawn_mission_card(&mut commands, cause, combat.kills);
 }
 
 /// Drive the four side-bay doors and the two launch rails from the eased bay
@@ -2025,15 +2384,11 @@ fn update_hud(
             .unwrap_or_else(|| "NO LOCK".to_owned());
     }
     if let Ok(mut text) = threat_text.single_mut() {
-        // The center banner is reserved for the respawn notice; inbound
-        // missile warnings live on the screen edge (see `update_threat_marks`).
-        let msg = if combat.down > 0.0 {
-            "SHOT DOWN - RESPAWNED"
-        } else {
-            ""
-        };
-        if text.0 != msg {
-            text.0 = msg.to_owned();
+        // The center banner stays clear: inbound missile warnings live on the
+        // screen edge (see `update_threat_marks`), and a hit now ends the
+        // mission with a card instead of a respawn notice.
+        if !text.0.is_empty() {
+            text.0.clear();
         }
     }
 }
@@ -2224,12 +2579,19 @@ fn update_radar(
     root: Query<&Transform, With<AircraftRoot>>,
     bandits: Query<(Entity, &Transform, &Bandit)>,
     combat: Res<Combat>,
-    mut dots: Query<(&RadarDot, &mut Node, &mut BackgroundColor)>,
+    mut dots: Query<
+        (&RadarDot, &mut Node, &mut BackgroundColor),
+        Without<BoundaryDot>,
+    >,
+    mut boundary: Query<(&BoundaryDot, &mut Node), Without<RadarDot>>,
     mut label: Query<&mut Text, (With<RadarLabel>, Without<RadarInfo>)>,
     mut info: Query<&mut Text, (With<RadarInfo>, Without<RadarLabel>)>,
 ) {
     let Ok(root) = root.single() else {
         for (_, mut node, _) in &mut dots {
+            node.display = Display::None;
+        }
+        for (_, mut node) in &mut boundary {
             node.display = Display::None;
         }
         for mut text in &mut label {
@@ -2241,11 +2603,11 @@ fn update_radar(
         return;
     };
     let range = combat.radar_range_m;
-    let mut contacts: Vec<(Entity, Vec3, BanditRole)> = bandits
+    let mut contacts: Vec<(Entity, Vec3)> = bandits
         .iter()
-        .filter_map(|(entity, tf, bandit)| {
+        .filter_map(|(entity, tf, _)| {
             let rel = tf.translation - root.translation;
-            (rel.length() <= range).then_some((entity, rel, bandit.role))
+            (rel.length() <= range).then_some((entity, rel))
         })
         .collect();
     contacts.sort_by(|a, b| a.1.length_squared().total_cmp(&b.1.length_squared()));
@@ -2254,7 +2616,7 @@ fn update_radar(
     slots.sort_by_key(|(dot, _, _)| dot.0);
     let scale = RADAR_RADIUS_PX / range;
     for (slot, (_, mut node, mut bg)) in slots.into_iter().enumerate() {
-        let Some((entity, rel, role)) = contacts.get(slot) else {
+        let Some((entity, rel)) = contacts.get(slot) else {
             node.display = Display::None;
             continue;
         };
@@ -2268,18 +2630,39 @@ fn update_radar(
         bg.0 = if combat.lock == Some(*entity) {
             Color::srgb(1.0, 0.85, 0.25)
         } else {
-            match role {
-                BanditRole::Escort => Color::srgb(1.0, 0.45, 0.10),
-                BanditRole::Drone => Color::srgb(1.0, 0.25, 0.15),
-            }
+            Color::srgb(1.0, 0.25, 0.15)
         };
+    }
+
+    // The boundary circle at its true scaled radius, heading-up: the map
+    // origin sits at `centre`, the dashes sweep along the ring and only the
+    // ones on the scope face light. Close in, the ring is off-scope; far out
+    // it crosses the face like a wall on the bearing of home.
+    let centre = root.rotation.inverse() * -root.translation;
+    let cx = RADAR_CENTRE_PX + centre.x * scale;
+    let cy = RADAR_CENTRE_PX + centre.z * scale;
+    let ring_px = BOUNDARY_R_M * scale;
+    let mut dashes: Vec<_> = boundary.iter_mut().collect();
+    dashes.sort_by_key(|(dot, _)| dot.0);
+    for (i, (_, mut node)) in dashes.into_iter().enumerate() {
+        let t = i as f32 / BOUNDARY_DOTS as f32 * std::f32::consts::TAU;
+        let x = cx + ring_px * t.cos();
+        let y = cy + ring_px * t.sin();
+        let off = (x - RADAR_CENTRE_PX).hypot(y - RADAR_CENTRE_PX);
+        if off <= RADAR_RADIUS_PX - 2.0 {
+            node.display = Display::Flex;
+            node.left = Val::Px(x - 2.0);
+            node.top = Val::Px(y - 2.0);
+        } else {
+            node.display = Display::None;
+        }
     }
 
     if let Ok(mut text) = label.single_mut() {
         text.0 = format!("TSD {:.0}KM", range / 1000.0);
     }
     let player_vel = root.rotation * Vec3::NEG_Z * (state.cas_kts * 0.514_444) as f32;
-    let telemetry = match combat.lock {
+    let mut telemetry = match combat.lock {
         Some(entity) => match bandits.get(entity) {
             Ok((_, tf, bandit)) => {
                 let rel = tf.translation - root.translation;
@@ -2309,6 +2692,15 @@ fn update_radar(
         },
         None => "NO LOCK".to_owned(),
     };
+    // Boundary warning: at a low range setting the circle is off-scope, so
+    // the readout keeps the ring honest when it starts to matter.
+    let home_m = (root.translation.x * root.translation.x
+        + root.translation.z * root.translation.z)
+        .sqrt();
+    let to_edge = BOUNDARY_R_M - home_m;
+    if to_edge < BOUNDARY_WARN_M {
+        telemetry.push_str(&format!("\nBND {:.0}KM", (to_edge / 1000.0).max(0.0)));
+    }
     if let Ok(mut text) = info.single_mut() {
         if text.0 != telemetry {
             text.0 = telemetry;
@@ -2348,13 +2740,13 @@ mod tests {
     }
 
     #[test]
-    fn escorts_only_shoot_inside_their_cone() {
+    fn drones_only_shoot_inside_their_cone() {
         let fwd = Vec3::NEG_Z;
-        assert!(can_escort_fire(fwd, Vec3::NEG_Z * 2000.0, 2000.0));
+        assert!(can_bandit_fire(fwd, Vec3::NEG_Z * 2000.0, 2000.0));
         // Outside the missile's useful range.
-        assert!(!can_escort_fire(fwd, Vec3::NEG_Z * 3000.0, 3000.0));
+        assert!(!can_bandit_fire(fwd, Vec3::NEG_Z * 3000.0, 3000.0));
         // Well off boresight.
-        assert!(!can_escort_fire(
+        assert!(!can_bandit_fire(
             fwd,
             Vec3::new(1000.0, 0.0, -100.0),
             1005.0
@@ -2362,12 +2754,31 @@ mod tests {
     }
 
     #[test]
-    fn tail_shot_needs_the_escort_behind_the_player() {
+    fn tail_shot_needs_the_drone_behind_the_player() {
         let player = Vec3::ZERO;
         let fwd = Vec3::NEG_Z;
         // +Z is behind the player's nose.
         assert!(behind_the_tail(player, fwd, Vec3::new(0.0, 0.0, 1500.0)));
         assert!(!behind_the_tail(player, fwd, Vec3::new(0.0, 0.0, -1500.0)));
+    }
+
+    #[test]
+    fn the_wander_stays_lazy_and_leashed() {
+        // The wander's turn rate keeps every arc under ~1.7 G, so the lock
+        // cone stays flyable and a gun pass is possible.
+        let g = DRONE_SPEED * TURN_RAD_S / 9.81;
+        assert!(g < 2.0, "wander turn is {g:.2} G");
+        // The rolls are always a fresh direction and a fresh timer in band.
+        let mut wander = Wander::default();
+        for _ in 0..32 {
+            let roll = wander.range(WANDER_ROLL_S.0, WANDER_ROLL_S.1);
+            assert!(roll >= WANDER_ROLL_S.0 && roll <= WANDER_ROLL_S.1);
+            let t = wander.range(0.0, std::f32::consts::TAU);
+            let climb = wander.range(-WANDER_CLIMB, WANDER_CLIMB);
+            let want = Vec3::new(t.cos(), climb, t.sin()).normalize_or_zero();
+            assert!(want.length() > 0.9, "the wander heading is a direction");
+            assert!(want.y.abs() <= WANDER_CLIMB + 1e-3, "no dives");
+        }
     }
 
     #[test]
@@ -2387,25 +2798,70 @@ mod tests {
     }
 
     #[test]
-    fn drones_turn_below_two_g() {
-        let turn_rate = DRONE_SPEED / DRONE_RADIUS;
-        let g = DRONE_SPEED * turn_rate / 9.81;
-        assert!(g < 2.0, "drone turn is {g:.2} G");
-    }
-
-    #[test]
     fn wave_layout_scales_to_the_settings_count() {
         for n in 1..=MAX_ENEMIES {
             let wave = wave_offsets(n);
-            assert_eq!(wave.len(), n, "one entity per configured bandit");
-            assert_eq!(wave.last().unwrap().3, BanditRole::Escort);
-            assert!(wave[..n - 1]
-                .iter()
-                .all(|(_, _, _, role)| *role == BanditRole::Drone));
+            assert_eq!(wave.len(), n, "one entity per configured drone");
+            // The last drone sits behind the jet: the first warning shot has
+            // an owner. The rest fan across the forward arc.
+            assert!(wave.last().unwrap().0 < 0.0, "the tail bird");
+            assert!(wave[..n - 1].iter().all(|(ahead, _, _)| *ahead > 0.0));
         }
         // Out-of-range counts are clamped rather than spawning a huge wave.
         assert_eq!(wave_offsets(0).len(), 1);
         assert_eq!(wave_offsets(99).len(), MAX_ENEMIES);
+    }
+
+    #[test]
+    fn outcome_cards_match_the_ending() {
+        assert_eq!(Outcome::Success.reason(), "All bandits destroyed.");
+        assert_eq!(Outcome::Terrain.reason(), "You flew into the terrain.");
+        assert_eq!(Outcome::Boundary.reason(), "You left the mission area.");
+        assert_eq!(Outcome::ShotDown.reason(), "You were shot down.");
+        assert_eq!(Outcome::Success.title().0, "MISSION SUCCESS");
+        assert_eq!(Outcome::Terrain.title().0, "MISSION FAILED");
+        assert_eq!(Outcome::Boundary.title().0, "MISSION FAILED");
+        assert_eq!(Outcome::ShotDown.title().0, "MISSION FAILED");
+    }
+
+    #[test]
+    fn the_boundary_is_the_arena_circle() {
+        // The inscribed circle: the mesh square's four corners poke past the
+        // ring, but the ring itself stays inside the arena on both axes.
+        assert_eq!(BOUNDARY_R_M, ARENA_HALF);
+    }
+
+    #[test]
+    fn a_drone_never_seats_below_the_ground_it_roams() {
+        // Anchors in alpine valleys at low altitude: the exact buried-flight
+        // case the seat exists for.
+        let map = crate::map::MapId::Alpine;
+        for center in [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(3_000.0, 300.0, -2_000.0),
+            Vec3::new(-5_000.0, 200.0, 4_000.0),
+        ] {
+            let seated = seat_bandit(center, Some(map));
+            assert!(
+                seated.y >= ring_floor(map, seated, LEASH_M),
+                "leash anchor at {seated:?} sits below the terrain it crosses"
+            );
+            let flat = (seated.x * seated.x + seated.z * seated.z).sqrt();
+            assert!(
+                flat <= BOUNDARY_R_M - BOUNDARY_SEAT_M,
+                "stays inside the circle"
+            );
+        }
+    }
+
+    #[test]
+    fn the_drone_seats_clear_of_the_valley_floor() {
+        let map = crate::map::MapId::Glacial;
+        let seated = seat_bandit(Vec3::new(0.0, 0.0, 0.0), Some(map));
+        assert!(
+            seated.y >= ground_height(map, seated.x, seated.z) + FLOOR_M,
+            "drone anchor buried at {seated:?}"
+        );
     }
 
     #[test]

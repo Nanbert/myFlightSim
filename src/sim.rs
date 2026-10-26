@@ -617,6 +617,7 @@ fn advance_fdm(
     mut ils_res: ResMut<crate::ils::Ils>,
     airfield: Res<crate::airfield::Airfield>,
     map: Res<crate::map::ActiveMap>,
+    state: Res<AircraftState>,
     weather: Res<crate::weather::Weather>,
 ) {
     // Ambient wind from the weather settings, pushed through the same property
@@ -655,9 +656,15 @@ fn advance_fdm(
     crate::autopilot::advance(&mut *sim.model, &mcp, &mut ap, DT, &ils);
 
     // Mission assist last: it may add nose-up or bank after the pilot's
-    // commands, so terrain and the arena edge always win the step.
+    // commands, so terrain and the arena edge always win the step. A combat
+    // mission flies without it: terrain contact and the boundary circle are
+    // the mission's own fail states (`combat::terrain_impact`), and grabbing
+    // the controls there would fight the pilot all the way down.
+    let combat_flight = sim.name == "f22" && state.arcade && map.0.is_some();
     if let Some(map) = map.0 {
-        crate::map::assist(&mut sim, map);
+        if !combat_flight {
+            crate::map::assist(&mut sim, map);
+        }
     }
 
     sim.model.step();
@@ -1043,7 +1050,7 @@ mod m3_probe {
         let dt = 1.0 / 120.0;
         let mut t = 0.0f64;
         let mut last_log = -1.0;
-        for i in 0..120 * 240 {
+        for _ in 0..120 * 240 {
             sim.model.set("fcs/throttle-cmd-norm", 0.25);
             let beams = ils::compute(&sim, &spec);
             advance(&mut *sim.model, &mcp, &mut ap, dt, &beams);
@@ -1118,7 +1125,7 @@ mod m3_probe {
         // The lesson's gate reads a two-second trend of the sink, not one
         // frame of the approach's phugoid: mirror the meter's filter here.
         let mut vs_trend = 0.0f64;
-        for i in 0..120 * 240 {
+        for _ in 0..120 * 240 {
             sim.model.set("fcs/throttle-cmd-norm", 0.25);
             let beams = ils::compute(&sim, &spec);
             advance(&mut *sim.model, &mcp, &mut ap, dt, &beams);

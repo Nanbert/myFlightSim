@@ -70,17 +70,25 @@ fn dev_pause(mut commands: Commands, active: Res<crate::mission::ActiveLesson>) 
 /// gated on `unpaused`, so once `Paused` landed in the same frame it never ran.
 /// `run_if` conditions read the world once per frame, so this holds whatever
 /// order the two systems happen to run in.
+///
+/// The combat mission card owns the keys too: its Esc is "back to menu", and
+/// Enter/R must not fall through to a pause dialog.
 fn no_key_owner(
     card: Option<Res<crate::lesson_flow::FlowCard>>,
     ui: Option<Res<crate::view::Ui>>,
+    over: Option<Res<crate::combat::MissionOver>>,
 ) -> bool {
-    keys_free(crate::lesson_flow::modal(card), crate::view::panel_focused(ui.as_deref()))
+    keys_free(
+        crate::lesson_flow::modal(card),
+        crate::view::panel_focused(ui.as_deref()),
+        over.is_some(),
+    )
 }
 
-/// The pause menu's key line is free while neither a lesson popup nor the
-/// focused MCP panel owns the flight's keys.
-fn keys_free(modal_open: bool, panel_focus: bool) -> bool {
-    !modal_open && !panel_focus
+/// The pause menu's key line is free while neither a lesson popup, the focused
+/// MCP panel, nor the combat mission card owns the flight's keys.
+fn keys_free(modal_open: bool, panel_focus: bool, mission_card: bool) -> bool {
+    !modal_open && !panel_focus && !mission_card
 }
 
 /// Escape owns the pause state machine: open on Esc, resume on Esc, confirm
@@ -246,9 +254,10 @@ mod tests {
     /// `not`, so it must return the runnable case — this pins that.
     #[test]
     fn the_pause_menu_waits_for_a_free_key_line() {
-        assert!(keys_free(false, false)); // nothing else on screen: Esc pauses
-        assert!(!keys_free(true, false)); // a lesson popup owns the keys
-        assert!(!keys_free(false, true)); // the MCP panel owns Esc
-        assert!(!keys_free(true, true));
+        assert!(keys_free(false, false, false)); // nothing else on screen: Esc pauses
+        assert!(!keys_free(true, false, false)); // a lesson popup owns the keys
+        assert!(!keys_free(false, true, false)); // the MCP panel owns Esc
+        assert!(!keys_free(true, true, false));
+        assert!(!keys_free(false, false, true)); // the mission card owns Esc
     }
 }
