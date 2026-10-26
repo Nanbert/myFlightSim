@@ -143,6 +143,9 @@ pub struct JetAutomationMeter {
     window1_ok: Option<bool>,
     stop_called: bool,
     stop_at: f32,
+    /// The call just fired this frame — the system sends the voice event and
+    /// clears the flag so the callout only plays once.
+    call_fired: bool,
     stop_pressed: bool,
     stop_react: Option<f32>,
     /// Leg 2: the turn onset (the A/P banking on the bug), its window
@@ -331,6 +334,7 @@ fn tick(m: &mut JetAutomationMeter, t: Telem, now: f32, dt: f32) {
             if !m.stop_called && m.lvlchg_at.is_some() && t.alt_ft >= STOP_ALT {
                 m.stop_called = true;
                 m.stop_at = m.secs;
+                m.call_fired = true;
                 m.callout =
                     Some(("ATC - STOP THE CLIMB - 2 ALT HOLD".to_owned(), now + CALLOUT_SECS));
             }
@@ -522,6 +526,7 @@ fn step_m6(
     lesson: Res<ActiveLesson>,
     time: Res<Time>,
     mut m: ResMut<JetAutomationMeter>,
+    mut events: MessageWriter<crate::atc_voice::AtcVoiceEvent>,
 ) {
     if map.0.is_some() || lesson.0 != Some(Lesson::JetAutomation) {
         return;
@@ -548,6 +553,13 @@ fn step_m6(
         time.elapsed_secs(),
         time.delta_secs(),
     );
+    // The ATC stop-climb just fired: send the voice event once.
+    if m.call_fired {
+        events.write(
+            crate::atc_voice::AtcVoiceEvent(crate::atc_voice::AtcVoiceKind::AltHold),
+        );
+        m.call_fired = false;
+    }
 }
 
 pub struct JetAutomationLessonPlugin;

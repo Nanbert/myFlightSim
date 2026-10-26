@@ -150,6 +150,9 @@ pub struct JetGoAroundMeter {
     gate_checked: bool,
     /// The trigger frame's baselines.
     trig: Option<TrigFrame>,
+    /// The call just fired this frame — the system sends the voice event and
+    /// clears the flag so the callout only plays once.
+    call_fired: bool,
     /// Seconds since the call, and the reaction stamp against it.
     secs: f32,
     react_s: Option<f32>,
@@ -275,6 +278,7 @@ fn tick(m: &mut JetGoAroundMeter, t: Telem, now: f32, dt: f32) {
                     at: t.at,
                 });
                 m.callout = Some(("GO AROUND - GO AROUND".to_owned(), now + CALLOUT_SECS));
+                m.call_fired = true;
                 m.phase = Phase::Initiated;
             }
         }
@@ -508,6 +512,7 @@ fn step_m4(
     lesson: Res<ActiveLesson>,
     time: Res<Time>,
     mut m: ResMut<JetGoAroundMeter>,
+    mut events: MessageWriter<crate::atc_voice::AtcVoiceEvent>,
 ) {
     if map.0.is_some() || lesson.0 != Some(Lesson::JetGoAround) {
         return;
@@ -530,6 +535,11 @@ fn step_m4(
         time.elapsed_secs(),
         time.delta_secs(),
     );
+    // The scripted call just fired: send the voice event once.
+    if m.call_fired {
+        events.write(crate::atc_voice::AtcVoiceEvent(crate::atc_voice::AtcVoiceKind::GoAround));
+        m.call_fired = false;
+    }
 }
 
 pub struct JetGoAroundLessonPlugin;

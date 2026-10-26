@@ -120,6 +120,9 @@ pub struct JetRtoMeter {
     stop_s: Option<f32>,
     /// The flap setting at the call — the V1 the FAIL rides on.
     flap_at_call: f64,
+    /// The call just fired this frame — the system sends the voice event and
+    /// clears the flag so the callout only plays once.
+    call_fired: bool,
     /// The peak after the call, and the centreline sampler.
     peak_gs: f64,
     centre_sum: f32,
@@ -236,6 +239,7 @@ fn tick(m: &mut JetRtoMeter, t: Telem, now: f32, dt: f32) {
             if t.on_ground && m.last_gs < CALL_GS && t.gs_kts >= CALL_GS {
                 m.flap_at_call = t.flap_deg;
                 m.callout = Some(("STOP - STOP".to_owned(), now + CALLOUT_SECS));
+                m.call_fired = true;
                 m.phase = Phase::Called;
             }
         }
@@ -406,6 +410,7 @@ fn step_m5(
     lesson: Res<ActiveLesson>,
     time: Res<Time>,
     mut m: ResMut<JetRtoMeter>,
+    mut events: MessageWriter<crate::atc_voice::AtcVoiceEvent>,
 ) {
     if map.0.is_some() || lesson.0 != Some(Lesson::JetRto) {
         return;
@@ -426,6 +431,13 @@ fn step_m5(
         time.elapsed_secs(),
         time.delta_secs(),
     );
+    // The scripted call just fired: send the voice event once.
+    if m.call_fired {
+        events.write(
+            crate::atc_voice::AtcVoiceEvent(crate::atc_voice::AtcVoiceKind::Stop),
+        );
+        m.call_fired = false;
+    }
 }
 
 pub struct JetRtoLessonPlugin;
