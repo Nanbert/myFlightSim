@@ -60,6 +60,7 @@ pub mod pedestal_layout;
 pub mod pedestal_bake;
 pub mod pedestal_ui;
 pub mod pfd;
+pub mod radio;
 pub mod scoring;
 pub mod sim;
 pub mod sky;
@@ -169,6 +170,7 @@ pub fn run() {
         .add_plugins(mcp_panel::McpPanelPlugin)
         .add_plugins(pedestal_ui::PedestalUiPlugin)
         .add_plugins(g_strain::GStrainPlugin)
+        .add_plugins(radio::RadioPlugin)
         // After the menu: it builds terrain for whatever mission
         // `start_flight` just launched. (A separate call: Bevy's plugin tuples
         // top out at 15.)

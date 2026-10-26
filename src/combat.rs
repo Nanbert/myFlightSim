@@ -21,6 +21,7 @@ use crate::app_state::{flying, unpaused, AppState, Paused};
 use crate::config::{AmmoSetting, CombatConfig, GameConfig};
 use crate::input::Bindings;
 use crate::map::{ActiveMap, ARENA_HALF, MapId, ground_height};
+use crate::radio::{RadioCue, RadioEvent};
 use crate::sim::{AircraftState, Sim};
 use crate::ui_theme;
 use crate::view::{model_to_body, AircraftRoot};
@@ -246,6 +247,13 @@ impl Default for Combat {
             bay: 0.0,
             wave_done: false,
         }
+    }
+}
+
+impl Combat {
+    /// Out of missiles and AMRAAMs. Infinite stores are never dry.
+    fn missiles_dry(&self) -> bool {
+        !self.missiles_inf && !self.bvr_inf && self.missiles <= 0 && self.bvr <= 0
     }
 }
 
@@ -488,6 +496,7 @@ impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Combat>()
             .init_resource::<Wander>()
+            .init_resource::<SixWatch>()
             .add_systems(Startup, (setup_launch_tone, setup_combat_sfx))
             .add_systems(
                 Update,
@@ -495,6 +504,7 @@ impl Plugin for CombatPlugin {
                     spawn_combat,
                     update_lock,
                     update_bandits,
+                    watch_six_oclock,
                     fire_weapons,
                     guide_missiles,
                     guide_threats,
@@ -606,10 +616,16 @@ pub(crate) fn wav_bytes(samples: &[i16]) -> Vec<u8> {
     out
 }
 
-fn reset_combat(mut commands: Commands, mut combat: ResMut<Combat>, config: Res<GameConfig>) {
+fn reset_combat(
+    mut commands: Commands,
+    mut combat: ResMut<Combat>,
+    mut six: ResMut<SixWatch>,
+    config: Res<GameConfig>,
+) {
     // A fresh flight forgets any mission card the previous one raised.
     commands.remove_resource::<MissionOver>();
     *combat = Combat::default();
+    six.had = false;
     combat.settings = config.combat("f22");
     apply_stores(&mut combat);
 }
@@ -718,6 +734,7 @@ fn spawn_combat(
     mut wander: ResMut<Wander>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut radio: MessageWriter<RadioEvent>,
 ) {
     if combat.spawned || !existing.is_empty() || !combat_active(&sim, &state, &map) {
         return;
@@ -742,6 +759,8 @@ fn spawn_combat(
     }
     combat.spawned = true;
     combat.wave = 1;
+    // The net checks in once the first wave is up.
+    radio.write(RadioEvent(RadioCue::Kickoff));
     // Screenshot hooks: hold the first bandit locked, and optionally start on
     // the BVR store.
     if std::env::var("COMBAT_LOCK").is_ok() {
@@ -1197,6 +1216,7 @@ fn update_bandits(
     player: Query<&Transform, (With<AircraftRoot>, Without<Bandit>)>,
     mut q: Query<(&mut Bandit, &mut Transform)>,
     threats: Query<&EnemyMissile>,
+    mut radio: MessageWriter<RadioEvent>,
 ) {
     let dt = time.delta_secs();
     let (Ok(player_tf), Some(assets)) = (player.single(), assets) else {
@@ -1264,6 +1284,7 @@ fn update_bandits(
             && inbound < MAX_INBOUND
         {
             bandit.fire_cd = wander.range(FIRE_CD_S * 0.6, FIRE_CD_S * 1.6);
+            radio.write(RadioEvent(RadioCue::Inbound));
             spawn_threat(
                 &mut commands,
                 &assets,
@@ -1276,10 +1297,59 @@ fn update_bandits(
     }
 }
 
+/// Whether the tail cone was occupied last frame. Reset with the flight so a
+/// retry can call the tail bandit again, and held as a resource rather than a
+/// `Local` so `OnEnter(Flying)` can clear it before the new wave spawns.
+#[derive(Resource, Default)]
+struct SixWatch {
+    had: bool,
+}
+
+/// The six o'clock watch: a condition, not an event. The TSD marks are easy to
+/// miss while flying the jet, so a drone sliding onto the tail gets a call —
+/// on the edge only, or a bandit parked behind would nag every cooldown. While
+/// a missile is already in the air the emergency call owns the net.
+fn watch_six_oclock(
+    root: Query<&Transform, With<AircraftRoot>>,
+    bandits: Query<&Transform, With<Bandit>>,
+    threats: Query<&EnemyMissile>,
+    mut radio: MessageWriter<RadioEvent>,
+    mut watch: ResMut<SixWatch>,
+) {
+    let Ok(root) = root.single() else {
+        return;
+    };
+    let fwd = root.rotation * Vec3::NEG_Z;
+    let threatened = bandits
+        .iter()
+        .any(|tf| on_the_six(root.translation, fwd, tf.translation, SIX_RANGE_M));
+    let entered = threatened && !watch.had;
+    watch.had = threatened;
+    if !entered {
+        return;
+    }
+    if threats.iter().any(|m| m.decoy.is_none()) {
+        return;
+    }
+    radio.write(RadioEvent(RadioCue::BanditSix));
+}
+
 /// True when `other` sits aft of the player's beam, i.e. the player would have
 /// to look back to see it. Drones only shoot from there.
 fn behind_the_tail(player_pos: Vec3, player_fwd: Vec3, other: Vec3) -> bool {
     (other - player_pos).dot(player_fwd) < 0.0
+}
+
+/// A drone inside the tail cone. "Behind the beam" is not enough for a
+/// six-o'clock call, so this asks for more than 120° off the nose. Drones
+/// shoot from 2.6 km, which leaves a few seconds between this warning and the
+/// launch.
+const SIX_RANGE_M: f32 = 4_500.0;
+
+fn on_the_six(player_pos: Vec3, player_fwd: Vec3, other: Vec3, max_range: f32) -> bool {
+    let to = other - player_pos;
+    let dist = to.length();
+    dist > 1.0 && dist <= max_range && to.dot(player_fwd) < -0.5 * dist
 }
 
 /// The drone's shot gate: the jet has to sit in the nose cone and inside the
@@ -1342,6 +1412,8 @@ fn update_lock(
     root: Query<&Transform, With<AircraftRoot>>,
     bandits: Query<(Entity, &Transform), With<Bandit>>,
     mut combat: ResMut<Combat>,
+    mut radio: MessageWriter<RadioEvent>,
+    mut was_locked: Local<bool>,
 ) {
     let Ok(root) = root.single() else {
         return;
@@ -1385,6 +1457,14 @@ fn update_lock(
     if std::env::var("COMBAT_LOCK").is_ok() {
         combat.lock = bandits.iter().next().map(|(e, _)| e);
     }
+
+    // First lock of the flight: the wingman calls visual. An edge, not a
+    // level — cycling targets every second must not turn into a tally loop.
+    let locked = combat.lock.is_some();
+    if locked && !*was_locked {
+        radio.write(RadioEvent(RadioCue::Tally));
+    }
+    *was_locked = locked;
 
     let Some(key) = key_of(&bindings, ToggleAction::CycleTarget) else {
         return;
@@ -1433,6 +1513,7 @@ fn fire_weapons(
     sfx: Res<CombatSfx>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut combat: ResMut<Combat>,
+    mut radio: MessageWriter<RadioEvent>,
 ) {
     let (Ok(root), Some(assets)) = (root.single(), assets) else {
         return;
@@ -1465,6 +1546,7 @@ fn fire_weapons(
                             combat.missiles % 2 == 0
                         };
                         combat.ir_shots = combat.ir_shots.wrapping_add(1);
+                        radio.write(RadioEvent(RadioCue::FoxTwo));
                         let bay = Vec3::new(if left { 0.176 } else { -0.176 }, 0.014, -0.01);
                         let origin = root.translation + root.rotation * model_to_body("f22", bay);
                         let dir = (target_tf.translation - origin).normalize_or_zero();
@@ -1536,6 +1618,9 @@ fn fire_weapons(
                                 }
                             }
                         }
+                        if combat.missiles_dry() {
+                            radio.write(RadioEvent(RadioCue::Winchester));
+                        }
                     }
                     Weapon::Bvr if combat.bvr > 0 || combat.bvr_inf => {
                         // The model has no main bay: the AIM-120 leaves from a
@@ -1597,8 +1682,12 @@ fn fire_weapons(
                                 DespawnOnExit(AppState::Flying),
                             ));
                         }
+                        radio.write(RadioEvent(RadioCue::FoxThree));
                         if !combat.bvr_inf {
                             combat.bvr -= 1;
+                        }
+                        if combat.missiles_dry() {
+                            radio.write(RadioEvent(RadioCue::Winchester));
                         }
                     }
                     _ => {}
@@ -1700,6 +1789,7 @@ fn fire_weapons(
                 PlaybackSettings::DESPAWN.with_volume(Volume::Linear(FLARE_VOLUME)),
                 DespawnOnExit(AppState::Flying),
             ));
+            radio.write(RadioEvent(RadioCue::Flares));
         }
     }
 }
@@ -1895,6 +1985,7 @@ fn guide_missiles(
     mut missiles: Query<(Entity, &mut Missile, &mut Transform), Without<Bandit>>,
     mut flames: Query<&mut Transform, (With<MissileFlame>, Without<Missile>, Without<Bandit>)>,
     bandits: Query<(&Bandit, &Transform), Without<Missile>>,
+    mut radio: MessageWriter<RadioEvent>,
 ) {
     let Some(assets) = assets else {
         return;
@@ -1947,6 +2038,10 @@ fn guide_missiles(
             commands.entity(m.target).despawn();
             boom(&mut commands, &assets, at);
             combat.kills += 1;
+            radio.write(RadioEvent(RadioCue::Splash));
+            if combat.kills % 2 == 0 {
+                radio.write(RadioEvent(RadioCue::GoodKill));
+            }
         }
     }
 }
@@ -1992,6 +2087,7 @@ fn update_tracers(
     mut combat: ResMut<Combat>,
     mut tracers: Query<(Entity, &mut Tracer, &mut Transform), Without<Bandit>>,
     mut bandits: Query<(Entity, &mut Bandit, &Transform), Without<Tracer>>,
+    mut radio: MessageWriter<RadioEvent>,
 ) {
     let Some(assets) = assets else {
         return;
@@ -2020,6 +2116,10 @@ fn update_tracers(
                 commands.entity(bandit_entity).despawn();
                 boom(&mut commands, &assets, at);
                 combat.kills += 1;
+                radio.write(RadioEvent(RadioCue::Splash));
+                if combat.kills % 2 == 0 {
+                    radio.write(RadioEvent(RadioCue::GoodKill));
+                }
             }
         } else if tracer.life <= 0.0 {
             commands.entity(entity).despawn();
@@ -2100,6 +2200,7 @@ fn mission_complete(
     over: Option<Res<MissionOver>>,
     bandits: Query<(), With<Bandit>>,
     threats: Query<(Entity, &EnemyMissile)>,
+    mut radio: MessageWriter<RadioEvent>,
 ) {
     if over.is_some() || !combat.spawned || combat.wave_done || bandits.iter().next().is_some() {
         return;
@@ -2111,6 +2212,8 @@ fn mission_complete(
         }
     }
     combat.wave_done = true;
+    // Sent before the card goes up so the net signs off with the last kill.
+    radio.write(RadioEvent(RadioCue::PictureClean));
     commands.insert_resource(MissionOver(Outcome::Success));
     spawn_mission_card(&mut commands, Outcome::Success, combat.kills);
 }
@@ -2847,6 +2950,21 @@ mod tests {
     fn range_label_switches_at_a_kilometre() {
         assert_eq!(range_label(850.0), "850M");
         assert_eq!(range_label(1250.0), "1.2KM");
+    }
+
+    #[test]
+    fn six_oclock_is_the_tail_cone() {
+        let p = Vec3::ZERO;
+        let fwd = Vec3::NEG_Z;
+        let range = SIX_RANGE_M;
+        // Dead astern and inside the range.
+        assert!(on_the_six(p, fwd, Vec3::new(0.0, 0.0, 3_000.0), range));
+        // Dead ahead, too far, or on the beam: no call.
+        assert!(!on_the_six(p, fwd, Vec3::new(0.0, 0.0, -3_000.0), range));
+        assert!(!on_the_six(p, fwd, Vec3::new(0.0, 0.0, 9_000.0), range));
+        assert!(!on_the_six(p, fwd, Vec3::new(4_000.0, 0.0, 0.0), range));
+        // 45° behind the wing is still "on your six".
+        assert!(on_the_six(p, fwd, Vec3::new(3_000.0, 0.0, 3_000.0), range));
     }
 
     #[test]

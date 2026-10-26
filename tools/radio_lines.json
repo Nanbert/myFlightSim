@@ -1,0 +1,159 @@
+{
+  "builtin_model": "~/.modelscope/models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+  "hiss": "assets/audio/atc_static/carrier_hiss_v1.wav",
+  "voices": {
+    "awacs": {
+      "name": "Uncle_Fu",
+      "clone": {
+        "model": "~/.modelscope/models/Qwen/Qwen3-TTS-12Hz-1___7B-Base",
+        "ref": "assets/audio/atc/c172_m1_taxi_Uncle_Fu_radio.wav",
+        "ref_text": "Cessna Seventeen two, taxi two four left, Alpha Tango.",
+        "dtype": "bfloat16"
+      }
+    },
+    "wing": {
+      "name": "Eric",
+      "speaker": "Eric"
+    },
+    "pilot": {
+      "name": "Aiden",
+      "speaker": "Aiden"
+    }
+  },
+  "lines": [
+    {
+      "id": "r01_kickoff",
+      "note": "第一波生成：AWACS 报局面，长机回 Roger（双人对话拼一条）",
+      "parts": [
+        {
+          "role": "awacs",
+          "text": "Raptor one one, Darkstar. Bandits, twelve o'clock, two miles, hot.",
+          "speed": 1.2
+        },
+        {
+          "gap": 0.8
+        },
+        {
+          "role": "pilot",
+          "text": "Roger.",
+          "speed": 1.0
+        }
+      ]
+    },
+    {
+      "id": "r02_tally",
+      "note": "首次锁定：僚机目视确认",
+      "parts": [
+        {
+          "role": "wing",
+          "text": "Two, tally. Engaging.",
+          "speed": 1.05
+        }
+      ]
+    },
+    {
+      "id": "r03_fox2",
+      "note": "红外弹发射",
+      "parts": [
+        {
+          "role": "pilot",
+          "text": "Fox two.",
+          "speed": 1.0
+        }
+      ]
+    },
+    {
+      "id": "r04_fox3",
+      "note": "主动弹发射",
+      "parts": [
+        {
+          "role": "pilot",
+          "text": "Fox three.",
+          "speed": 1.0
+        }
+      ]
+    },
+    {
+      "id": "r05_splash",
+      "note": "击落一架",
+      "parts": [
+        {
+          "role": "pilot",
+          "text": "Splash one.",
+          "speed": 1.0
+        }
+      ]
+    },
+    {
+      "id": "r06_goodkill",
+      "note": "偶数架击落，僚机夸一句",
+      "parts": [
+        {
+          "role": "wing",
+          "text": "Good kill, one one.",
+          "speed": 1.05
+        }
+      ]
+    },
+    {
+      "id": "r07_inbound",
+      "note": "敌弹来袭（敌机只从尾后发射，六点钟是真的）",
+      "parts": [
+        {
+          "role": "wing",
+          "text": "Raptor one one, missile launch, six o'clock!",
+          "speed": 1.15
+        }
+      ]
+    },
+    {
+      "id": "r08_flares",
+      "note": "放热焰弹",
+      "parts": [
+        {
+          "role": "pilot",
+          "text": "Flares, flares.",
+          "speed": 1.05
+        }
+      ]
+    },
+    {
+      "id": "r09_winchester",
+      "note": "导弹打光",
+      "parts": [
+        {
+          "role": "pilot",
+          "text": "Winchester.",
+          "speed": 1.0
+        }
+      ]
+    },
+    {
+      "id": "r10_pictureclean",
+      "note": "清场",
+      "parts": [
+        {
+          "role": "awacs",
+          "text": "Raptor one one, picture clean. R T B.",
+          "speed": 1.2
+        }
+      ]
+    },
+    {
+      "id": "r11_bandit_six",
+      "note": "六点钟：尾后有敌机滑上来",
+      "parts": [
+        {
+          "role": "wing",
+          "text": "Raptor one one, bandit on your six!",
+          "speed": 1.15
+        }
+      ]
+    }
+  ],
+  "bed": {
+    "kind": "noise",
+    "rms_dbfs": -35.0,
+    "note": "带通白噪载波；atc_static 里的底噪带数字静音，只适合 file 模式"
+  }
+}
