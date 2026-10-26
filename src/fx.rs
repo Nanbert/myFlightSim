@@ -192,7 +192,7 @@ struct FlamePuffMaterial {
     params: FlamePuffParams,
 }
 
-blend_material!(FlamePuffMaterial, "shaders/flame_puff.wesl");
+blend_material!(FlamePuffMaterial, "shaders/flame_puff.wesl", crate::ui_theme::SORT_TOP_BIAS);
 
 /// One billboard of a nozzle's plume, addressed by its slot in [`Plume`]. Not
 /// parented to the aircraft: it is positioned in world space each frame from its

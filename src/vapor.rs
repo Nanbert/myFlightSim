@@ -300,7 +300,7 @@ struct PuffMaterial {
     params: PuffParams,
 }
 
-blend_material!(PuffMaterial, "shaders/vapor_puff.wesl");
+blend_material!(PuffMaterial, "shaders/vapor_puff.wesl", crate::ui_theme::SORT_TOP_BIAS);
 
 /// One quad of a wingtip trail, addressed by its slot in [`Trails`]. Not
 /// parented to the aircraft: the puffs hang in world space once dropped.
@@ -359,7 +359,7 @@ struct ConeMaterial {
     params: ConeParams,
 }
 
-blend_material!(ConeMaterial, "shaders/vapor_cone.wesl");
+blend_material!(ConeMaterial, "shaders/vapor_cone.wesl", crate::ui_theme::SORT_TOP_BIAS);
 
 #[derive(Component)]
 struct VaporCone;
@@ -419,7 +419,7 @@ struct SheetMaterial {
     params: SheetParams,
 }
 
-blend_material!(SheetMaterial, "shaders/vapor_sheet.wesl");
+blend_material!(SheetMaterial, "shaders/vapor_sheet.wesl", crate::ui_theme::SORT_TOP_BIAS);
 
 /// One attached sheet per wing. The mesh is authored in the body frame and
 /// parented to `AircraftRoot`, so the vapor stays on the wing instead of being
@@ -484,7 +484,7 @@ struct VolumeMaterial {
     params: VolumeParams,
 }
 
-blend_material!(VolumeMaterial, "shaders/vapor_volume.wesl");
+blend_material!(VolumeMaterial, "shaders/vapor_volume.wesl", crate::ui_theme::SORT_TOP_BIAS);
 
 /// Uniform for `assets/shaders/vapor_box.wesl`.
 #[derive(Clone, Copy, ShaderType, Default)]
@@ -507,7 +507,7 @@ struct BoxMaterial {
     params: BoxParams,
 }
 
-blend_material!(BoxMaterial, "shaders/vapor_box.wesl");
+blend_material!(BoxMaterial, "shaders/vapor_box.wesl", crate::ui_theme::SORT_TOP_BIAS);
 
 /// Soft dark pool on the wing under a mass. It gives the white cloud a base to
 /// sit on and keeps it from reading as a floating oval against the white wing.
@@ -525,7 +525,7 @@ struct ShadowMaterial {
     params: ShadowParams,
 }
 
-blend_material!(ShadowMaterial, "shaders/vapor_shadow.wesl");
+blend_material!(ShadowMaterial, "shaders/vapor_shadow.wesl", crate::ui_theme::SORT_TOP_BIAS);
 
 #[derive(Component)]
 struct MassShadow {

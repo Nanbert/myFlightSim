@@ -253,6 +253,15 @@ impl Material for WaterMaterial {
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Blend
     }
+    /// Always sort as the *farthest* translucent surface, so the sea is drawn
+    /// first among the blends and every other translucent thing — cloud cards,
+    /// wing vapor, exhaust plumes — composites over it. The sea is one huge
+    /// plane whose centre sits near the map middle, so its plain distance sort
+    /// reads "very close" whenever the jet is near the middle: the water then
+    /// drew *after* a trail a few kilometres up and washed it away.
+    fn depth_bias(&self) -> f32 {
+        crate::ui_theme::SORT_BOTTOM_BIAS
+    }
 }
 
 // --- scene -------------------------------------------------------------------

@@ -186,14 +186,29 @@ pub fn float_report<M: Component + Default>(commands: &mut Commands, anchor: Rep
 
 /// A translucent `Material` (`AlphaMode::Blend`) bound to one `.wesl` shader:
 /// `blend_material!(PuffMaterial, "shaders/vapor_puff.wesl");`
+///
+/// An optional third argument biases the material's transparent sort distance
+/// in metres (see `Material::depth_bias`): the transparent phase draws the
+/// smallest `view depth + bias` key first, and view depth runs negative in
+/// front of the camera — so a **positive** bias always draws the material
+/// **last**, over every other translucent surface (clouds, sea), a negative
+/// one always first. Same-material entities still order among themselves by
+/// real distance, so the bias only moves a whole family, never reorders
+/// inside it.
 macro_rules! blend_material {
     ($mat:ty, $path:literal) => {
+        blend_material!($mat, $path, 0.0);
+    };
+    ($mat:ty, $path:literal, $bias:expr) => {
         impl Material for $mat {
             fn fragment_shader() -> ShaderRef {
                 $path.into()
             }
             fn alpha_mode(&self) -> AlphaMode {
                 AlphaMode::Blend
+            }
+            fn depth_bias(&self) -> f32 {
+                $bias
             }
             fn enable_prepass() -> bool {
                 false
@@ -205,6 +220,20 @@ macro_rules! blend_material {
     };
 }
 pub(crate) use blend_material;
+
+/// Transparent sort biases, metres (see `blend_material!`). The transparent
+/// phase sorts ascending on `rangefinder.distance + bias` — view depth, which
+/// runs *negative* in front of the camera — and draws the smallest key first
+/// (back to front). A positive bias therefore pushes a material toward the
+/// end of the draw order (on top), a negative one toward the start (under).
+/// Both dwarf the distances a player can span inside the 48 km arena, so no
+/// genuine view distance can outweigh them.
+/// `TOP` pins a family (wing vapor, exhaust plume) to draw **last**: over the
+/// cloud cards and the sea, which mis-sort it because their huge footprints
+/// sort by a distant centre. `BOTTOM` pins the sea to draw **first**, under
+/// everything translucent.
+pub(crate) const SORT_TOP_BIAS: f32 = 60_000.0;
+pub(crate) const SORT_BOTTOM_BIAS: f32 = -60_000.0;
 
 /// An opaque `Material` bound to one `.wesl` shader:
 /// `opaque_material!(TerrainMaterial, "shaders/terrain.wesl");`
@@ -300,5 +329,30 @@ pub fn set_display<M: Component>(mut q: Query<&mut Node, With<M>>, want: Display
         if node.display != want {
             node.display = want;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The translucent draw order is a sandwich: the sea always first
+    /// (`BOTTOM` sorts farthest), cloud cards by their real distance in the
+    /// middle, the vapor and plume families always last (`TOP` sorts nearest).
+    /// The biases only have to dwarf the distances a *player* can span — the
+    /// 48 km arena boundary — so an in-game view distance can never outweigh
+    /// them. (Beyond the boundary the plain distance may win, and then it is
+    /// also the physically correct order.)
+    #[test]
+    fn sort_biases_sandwich_the_translucent_order() {
+        // `TOP` positive draws last (nearest key), `BOTTOM` negative first;
+        // the magnitude checks imply the signs.
+        assert!(
+            SORT_TOP_BIAS > 48_000.0 && SORT_BOTTOM_BIAS.abs() > 48_000.0,
+            "an in-arena distance could outweigh the bias"
+        );
+        // The cloud cards take the macro's two-argument form (bias 0, the
+        // bevy default): they keep the plain distance sort — the sandwich's
+        // middle layer.
     }
 }
