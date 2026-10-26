@@ -106,8 +106,22 @@ impl Default for ShotTimer {
 }
 
 pub fn run() {
+    // Web hosts (itch.io-style, nginx `try_files ... /index.html`, …) answer
+    // missing `*.meta` fetches with a 200 HTML page instead of a real 404, and
+    // the RON meta parse fails for every asset unprocessed assets don't ship
+    // meta files for anyway. Skip the meta round-trip on wasm; loaders fall
+    // back to their default meta, which is exactly what unprocessed assets
+    // need (Bevy issue #13442 / AssetMetaCheck).
+    #[cfg(target_arch = "wasm32")]
+    let asset_plugin = AssetPlugin {
+        meta_check: bevy::asset::AssetMetaCheck::Never,
+        ..default()
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let asset_plugin = AssetPlugin::default();
+
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
+        .add_plugins(DefaultPlugins.set(asset_plugin).set(WindowPlugin {
             primary_window: Some(Window {
                 title: "myFlightSim — Rust + Bevy".into(),
                 // The instrument panel is laid out for a wide screen: three
