@@ -353,9 +353,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Fly-through whiteout, applied last so the ground dissolves into the
     // cloud rather than into the horizon fog — the same veil and the same
-    // white the sea shader mixes toward.
+    // white the sea shader mixes toward, swept to the deck's dark blue-grey
+    // at night by the same night factor the palette uses.
     let veil = cam_veil((p - u.camera.xyz) / max(dist, 1e-4));
-    col = mix(col, vec3<f32>(0.90, 0.94, 1.0) * (1.0 - 0.22 * u.sun.w), veil * 0.85);
+    let veil_col = mix(
+        vec3<f32>(0.90, 0.94, 1.0) * (1.0 - 0.22 * u.sun.w),
+        vec3<f32>(0.13, 0.14, 0.16),
+        night,
+    );
+    col = mix(col, veil_col, veil * 0.85);
 
     // 8-bit dither against banding in the big gradients.
     let dither = fract(sin(dot(p.xz, vec2<f32>(12.9898, 78.233))) * 43758.5453) - 0.5;

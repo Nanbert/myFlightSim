@@ -181,9 +181,16 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     col = mix(col, u.fog.rgb, clamp(haze, 0.0, 1.0));
 
     // Fly-through whiteout, applied last so the ground dissolves into the cloud
-    // rather than into the horizon fog.
+    // rather than into the horizon fog. The veil's target follows the night
+    // factor: sunlit white by day, the deck's dark blue-grey at night — a
+    // white veil after dark would glow like snow.
     let veil = cam_veil((p - u.camera.xyz) / max(dist, 1e-4));
-    col = mix(col, vec3<f32>(0.90, 0.94, 1.0) * (1.0 - 0.22 * rain), veil * 0.85);
+    let veil_col = mix(
+        vec3<f32>(0.90, 0.94, 1.0) * (1.0 - 0.22 * rain),
+        vec3<f32>(0.13, 0.14, 0.16),
+        night,
+    );
+    col = mix(col, veil_col, veil * 0.85);
 
     return vec4<f32>(col, 1.0);
 }
