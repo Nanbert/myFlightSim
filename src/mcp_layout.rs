@@ -166,8 +166,8 @@ pub const EXTRA_LABELS: &[(&str, f32, f32, f32)] = &[
     ("OFF", 260.0, 427.0, 18.0),
     ("F/D\nON", 2242.0, 305.0, 20.0),
     ("OFF", 2242.0, 417.0, 18.0),
-    ("DN", 1857.0, 225.0, 20.0),
-    ("UP", 1857.0, 400.0, 20.0),
+    ("UP", 1857.0, 225.0, 20.0),
+    ("DN", 1857.0, 400.0, 20.0),
 ];
 
 /// The lit glass of a window, excluding its bezel.
@@ -253,5 +253,31 @@ mod tests {
         for &(rect, _, _) in WINDOWS {
             assert!((0.0..=CROP_H).contains(&(rect.y0 - 38.0)));
         }
+    }
+
+    #[test]
+    fn the_wheel_labels_match_its_halves() {
+        // The wheel's upper half climbs and its lower half descends, so the
+        // UP label must sit above the DN label beside the wheel.
+        let wheel = VS_WHEEL;
+        let labels: Vec<(&str, f32)> = EXTRA_LABELS
+            .iter()
+            .filter(|(t, _, _, _)| matches!(*t, "UP" | "DN"))
+            .copied()
+            .map(|(t, x, y, _)| {
+                assert!(
+                    x > wheel.x0 && x - wheel.x1 < 50.0,
+                    "the {t} label sits beside the wheel"
+                );
+                (t, y)
+            })
+            .collect();
+        assert_eq!(labels.len(), 2, "one UP and one DN beside the wheel");
+        assert_eq!(labels[0].0, "UP", "the climbing half is labeled UP");
+        assert!(
+            labels[0].1 < labels[1].1,
+            "UP sits above DN the way the wheel's halves run"
+        );
+        assert_eq!(labels[1].0, "DN", "the descending half is labeled DN");
     }
 }
