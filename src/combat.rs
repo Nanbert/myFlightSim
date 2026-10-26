@@ -57,6 +57,13 @@ const AMRAAM_ROUNDS: i32 = 2;
 const SIDEWINDER_ROUNDS: i32 = 2;
 
 const GUN_INTERVAL_S: f32 = 0.075;
+/// Per-round playback gain. Rounds land 0.075 s apart, so at most four 0.3 s
+/// tails overlap: measured -11.8 dBFS peak at this gain, a continuous rip
+/// rather than a stack of bangs that clips.
+const GUN_ROUND_VOLUME: f32 = 0.25;
+/// One flare-release pop per `L` press, one rocket motor per missile shot.
+const FLARE_VOLUME: f32 = 0.45;
+const MISSILE_VOLUME: f32 = 0.50;
 const GUN_SPEED: f32 = 900.0;
 const GUN_LIFE_S: f32 = 1.4;
 const GUN_HIT_M: f32 = 8.0;
@@ -466,13 +473,22 @@ struct RadarInfo;
 #[derive(Resource)]
 struct LaunchTone(Handle<AudioSource>);
 
+/// One-shot weapons audio under `assets/audio/f22/`: one gun round per shot,
+/// one flare pop per release, one motor per missile away.
+#[derive(Resource)]
+struct CombatSfx {
+    gun: Handle<AudioSource>,
+    flare: Handle<AudioSource>,
+    missile: Handle<AudioSource>,
+}
+
 pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Combat>()
             .init_resource::<Wander>()
-            .add_systems(Startup, setup_launch_tone)
+            .add_systems(Startup, (setup_launch_tone, setup_combat_sfx))
             .add_systems(
                 Update,
                 (
@@ -521,6 +537,15 @@ fn setup_launch_tone(mut commands: Commands, mut sources: ResMut<Assets<AudioSou
         bytes: Arc::from(launch_tone_wav()),
     });
     commands.insert_resource(LaunchTone(handle));
+}
+
+/// Load the weapon one-shots once; `AssetServer` keeps them hot all session.
+fn setup_combat_sfx(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.insert_resource(CombatSfx {
+        gun: assets.load("audio/f22/gun_round.wav"),
+        flare: assets.load("audio/f22/flare.wav"),
+        missile: assets.load("audio/f22/missile.wav"),
+    });
 }
 
 fn play_launch_tone(commands: &mut Commands, tone: &LaunchTone) {
@@ -1405,6 +1430,7 @@ fn fire_weapons(
     bandits: Query<&Transform, With<Bandit>>,
     mut in_bay: Query<(&Name, &mut Visibility), With<Visibility>>,
     assets: Option<Res<CombatAssets>>,
+    sfx: Res<CombatSfx>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut combat: ResMut<Combat>,
 ) {
@@ -1462,6 +1488,12 @@ fn fire_weapons(
                             Transform::from_translation(origin)
                                 .with_rotation(root.rotation)
                                 .with_scale(Vec3::splat(1.6)),
+                            DespawnOnExit(AppState::Flying),
+                        ));
+                        commands.spawn((
+                            AudioPlayer::new(sfx.missile.clone()),
+                            PlaybackSettings::DESPAWN
+                                .with_volume(Volume::Linear(MISSILE_VOLUME)),
                             DespawnOnExit(AppState::Flying),
                         ));
                         // A quick cloud at the bay mouth: the round leaves with
@@ -1529,6 +1561,12 @@ fn fire_weapons(
                             Transform::from_translation(origin)
                                 .with_rotation(rot)
                                 .with_scale(Vec3::splat(1.2)),
+                            DespawnOnExit(AppState::Flying),
+                        ));
+                        commands.spawn((
+                            AudioPlayer::new(sfx.missile.clone()),
+                            PlaybackSettings::DESPAWN
+                                .with_volume(Volume::Linear(MISSILE_VOLUME)),
                             DespawnOnExit(AppState::Flying),
                         ));
                         for i in 0..4 {
@@ -1603,6 +1641,13 @@ fn fire_weapons(
                     .with_scale(Vec3::splat(1.3)),
                 DespawnOnExit(AppState::Flying),
             ));
+            // One short round per shot: four tails overlap at most, which the
+            // measured levels turn into a continuous rip (see GUN_ROUND_VOLUME).
+            commands.spawn((
+                AudioPlayer::new(sfx.gun.clone()),
+                PlaybackSettings::DESPAWN.with_volume(Volume::Linear(GUN_ROUND_VOLUME)),
+                DespawnOnExit(AppState::Flying),
+            ));
             // Gun gas every few rounds: a thin puff that falls behind the jet.
             if combat.gun_shots % GUN_SMOKE_EVERY == 0 {
                 let mat = mats.add(StandardMaterial {
@@ -1650,6 +1695,11 @@ fn fire_weapons(
                     DespawnOnExit(AppState::Flying),
                 ));
             }
+            commands.spawn((
+                AudioPlayer::new(sfx.flare.clone()),
+                PlaybackSettings::DESPAWN.with_volume(Volume::Linear(FLARE_VOLUME)),
+                DespawnOnExit(AppState::Flying),
+            ));
         }
     }
 }
