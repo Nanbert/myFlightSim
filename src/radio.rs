@@ -3,7 +3,7 @@
 //!
 //! Combat is already loud (gun, missiles, RWR tone); radio is the one channel
 //! that carries *information* over that noise, so it is deliberately sparse:
-//! ten event calls plus one condition watch (a bandit sliding onto the six),
+//! nine calls plus one condition watch (a bandit sliding onto the six),
 //! one voice on the air at a time, and a hard cooldown per call. The clips are baked one-shots (`assets/audio/radio/`,
 //! 48 kHz, −6 dBFS peak, band-passed 200–2600 Hz over a carrier bed) — the
 //! same radio chain as the ATC lesson voices, so the tower and Darkstar sound
@@ -15,8 +15,13 @@
 //!
 //! - **Emergency** (inbound missile call) steps on whatever is on the air;
 //! - **Scripted** (check-in, picture clean) always goes through;
-//! - **Event** (Fox / Splash / Flares / Winchester) is rate-limited;
+//! - **Event** (Fox / Splash / Winchester) is rate-limited;
 //! - **Flavor** (Tally, "good kill") is the first to be dropped when busy.
+//!
+//! Flare releases are deliberately off the net: the player pops them on a
+//! reflex, often several times a fight, and a brevity call every time buried
+//! the calls that matter (inbound, splash). The dispenser and the cartridge
+//! whoosh carry that moment; the counter sits on the HUD.
 //!
 //! A call is "on the air" while its player entity lives — `DESPAWN` removes it
 //! when the clip ends — plus an 8 s fallback so a missing asset can never
@@ -54,8 +59,6 @@ pub enum RadioCue {
     GoodKill,
     /// An enemy round is in the air — the one call that may cut in.
     Inbound,
-    /// Flares released.
-    Flares,
     /// Missiles gone.
     Winchester,
     /// Last bandit down: AWACS sends the flight home.
@@ -66,7 +69,7 @@ pub enum RadioCue {
 
 impl RadioCue {
     /// Every cue, in table order. `index()` must agree with this.
-    pub const ALL: [RadioCue; 11] = [
+    pub const ALL: [RadioCue; 10] = [
         RadioCue::Kickoff,
         RadioCue::Tally,
         RadioCue::FoxTwo,
@@ -74,7 +77,6 @@ impl RadioCue {
         RadioCue::Splash,
         RadioCue::GoodKill,
         RadioCue::Inbound,
-        RadioCue::Flares,
         RadioCue::Winchester,
         RadioCue::PictureClean,
         RadioCue::BanditSix,
@@ -89,10 +91,9 @@ impl RadioCue {
             RadioCue::Splash => 4,
             RadioCue::GoodKill => 5,
             RadioCue::Inbound => 6,
-            RadioCue::Flares => 7,
-            RadioCue::Winchester => 8,
-            RadioCue::PictureClean => 9,
-            RadioCue::BanditSix => 10,
+            RadioCue::Winchester => 7,
+            RadioCue::PictureClean => 8,
+            RadioCue::BanditSix => 9,
         }
     }
 }
@@ -127,9 +128,9 @@ struct Line {
     limit: Limit,
 }
 
-/// The ten calls, in [`RadioCue`] order. Cooldowns are longer than the clips
+/// The nine calls, in [`RadioCue`] order. Cooldowns are longer than the clips
 /// so a burst of hits cannot machine-gun the net.
-const LINES: [Line; 11] = [
+const LINES: [Line; 10] = [
     Line {
         cue: RadioCue::Kickoff,
         clip: "audio/radio/r01_kickoff.wav",
@@ -173,26 +174,20 @@ const LINES: [Line; 11] = [
         limit: Limit::Every(9.0),
     },
     Line {
-        cue: RadioCue::Flares,
-        clip: "audio/radio/r08_flares.wav",
-        priority: Priority::Event,
-        limit: Limit::Every(3.0),
-    },
-    Line {
         cue: RadioCue::Winchester,
-        clip: "audio/radio/r09_winchester.wav",
+        clip: "audio/radio/r08_winchester.wav",
         priority: Priority::Event,
         limit: Limit::Once,
     },
     Line {
         cue: RadioCue::PictureClean,
-        clip: "audio/radio/r10_pictureclean.wav",
+        clip: "audio/radio/r09_pictureclean.wav",
         priority: Priority::Scripted,
         limit: Limit::Once,
     },
     Line {
         cue: RadioCue::BanditSix,
-        clip: "audio/radio/r11_bandit_six.wav",
+        clip: "audio/radio/r10_bandit_six.wav",
         priority: Priority::Event,
         limit: Limit::Every(12.0),
     },
@@ -206,7 +201,7 @@ fn line(cue: RadioCue) -> &'static Line {
 /// The loaded clips. `None` slots simply never play, so the module keeps
 /// working if a bake is missing.
 #[derive(Resource)]
-struct RadioClips([Option<Handle<AudioSource>>; 11]);
+struct RadioClips([Option<Handle<AudioSource>>; 10]);
 
 impl Default for RadioClips {
     fn default() -> Self {
@@ -225,9 +220,9 @@ struct RadioQueue {
     /// When the current call started, for the fallback timeout.
     active_since: f32,
     /// Per-cue cooldown, seconds. `0` means ready.
-    cooldowns: [f32; 11],
+    cooldowns: [f32; 10],
     /// `Once` cues already spent this flight.
-    played: [bool; 11],
+    played: [bool; 10],
     /// Mandatory silence after the last call.
     gap: f32,
     /// One diagnostic line per flight, like `g_strain`'s first breath.
@@ -241,8 +236,8 @@ impl Default for RadioQueue {
             active: None,
             active_cue: None,
             active_since: 0.0,
-            cooldowns: [0.0; 11],
-            played: [false; 11],
+            cooldowns: [0.0; 10],
+            played: [false; 10],
             gap: 0.0,
             logged: false,
         }
@@ -454,8 +449,8 @@ mod tests {
     #[test]
     fn a_queued_cue_is_not_queued_twice() {
         let mut q = queue();
-        push_pending(&mut q, RadioCue::Flares);
-        assert!(!accepts(&q, RadioCue::Flares));
+        push_pending(&mut q, RadioCue::Splash);
+        assert!(!accepts(&q, RadioCue::Splash));
     }
 
     #[test]
@@ -477,11 +472,11 @@ mod tests {
         let mut q = queue();
         push_pending(&mut q, RadioCue::Tally);
         push_pending(&mut q, RadioCue::GoodKill);
-        push_pending(&mut q, RadioCue::Flares);
+        push_pending(&mut q, RadioCue::Splash);
         assert_eq!(q.pending.len(), MAX_PENDING);
-        // Flares is the only Event in the mix, so the flavor calls are the ones
+        // Splash is the only Event in the mix, so the flavor calls are the ones
         // that make way for it.
-        assert!(q.pending.contains(&RadioCue::Flares));
+        assert!(q.pending.contains(&RadioCue::Splash));
         assert!(!q.pending.contains(&RadioCue::GoodKill));
     }
 

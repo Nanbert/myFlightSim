@@ -107,18 +107,7 @@
       ]
     },
     {
-      "id": "r08_flares",
-      "note": "放热焰弹",
-      "parts": [
-        {
-          "role": "pilot",
-          "text": "Flares, flares.",
-          "speed": 1.05
-        }
-      ]
-    },
-    {
-      "id": "r09_winchester",
+      "id": "r08_winchester",
       "note": "导弹打光",
       "parts": [
         {
@@ -129,7 +118,7 @@
       ]
     },
     {
-      "id": "r10_pictureclean",
+      "id": "r09_pictureclean",
       "note": "清场",
       "parts": [
         {
@@ -140,7 +129,7 @@
       ]
     },
     {
-      "id": "r11_bandit_six",
+      "id": "r10_bandit_six",
       "note": "六点钟：尾后有敌机滑上来",
       "parts": [
         {
