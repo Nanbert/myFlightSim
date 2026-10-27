@@ -30,8 +30,9 @@ fn fog_mode() -> bool {
 
 /// `CLOUD_MODE=volume` runs the AC7-style custom pass instead of the Bevy fog
 /// spike: procedural density, a sun march for self-shadowing, sky ambient.
-// Only desktop call sites exist (the pass and its types are `cfg`-gated).
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+// Both call sites are desktop-gated with the pass itself, so the helper goes
+// with them rather than lingering as dead code on the web build.
+#[cfg(not(target_arch = "wasm32"))]
 fn volume_mode() -> bool {
     // The volumetric pass is desktop-only: web gets the card clouds.
     cfg!(not(target_arch = "wasm32"))

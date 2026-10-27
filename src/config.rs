@@ -98,10 +98,6 @@ impl AmmoSetting {
         }
     }
 
-    pub fn is_infinite(self) -> bool {
-        matches!(self, AmmoSetting::Infinite)
-    }
-
     /// The next choice in the menu cycle: STOCK, 1 ... 10, INF (and back).
     pub fn cycled(self, dir: isize) -> Self {
         const CHOICES: usize = 12; // stock + 1..=10 + infinite

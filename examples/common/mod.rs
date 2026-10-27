@@ -11,6 +11,9 @@
 //! `examples/` and subdirectories with a `main.rs`, so this `mod.rs` is only
 //! linked by the examples that declare it.
 
+// Each example links this module whole but uses only the pieces it needs, so
+// the rest looks dead from that binary's point of view. Every item here is used
+// by at least one example; check that before adding one more.
 #![allow(dead_code)]
 
 use bevy::prelude::*;

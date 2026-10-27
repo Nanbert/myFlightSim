@@ -42,10 +42,6 @@ pub const GS_DOT_DEG: f64 = 0.35;
 pub struct Ils {
     /// True while the aircraft is inside one of the two approach volumes.
     pub available: bool,
-    /// Lateral offset from the centreline, metres; + right of course.
-    /// (Kept for the route display; the capture laws work in degrees.)
-    #[allow(dead_code)]
-    pub loc_offset_m: f64,
     /// Angular localizer deviation, degrees; + right of course.
     pub loc_dev_deg: f64,
     /// Angular glideslope deviation, degrees; + above the beam.
@@ -64,7 +60,6 @@ impl Ils {
     pub fn none() -> Self {
         Ils {
             available: false,
-            loc_offset_m: 0.0,
             loc_dev_deg: 0.0,
             gs_dev_deg: 0.0,
             dist_m: 0.0,
@@ -129,7 +124,6 @@ fn beam(right_offset: f64, h_m: f64, d: f64, gs_rise: f64, course_deg: f64) -> O
         .clamp(-GS_DOT_DEG * 4.0, GS_DOT_DEG * 4.0);
     Some(Ils {
         available: true,
-        loc_offset_m: right_offset,
         loc_dev_deg,
         gs_dev_deg,
         dist_m: d,

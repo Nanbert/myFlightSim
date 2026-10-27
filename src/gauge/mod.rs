@@ -229,7 +229,6 @@ impl PanelKey {
 
     /// The instrument a lowercase id selects: the same names `examples/
     /// panel_view_shot` uses. `None` for anything else.
-    #[allow(dead_code)] // Only the screenshot examples name a dial.
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name.trim().to_ascii_lowercase().as_str() {
             "airspeed" => PanelKey::Airspeed,

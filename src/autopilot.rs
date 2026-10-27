@@ -1000,7 +1000,6 @@ mod tests {
             .clamp(-1.4, 1.4);
         crate::ils::Ils {
             available: true,
-            loc_offset_m: 42.0,
             loc_dev_deg: 0.8,
             gs_dev_deg: gs_dev,
             dist_m,

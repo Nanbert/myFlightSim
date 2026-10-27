@@ -61,9 +61,6 @@ struct Liftoff {
     gear_up_s: Option<f32>,
     on_runway: bool,
     runway: &'static str,
-    /// When it happened, for future replay bookkeeping.
-    #[allow(dead_code)]
-    at: f32,
 }
 
 /// The takeoff report's aircraft classes. The jet rotates on the PFD's VR
@@ -177,7 +174,6 @@ fn update_takeoff(
             gear_up_s: None,
             on_runway: spec.on_runway(aircraft.pos.x, aircraft.pos.z),
             runway,
-            at: now,
         });
         state.since_lift = 0.0;
     }
@@ -323,7 +319,6 @@ mod tests {
             gear_up_s: Some(3.0),
             on_runway: true,
             runway: "36",
-            at: 0.0,
         }
     }
 

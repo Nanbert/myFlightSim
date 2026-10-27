@@ -59,8 +59,6 @@ pub struct AirfieldSpec {
     pub class: &'static str,
     /// Primary runway number (northbound, "36").
     pub rwy_id: &'static str,
-    /// Reciprocal runway number (southbound, "18").
-    pub rwy_id_rec: &'static str,
     /// Runway dimensions, metres.
     pub rwy_length: f32,
     pub rwy_width: f32,
@@ -86,8 +84,6 @@ pub struct AirfieldSpec {
     pub hold_solid_xs: Vec<f32>,
     /// The solid pair's taxiway-side line: the hold-short grader's zero mark.
     pub hold_line_x: f32,
-    /// Refuelling pump position and capture radius, if any.
-    pub pump: Option<(Vec3, f64)>,
     /// Whether this field radiates an ILS (both courses).
     pub has_ils: bool,
 }
@@ -224,7 +220,6 @@ impl AirfieldSpec {
             name: "My Flight School",
             class: "3C",
             rwy_id: "36",
-            rwy_id_rec: "18",
             rwy_length: 1200.0,
             rwy_width: 30.0,
             threshold_z,
@@ -253,7 +248,6 @@ impl AirfieldSpec {
             hold_dashed_xs: vec![18.0, 19.5],
             hold_solid_xs: vec![22.0, 23.5],
             hold_line_x: 23.5,
-            pump: Some((Vec3::new(90.0, 1.0, -190.0), 12.0)),
             has_ils: true,
         }
     }
@@ -270,7 +264,6 @@ impl AirfieldSpec {
             name: "石家庄正定国际机场",
             class: "4E",
             rwy_id: "36",
-            rwy_id_rec: "18",
             rwy_length: 3400.0,
             rwy_width: 45.0,
             threshold_z,
@@ -301,7 +294,6 @@ impl AirfieldSpec {
             hold_dashed_xs: vec![30.0, 32.0],
             hold_solid_xs: vec![35.0, 37.0],
             hold_line_x: 37.0,
-            pump: None,
             has_ils: true,
         }
     }

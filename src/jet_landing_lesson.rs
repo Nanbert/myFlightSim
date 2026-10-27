@@ -36,8 +36,6 @@ const GATE_AGL: f64 = 1000.0;
 /// averages, and inside 400 m the beam math goes tiny anyway.
 const FLARE_AGL: f64 = 50.0;
 const FLARE_M: f64 = 400.0;
-/// The landing flap setting the speed band is graded against (flaps 30).
-const LAND_FLAP_NORM: f64 = 0.75;
 /// The final's speed band: Vref+5 .. Vref+25 (131..151 kt at flaps 30).
 /// Vref(flaps 30) = 145 - 25*0.75 = 126.25, spelled out for the consts.
 const VREF30: f64 = 126.25;
@@ -654,9 +652,7 @@ fn reset_jet_landing(mut m: ResMut<JetLandingMeter>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        FAIL_GO_AROUND, FAIL_HARD, FLARE_AGL, FLARE_M, GATE_AGL, JetLandingMeter, Telem, tick,
-    };
+    use super::{FAIL_GO_AROUND, FAIL_HARD, JetLandingMeter, Telem, tick};
     use crate::autopilot::VertMode;
     use bevy::prelude::*;
 
@@ -868,8 +864,8 @@ mod tests {
 
     #[test]
     fn a_bounce_pays_the_flat_price() {
-        let mut m = JetTaxiBounce();
-        fn JetTaxiBounce() -> JetLandingMeter {
+        let mut m = jet_taxi_bounce();
+        fn jet_taxi_bounce() -> JetLandingMeter {
             let mut m = JetLandingMeter::default();
             let mut secs = 0.0;
             // Compress the approach: gate, band, flare, touchdown.
@@ -894,7 +890,6 @@ mod tests {
             td.on_ground = true;
             td.pos = Vec3::new(0.5, 0.0, Z_TD);
             tick_at(&mut m, td, secs);
-            secs += DT;
             m
         }
         // Airborne again for half a second (past the flicker bar), then back

@@ -170,14 +170,6 @@ impl Lever {
             LeverId::ThrottleLeft | LeverId::ThrottleRight => v,
         }
     }
-
-    /// The flap gate's printed caption for a stop, if `value` is on one.
-    pub fn flap_caption(&self, value: f64) -> Option<&'static str> {
-        FLAP_STOPS
-            .iter()
-            .find(|(_, norm)| (norm - value).abs() < 1e-9)
-            .map(|(label, _)| *label)
-    }
 }
 
 /// Which engine indicator bar.

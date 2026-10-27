@@ -547,10 +547,6 @@ impl CloudProbe {
         let mass = shape * profile;
         ((mass - (1.0 - coverage)) / coverage.max(0.06)).clamp(0.0, 1.0)
     }
-
-    pub fn is_inside(&self, p: Vec3) -> bool {
-        self.density_at(p) > 0.05
-    }
 }
 
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {

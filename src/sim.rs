@@ -1019,89 +1019,6 @@ mod m3_probe {
     use crate::autopilot::{Autopilot, Mcp, advance};
     use crate::ils;
 
-    /// One M3 recipe run, headless: seat, G-5-3-6 (or a subset), a scripted
-    /// config ladder, and a log line every 10 s plus the 1,000 ft crossing.
-    fn run(tag: &str, at: bool, window: bool) {
-        std::env::set_var("FDM_BACKEND", "rust");
-        let mut sim = Sim::new("737");
-        sim.reset_final_jet();
-        // A breath before the keys, as a human takes: the first steps recompute
-        // the stale weight-on-wheels flag the ground spawn left behind.
-        for _ in 0..120 {
-            sim.model.set("fcs/throttle-cmd-norm", 0.25);
-            sim.model.step();
-        }
-        let spec = AirfieldSpec::zsnm();
-        let mut ap = Autopilot::default();
-        let mut mcp = Mcp::default();
-        mcp.ias_kts = 180.0;
-        mcp.vs_fpm = -700.0;
-        ap.toggle(&*sim.model);
-        if at {
-            ap.press_mode(ToggleAction::AutoThrottle, &*sim.model);
-        }
-        ap.press_mode(ToggleAction::VsMode, &*sim.model);
-        ap.press_mode(ToggleAction::Approach, &*sim.model);
-        eprintln!(
-            "[{tag}] setup: engaged={} vert={:?} at={:?} armed={} wow={} alt={:.0}",
-            ap.engaged,
-            ap.vert,
-            ap.at,
-            ap.app_armed,
-            sim.model.get("gear/wow"),
-            sim.model.get("position/h-sl-ft"),
-        );
-        let dt = 1.0 / 120.0;
-        let mut t = 0.0f64;
-        let mut last_log = -1.0;
-        for _ in 0..120 * 240 {
-            sim.model.set("fcs/throttle-cmd-norm", 0.25);
-            let beams = ils::compute(&sim, &spec);
-            advance(&mut *sim.model, &mcp, &mut ap, dt, &beams);
-            sim.model.step();
-            t += dt;
-            if t > 2.0 {
-                sim.model.set("fcs/flap-cmd-norm", 15.0 / 40.0);
-            }
-            if t > 12.0 {
-                sim.model.set("gear/gear-cmd-norm", 1.0);
-            }
-            if t > 25.0 {
-                sim.model.set("fcs/flap-cmd-norm", 0.75);
-            }
-            // The SOP variant dials the window down with the ladder.
-            if window {
-                mcp.ias_kts = if t < 25.0 { 160.0 } else { 131.0 };
-            }
-            let alt = sim.model.get("position/h-sl-ft");
-            if t - last_log >= 10.0 {
-                last_log = t;
-                eprintln!(
-                    "[{tag}] t={t:5.0} alt={alt:6.0} cas={:6.1} vs={:6.0} pitch={:5.1} flap={:4.0} gear={:3.0} vert={:?} gs={:+.2}",
-                    sim.model.get("velocities/vc-kts"),
-                    sim.model.get("velocities/h-dot-fps") * 60.0,
-                    sim.model.get("attitude/theta-deg"),
-                    sim.model.get("fcs/flap-pos-deg"),
-                    sim.model.get("gear/gear-pos-norm") * 30.0,
-                    ap.vert,
-                    beams.gs_dev_deg,
-                );
-            }
-            if alt < 1000.0 && t > 5.0 {
-                eprintln!(
-                    "[{tag}] GATE t={t:5.0} alt={alt:6.0} cas={:6.1} vs={:6.0} flap={:4.0} gear={:3.0} vert={:?}",
-                    sim.model.get("velocities/vc-kts"),
-                    sim.model.get("velocities/h-dot-fps") * 60.0,
-                    sim.model.get("fcs/flap-pos-deg"),
-                    sim.model.get("gear/gear-pos-norm") * 30.0,
-                    ap.vert,
-                );
-                return;
-            }
-        }
-        eprintln!("[{tag}] never reached the gate");
-    }
-
     #[test]
     fn the_m3_recipe_passes_the_gate() {
         // The coached flow, headless: G-5-3-6, the ladder-paced config, and
@@ -1174,10 +1091,6 @@ mod m4_probe {
     use crate::autopilot::{Autopilot, Mcp, advance};
     use crate::ils;
 
-    /// The M4 seat, headless: the pinned approach power (the 0.30 preset)
-    /// must carry the landing-config final down through the 1,000 ft gate —
-    /// the scripted call's trigger — sinking, but neither stalling nor
-    /// plunging. The approach is not graded; it only has to reach the call.
     /// The M4 seat, headless: the pinned approach power (the 0.43 preset,
     /// the sweep's beam value) must carry the landing-config final down
     /// through the 1,000 ft gate — the scripted call's trigger — sinking
