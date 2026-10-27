@@ -233,10 +233,3 @@ required-features = ["shots"]
 test = false
 doc = false
 
-[[example]]
-name = "water_shot"
-path = "examples/water_shot.rs"
-required-features = ["shots"]
-test = false
-doc = false
-
