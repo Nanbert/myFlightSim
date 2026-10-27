@@ -21,6 +21,47 @@
   <link data-trunk rel="rust" />
   <link data-trunk rel="copy-dir" href="assets" />
   <script>
+    // Web Audio autoplay policy: browsers keep an AudioContext created before
+    // any user gesture in the "suspended" state, and only a resume() call made
+    // from a gesture handler can start it. Bevy's audio backend (cpal) creates
+    // its context once at startup and calls resume() there — outside a gesture
+    // — so the context would stay suspended for the whole session and the game
+    // would be silent. Wrap the constructor to remember every context the page
+    // creates, then resume them all on the first pointer/key gesture (with a
+    // few retries, since some browsers grant the activation slightly later).
+    (() => {
+      const NativeAC = window.AudioContext || window.webkitAudioContext;
+      if (!NativeAC) return;
+      const contexts = [];
+      const Patched = function (...args) {
+        const ctx = new NativeAC(...args);
+        contexts.push(ctx);
+        return ctx;
+      };
+      Patched.prototype = NativeAC.prototype;
+      window.AudioContext = Patched;
+      if (window.webkitAudioContext) window.webkitAudioContext = Patched;
+
+      const resumeAll = () => {
+        for (const ctx of contexts) {
+          if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+        }
+      };
+      const gestures = ['pointerdown', 'pointerup', 'mousedown', 'keydown', 'touchstart'];
+      const onGesture = () => {
+        resumeAll();
+        let tries = 0;
+        const id = setInterval(() => {
+          resumeAll();
+          if (++tries > 10 || contexts.every((ctx) => ctx.state === 'running')) {
+            clearInterval(id);
+          }
+        }, 100);
+        for (const e of gestures) window.removeEventListener(e, onGesture, true);
+      };
+      for (const e of gestures) window.addEventListener(e, onGesture, true);
+    })();
+
     // The app runs on a canvas Trunk appends to <body>; once it appears the
     // boot line has served its purpose and only ghosts through translucent UI.
     new MutationObserver((_, obs) => {
