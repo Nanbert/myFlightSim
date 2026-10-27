@@ -33,6 +33,7 @@
 //! entity carries `DespawnOnExit`, so a fresh flight starts clean.
 
 use bevy::asset::RenderAssetUsages;
+use bevy::audio::{AudioPlayer, AudioSource, PlaybackSettings, Volume};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::mesh::ConeAnchor;
@@ -209,6 +210,17 @@ const MACH_W: f32 = 0.20;
 const RATE_CAL_KT: f32 = 320.0;
 const RATE_MIN_KT: f32 = 140.0;
 
+/// Wing-surface burst cloud and its pop sound only light up above this CAS
+/// (kt). Kept deliberately high: a fighter's surface condensation fog is a
+/// high-speed, high-load phenomenon, so the burst pops rarely rather than on
+/// every pull. The wingtip trails are *not* gated by this — see `drive_vapor`.
+const BURST_SPEED_KT: f32 = 250.0;
+/// Minimum gap between two wing-surface burst pops (s). A hard pull can spike
+/// the load every few frames, so without this the one-shot stutters.
+const VAPOR_COOLDOWN_S: f32 = 0.8;
+/// Fixed level for the vapor pop; deliberately not ducked under the radio.
+const VAPOR_VOLUME: f32 = 0.6;
+
 /// Transonic vapor cone, in the model frame: the apex sits just behind the
 /// radome, opening aft past the wing root. The F-22's glTF runs z ∈ [-1.34,
 /// +1.29] (nose at +1.29), so the shell spans the forward fuselage and the wing
@@ -234,6 +246,7 @@ impl Plugin for VaporPlugin {
         .init_resource::<Trails>()
         .init_resource::<SheetState>()
         .init_resource::<WingPuffs>()
+        .add_systems(Startup, setup_vapor_sfx)
         .add_systems(OnEnter(AppState::Flying), reset_vapor_state)
         .add_systems(Update, spawn_vapor.run_if(unpaused))
         // Reads the freshly-written airframe pose, so it must run after
@@ -242,6 +255,12 @@ impl Plugin for VaporPlugin {
             Update,
             drive_vapor
                 .after(crate::view::sync_aircraft)
+                .run_if(unpaused),
+        )
+        .add_systems(
+            Update,
+            play_vapor_sfx
+                .after(drive_vapor)
                 .run_if(unpaused),
         )
         .add_systems(
@@ -276,9 +295,67 @@ impl Plugin for VaporPlugin {
 
 /// Clear the world-space rings and the sheet envelope when a flight starts, so
 /// a new aircraft never inherits the previous one's trail or burst level.
-fn reset_vapor_state(mut trails: ResMut<Trails>, mut sheet: ResMut<SheetState>) {
+fn reset_vapor_state(
+    mut trails: ResMut<Trails>,
+    mut sheet: ResMut<SheetState>,
+    mut sfx: ResMut<VaporSfx>,
+) {
     *trails = Trails::default();
     *sheet = SheetState::default();
+    sfx.cooldown = 0.0;
+}
+
+/// One-shot wing-surface vapor pop, hard-panned per wing: index 0 (left) is
+/// `vapor_pop_L`, index 1 (right) `vapor_pop_R`. `cooldown` gates retriggers
+/// so a hard pull doesn't machine-gun the pop into a stutter.
+#[derive(Resource)]
+struct VaporSfx {
+    left: Handle<AudioSource>,
+    right: Handle<AudioSource>,
+    cooldown: f32,
+}
+
+/// Load the two panned pops once; `AssetServer` keeps them hot all session.
+fn setup_vapor_sfx(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.insert_resource(VaporSfx {
+        left: assets.load("audio/f22/vapor_pop_L.wav"),
+        right: assets.load("audio/f22/vapor_pop_R.wav"),
+        cooldown: 0.0,
+    });
+}
+
+/// Consume the per-side burst requests `drive_vapor` leaves in
+/// [`SheetState::pending_burst`] and play the matching panned pop, respecting
+/// the cooldown. Side 0 is the +x / left wing, side 1 the −x / right wing; both
+/// firing on the same frame sound together (left + right). Runs after
+/// `drive_vapor` so the flags are read the frame they are written.
+fn play_vapor_sfx(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut sfx: ResMut<VaporSfx>,
+    mut sheet: ResMut<SheetState>,
+) {
+    let dt = time.delta_secs();
+    sfx.cooldown = (sfx.cooldown - dt).max(0.0);
+    let fired = sheet.pending_burst;
+    sheet.pending_burst = [false; 2];
+    if (fired[0] || fired[1]) && sfx.cooldown <= 0.0 {
+        if fired[0] {
+            commands.spawn((
+                AudioPlayer::new(sfx.left.clone()),
+                PlaybackSettings::DESPAWN.with_volume(Volume::Linear(VAPOR_VOLUME)),
+                DespawnOnExit(AppState::Flying),
+            ));
+        }
+        if fired[1] {
+            commands.spawn((
+                AudioPlayer::new(sfx.right.clone()),
+                PlaybackSettings::DESPAWN.with_volume(Volume::Linear(VAPOR_VOLUME)),
+                DespawnOnExit(AppState::Flying),
+            ));
+        }
+        sfx.cooldown = VAPOR_COOLDOWN_S;
+    }
 }
 
 // --- wingtip trail puffs ---------------------------------------------------
@@ -446,6 +523,9 @@ struct SheetState {
     coverage: [f32; 2],
     /// +1 upper surface, -1 lower surface, per side.
     surface: [f32; 2],
+    /// Set when a burst fires this frame, consumed by [`play_vapor_sfx`] so the
+    /// pop plays once per event instead of once per frame.
+    pending_burst: [bool; 2],
     prev_g: f32,
     prev_local_alpha: [f32; 2],
 }
@@ -1093,15 +1173,27 @@ fn drive_vapor(
             || alpha_rate.abs() > 25.0
             || (a.abs() > 12.0 && prev_a.abs() <= 12.0);
         let surface = if g < -0.5 || a < 0.0 { -1.0 } else { 1.0 };
-        if speed_kts >= 60.0 && (g_spike || alpha_spike) {
+        let spike = g_spike || alpha_spike;
+        // Any maneuver spike above the trail floor unlocks the tip trails,
+        // independently of the burst cloud — so raising the burst gate to
+        // high-speed only never starves the low-speed vortex ribbons.
+        if speed_kts >= 60.0 && spike {
+            sheet_state.trail_unlock[side] = true;
+        }
+        // The wing-surface burst cloud is deliberately high-speed only.
+        if speed_kts > BURST_SPEED_KT && spike {
             sheet_state.age[side] = 0.0;
             sheet_state.strength[side] = base.clamp(0.15, 1.0);
             // The descending wing also gets the larger low-pressure footprint.
             let side_coverage = coverage * (0.75 + 0.25 * alpha_load);
             sheet_state.coverage[side] = side_coverage.clamp(0.25, 1.0);
             sheet_state.surface[side] = surface;
+            // Hand the pop to `play_vapor_sfx` — kept out of `drive_vapor`,
+            // which is already at Bevy's 16-parameter system limit.
+            sheet_state.pending_burst[side] = true;
         }
     }
+
     sheet_state.prev_g = g;
     sheet_state.prev_local_alpha = local_alpha;
     for side in 0..2 {
