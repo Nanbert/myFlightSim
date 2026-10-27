@@ -602,6 +602,33 @@ pub struct Chase {
     offset: Option<Vec3>,
 }
 
+/// A one-shot camera jolt, fired when a missile lights off under the jet. The
+/// chase camera is bolted to a point 22 m behind the airframe, and a rocket
+/// igniting there shoves the air the lens is sitting in: without it the launch
+/// happens in perfect silence as far as the view is concerned, which is what
+/// makes an otherwise spectacular plume feel like a HUD animation.
+///
+/// It is a decaying *oscillation*, not a random shake — a kick has a direction
+/// and a period; noise would read as turbulence, which the buffet already owns.
+/// [camera_feel](camera_feel) ages it and adds it to the pose the buffet has
+/// already set, so it never feeds back into the chase rig.
+#[derive(Resource, Default)]
+pub struct LaunchKick {
+    /// Seconds since the last kick. Spent by default (`amp` 0), and kept past
+    /// [`KICK_S`] once it expires so the branch is skipped.
+    age: f32,
+    /// Peak amplitude 0..1 of the last kick; 0 means nothing to do.
+    amp: f32,
+}
+
+impl LaunchKick {
+    /// Fire a kick. `amp` scales the whole thing; a launch uses 1.0.
+    pub fn fire(&mut self, amp: f32) {
+        self.age = 0.0;
+        self.amp = amp;
+    }
+}
+
 pub struct ViewPlugin;
 
 impl Plugin for ViewPlugin {
@@ -609,6 +636,7 @@ impl Plugin for ViewPlugin {
         app.init_resource::<Ui>()
             .init_resource::<ControlRig>()
             .init_resource::<Chase>()
+            .init_resource::<LaunchKick>()
             .init_resource::<CockpitTune>()
             .add_systems(Startup, (setup_scene, setup_hud))
             .add_systems(OnExit(AppState::Flying), reset_camera_feel)
@@ -1192,6 +1220,15 @@ const AIRFLOW1_KT: f32 = 70.0;
 /// of camera rotation. Small on purpose — a shake you notice, not one you fight.
 const SHAKE_POS_M: f32 = 0.30;
 const SHAKE_ROT_DEG: f32 = 0.40;
+
+/// Missile-launch kick (see [`LaunchKick`]): how long it rings, how far the lens
+/// moves and tips at full amplitude, and its frequency. A rocket lighting off
+/// under the jet is one thump with a direction — 0.55 s of damped 9 Hz reads as
+/// a knock, where 3 s would read as the airframe coming apart.
+const KICK_S: f32 = 0.55;
+const KICK_POS_M: f32 = 0.35;
+const KICK_ROT_DEG: f32 = 0.50;
+const KICK_HZ: f32 = 9.0;
 /// Degrees the vertical FOV widens at speed, on a slight ease. Makes the world
 /// sweep past faster without the fisheye look of a big boost.
 const FOV_BOOST_DEG: f32 = 5.0;
@@ -1421,7 +1458,9 @@ fn reset_camera_feel(
         (&mut Projection, Option<&mut MotionBlur>),
         (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>),
     >,
+    mut kick: ResMut<LaunchKick>,
 ) {
+    *kick = LaunchKick::default();
     let Ok((mut projection, blur)) = q.single_mut() else {
         return;
     };
@@ -1455,6 +1494,7 @@ fn camera_feel(
     sim: Res<Sim>,
     ui: Res<Ui>,
     tune: Res<CockpitTune>,
+    mut kick: ResMut<LaunchKick>,
     mut q: Query<
         (&mut Transform, &mut Projection, Option<&mut MotionBlur>),
         (With<Camera3d>, Without<crate::cloud_camera::CloudCamera>),
@@ -1500,6 +1540,19 @@ fn camera_feel(
             Vec3::new(noise(31.1), noise(41.9), noise(51.7)) * (SHAKE_ROT_DEG.to_radians() * amp);
         // `YXZ` takes (yaw, pitch, roll).
         t.rotation *= Quat::from_euler(EulerRot::YXZ, rot.y, rot.x, rot.z);
+    }
+
+    // Missile launch: a single decaying thump, layered on top of the buffet.
+    // The lens drops away from the blast first and the nose tips down with it,
+    // then rings back — one direction, unlike the isotropic buffet.
+    if kick.amp > 0.0 && kick.age < KICK_S {
+        kick.age += dt;
+        let e = 1.0 - (kick.age / KICK_S).min(1.0);
+        let env = e * e * kick.amp;
+        let osc = (kick.age * KICK_HZ * std::f32::consts::TAU).sin();
+        t.translation += Vec3::new(0.0, -osc, osc * 0.5) * (KICK_POS_M * env);
+        t.rotation *=
+            Quat::from_euler(EulerRot::YXZ, 0.0, osc * KICK_ROT_DEG.to_radians() * env, 0.0);
     }
 
     if let Projection::Perspective(p) = &mut *projection {

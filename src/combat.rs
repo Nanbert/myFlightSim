@@ -21,10 +21,11 @@ use crate::app_state::{flying, unpaused, AppState, Paused};
 use crate::config::{AmmoSetting, CombatConfig, GameConfig};
 use crate::input::Bindings;
 use crate::map::{ActiveMap, ARENA_HALF, MapId, ground_height};
+use crate::missile_smoke::{BVR_TRAIL, THREAT_TRAIL, Trail};
 use crate::radio::{RadioCue, RadioEvent};
 use crate::sim::{AircraftState, Sim};
 use crate::ui_theme;
-use crate::view::{model_to_body, AircraftRoot};
+use crate::view::{model_to_body, AircraftRoot, LaunchKick};
 
 /// The IR lock envelope: the target must sit inside this cone and range.
 const LOCK_RANGE_M: f32 = 6500.0;
@@ -54,6 +55,16 @@ const AMRAAM_SPEED_MAX: f32 = 1150.0;
 const AMRAAM_MOTOR_S: f32 = 6.0;
 const AMRAAM_TURN_RAD_S: f32 = 0.9;
 const AMRAAM_LIFE_S: f32 = 30.0;
+/// The AMRAAM's eject phase: the round leaves the belly on its charge, drops
+/// clear of the jet for a fifth of a second, and only then lights the motor.
+/// Without it the plume appears inside the fuselage the instant the trigger is
+/// pulled; with it the launch reads as a drop and then a shove. The length comes
+/// from the trail, so the smoke's first puff and the plume are the same frame.
+const BVR_ARM_S: f32 = crate::missile_smoke::BVR_IGNITE_S;
+/// Eject velocity, m/s, along the line of sight and straight down. The down
+/// component is what gives the round the visible "fall away" before ignition.
+const BVR_EJECT_MPS: f32 = 10.0;
+const BVR_EJECT_DROP: f32 = 6.0;
 const AMRAAM_ROUNDS: i32 = 2;
 const SIDEWINDER_ROUNDS: i32 = 2;
 
@@ -383,6 +394,10 @@ struct Missile {
     turn: f32,
     /// The exhaust plume entity, dropped when the motor burns out.
     flame: Option<Entity>,
+    /// Seconds of eject phase still to run. The AMRAAM falls off the rail on
+    /// its charge before the motor lights; the Sidewinder lights on the rail and
+    /// carries 0.
+    arm: f32,
 }
 
 /// An IR missile fired by a drone at the player.
@@ -1384,6 +1399,9 @@ fn spawn_threat(
         },
         Mesh3d(assets.missile_mesh.clone()),
         MeshMaterial3d(assets.missile_mat.clone()),
+        // An inbound round leaves the same smoke, shorter-lived and thinner, so
+        // the player can see where the shot came from.
+        Trail::new(THREAT_TRAIL),
         Transform::from_translation(origin)
             .with_rotation(rot)
             .with_scale(Vec3::splat(1.2)),
@@ -1404,6 +1422,22 @@ fn spawn_flame(commands: &mut Commands, assets: &CombatAssets, at: Vec3, rot: Qu
             DespawnOnExit(AppState::Flying),
         ))
         .id()
+}
+
+/// The bloom at the nozzle the instant the motor lights: a short, bright bead
+/// stretched along the round's axis that the plume then takes over. Deliberately
+/// brief — it is a flash, and anything longer reads as the missile burning on
+/// the rail rather than lighting.
+fn spawn_ignition(commands: &mut Commands, assets: &CombatAssets, at: Vec3, rot: Quat) {
+    commands.spawn((
+        MuzzleFlash { life: 0.18 },
+        Mesh3d(assets.flash_mesh.clone()),
+        MeshMaterial3d(assets.flash_mat.clone()),
+        Transform::from_translation(at)
+            .with_rotation(rot)
+            .with_scale(Vec3::new(1.2, 1.2, 2.6)),
+        DespawnOnExit(AppState::Flying),
+    ));
 }
 
 fn update_lock(
@@ -1564,6 +1598,7 @@ fn fire_weapons(
                                 max_speed: MISSILE_SPEED_MAX,
                                 turn: MISSILE_TURN_RAD_S,
                                 flame: Some(flame),
+                                arm: 0.0,
                             },
                             Mesh3d(assets.missile_mesh.clone()),
                             MeshMaterial3d(assets.missile_mat.clone()),
@@ -1629,18 +1664,25 @@ fn fire_weapons(
                         let origin = root.translation + root.rotation * model_to_body("f22", bay);
                         let dir = (target_tf.translation - origin).normalize_or_zero();
                         let rot = Quat::from_rotation_arc(Vec3::NEG_Z, dir);
-                        let flame = spawn_flame(&mut commands, &assets, origin, rot);
+                        // No flame on the rail: the round drops on its eject
+                        // charge first and only lights a fifth of a second
+                        // later, so the plume (and the flash, and the camera
+                        // kick) are spawned by `guide_missiles` at ignition.
                         commands.spawn((
                             Missile {
                                 target,
-                                vel: air_vel + dir * 60.0,
+                                vel: air_vel + dir * BVR_EJECT_MPS - Vec3::Y * BVR_EJECT_DROP,
                                 life: AMRAAM_LIFE_S,
                                 motor: AMRAAM_MOTOR_S,
                                 accel: AMRAAM_ACCEL,
                                 max_speed: AMRAAM_SPEED_MAX,
                                 turn: AMRAAM_TURN_RAD_S,
-                                flame: Some(flame),
+                                flame: None,
+                                arm: BVR_ARM_S,
                             },
+                            // The trail rides the round and lays the smoke; see
+                            // `missile_smoke.rs`.
+                            Trail::new(BVR_TRAIL),
                             Mesh3d(assets.bvr_mesh.clone()),
                             MeshMaterial3d(assets.bvr_mat.clone()),
                             Transform::from_translation(origin)
@@ -1654,34 +1696,6 @@ fn fire_weapons(
                                 .with_volume(Volume::Linear(MISSILE_VOLUME)),
                             DespawnOnExit(AppState::Flying),
                         ));
-                        for i in 0..4 {
-                            let a = i as f32 / 4.0 * std::f32::consts::TAU;
-                            let puff = origin
-                                + root.rotation * Vec3::new(a.cos() * 0.5, a.sin() * 0.3, -0.3);
-                            let push =
-                                root.rotation * Vec3::new(a.cos() * 2.5, a.sin() * 1.0 - 1.0, 3.0);
-                            let mat = mats.add(StandardMaterial {
-                                base_color: Color::srgba(0.62, 0.62, 0.65, 0.40),
-                                alpha_mode: AlphaMode::Blend,
-                                unlit: true,
-                                ..default()
-                            });
-                            commands.spawn((
-                                Smoke {
-                                    vel: air_vel * 0.6 + push,
-                                    age: 0.0,
-                                    life: 0.9,
-                                    size0: 0.7,
-                                    size1: 3.2,
-                                    alpha0: 0.40,
-                                    mat: mat.clone(),
-                                },
-                                Mesh3d(assets.smoke_mesh.clone()),
-                                MeshMaterial3d(mat),
-                                Transform::from_translation(puff).with_scale(Vec3::splat(0.7)),
-                                DespawnOnExit(AppState::Flying),
-                            ));
-                        }
                         radio.write(RadioEvent(RadioCue::FoxThree));
                         if !combat.bvr_inf {
                             combat.bvr -= 1;
@@ -1789,7 +1803,9 @@ fn fire_weapons(
                 PlaybackSettings::DESPAWN.with_volume(Volume::Linear(FLARE_VOLUME)),
                 DespawnOnExit(AppState::Flying),
             ));
-            radio.write(RadioEvent(RadioCue::Flares));
+            // No brevity call on the net: the dispenser and the cartridge
+            // whoosh are the sound of a flare release, and the voice only
+            // crowded the fight — the count is on the HUD anyway.
         }
     }
 }
@@ -1982,6 +1998,7 @@ fn guide_missiles(
     time: Res<Time>,
     assets: Option<Res<CombatAssets>>,
     mut combat: ResMut<Combat>,
+    mut kick: ResMut<LaunchKick>,
     mut missiles: Query<(Entity, &mut Missile, &mut Transform), Without<Bandit>>,
     mut flames: Query<&mut Transform, (With<MissileFlame>, Without<Missile>, Without<Bandit>)>,
     bandits: Query<(&Bandit, &Transform), Without<Missile>>,
@@ -2001,6 +2018,29 @@ fn guide_missiles(
             despawn_flying(&mut commands, entity, &mut m.flame);
             continue;
         };
+        // Eject phase: the round falls clear on its charge — unguided, unpowered,
+        // no plume — and only then lights. Steering here would swing it round
+        // inside the bay, and a plume here would appear in the fuselage.
+        if m.arm > 0.0 {
+            let pos = tf.translation;
+            m.arm -= dt;
+            let next = pos + m.vel * dt;
+            tf.translation = next;
+            if m.vel.length_squared() > 1.0 {
+                tf.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, m.vel.normalize());
+            }
+            if m.arm <= 0.0 {
+                // Ignition: the plume, a bloom at the nozzle, and the thump the
+                // chase camera feels. Fired here rather than at the trigger so
+                // the jolt lines up with the light, which is what a player reads
+                // as "it went".
+                let dir = m.vel.normalize_or_zero();
+                m.flame = Some(spawn_flame(&mut commands, &assets, next, tf.rotation));
+                spawn_ignition(&mut commands, &assets, next - dir * 1.6, tf.rotation);
+                kick.fire(1.0);
+            }
+            continue;
+        }
         let pos = tf.translation;
         let speed = m.vel.length().max(1.0);
         // Lead the target by the time the missile needs to close the gap.

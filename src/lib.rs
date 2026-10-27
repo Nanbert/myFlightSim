@@ -51,6 +51,7 @@ pub mod mcp_panel;
 pub mod mcp_ui;
 pub mod menu;
 pub mod menu_page;
+pub mod missile_smoke;
 pub mod mission;
 pub mod mcp_guide;
 pub mod panel_geom;
@@ -199,6 +200,7 @@ pub fn run() {
         .add_plugins(lesson_flow::LessonFlowPlugin)
         .add_plugins(mission::MissionPlugin)
         .add_plugins(combat::CombatPlugin)
+        .add_plugins(missile_smoke::MissileSmokePlugin)
         .add_plugins(lights::LightsPlugin)
         .add_plugins(pause::PausePlugin)
         .init_resource::<ShotTimer>()

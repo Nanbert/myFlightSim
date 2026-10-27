@@ -66,6 +66,13 @@ test = false
 doc = false
 
 [[example]]
+name = "bvr_shot"
+path = "examples/bvr_shot.rs"
+required-features = ["shots"]
+test = false
+doc = false
+
+[[example]]
 name = "cloud_shot"
 path = "examples/cloud_shot.rs"
 required-features = ["shots"]
