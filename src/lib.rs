@@ -65,7 +65,6 @@ pub mod radio;
 pub mod scoring;
 pub mod sim;
 pub mod sky;
-pub mod statue;
 pub mod takeoff;
 pub mod takeoff_lesson;
 pub mod taxi;
@@ -178,7 +177,6 @@ pub fn run() {
         .add_plugins(map::MapPlugin)
         .add_plugins(clouds::CloudPlugin)
         .add_plugins(island::IslandPlugin)
-        .add_plugins(statue::StatuePlugin)
         .add_plugins(cockpit::CockpitPlugin)
         .add_plugins(controls::ControlPlugin)
         .add_plugins(assist::AssistPlugin)
