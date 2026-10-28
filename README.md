@@ -1,670 +1,121 @@
 # myFlightSim
 
-**在线玩：<https://nanbert.github.io/myFlightSim/>**（纯 Rust 物理的 wasm 版，
-首次进入需下载约 200 MB 模型与音频）
+用 **Rust + Bevy** 编写的开源飞行模拟器。桌面与浏览器同源，默认使用项目自带的纯 Rust 飞行力学，内置 4 架飞机、可操作的系统与分级飞行课程。
 
-## 许可证
+**在线试玩：<https://nanbert.github.io/myFlightSim/>**（模型与音频按需加载，资源合计约 220 MB）
 
-代码按 **LGPL-2.1** 发布（见 [`LICENSE`](LICENSE)、[`NOTICE.md`](NOTICE.md)）：
-`crates/fdm` 的气动数据转录自 JSBSim（LGPL-2.1）。`assets/` 不在该许可范围内，
-其中的模型/音频/着色器按各自条款分发，见 [`CREDITS.md`](CREDITS.md)；其中两件是
-CC BY-NC-SA，因此**整个项目不得商用**。
+[![License: LGPL-2.1](https://img.shields.io/badge/license-LGPL--2.1-blue.svg)](LICENSE)
 
-一个用 **Rust + Bevy** 写的飞行模拟器外壳，飞行力学默认由项目自带的**纯 Rust
-FDM**（`crates/fdm`）驱动，设置 `FDM_BACKEND=jsbsim` 可切到 **JSBSim**。Bevy
-负责渲染、相机、HUD 和输入；FDM 负责真正的气动与运动解算。默认模型是
-`c172p`（Cessna 172P）。物理与画面之间由一个 `FlightModel` trait 隔开，见
-「飞行模型后端」。
+## 特性
 
-设计取向：**把 JSBSim 和机模已经提供的东西暴露出来就好**——能真实地飞起来
-就停手，不去追 FlightGear 那种成熟的整机模拟。因此本项目的控件表是数据驱动的
-（每机型一份档案，见 `src/aircraft_profile.rs`），机模定义了什么通道，我们就为
-它声明什么控制。
+- **四架飞机** — Cessna 172P、Boeing 737、F-22A、AH-64D，各自拥有独立的键位、座舱、HUD 与飞行特性。
+- **双飞行力学后端** — 默认纯 Rust FDM（`crates/fdm`，可在 wasm 中运行）；`FDM_BACKEND=jsbsim` 可切换到 JSBSim。
+- **可操作的系统** — 737 的 MCP、自动驾驶、ILS、减速板、反推与操纵台；C172 的冷启动、检查单与灯光；AH-64D 的悬停与街机模式；F-22 的武器与空战。
+- **分级课程与评分** — C172 M1–M3、737 M1–M6；滑行、起飞、落地、复飞、中断起飞与自动化进近逐项打分，737 另有航程账本。
+- **完整环境与跨平台** — 程序化机场与任务地图、PAPI/ILS、可调天气与时段、雨云与夜航灯光；原生窗口和 Web 均可运行，设置分别持久化到文件与 `localStorage`。
 
-## 飞行模型后端
+## 快速开始
 
-物理与画面之间隔着一个 `FlightModel` trait（`crates/flight-model`）：它是一条
-**命名属性总线**——App 往里写操纵指令（`fcs/elevator-cmd-norm` …）、读仪表
-（`position/h-sl-ft`、`attitude/psi-rad` …），后端负责推进每一步。因此
-`view`/`input`/HUD/自动驾驶完全不知道底下是谁在算。
+### 本地运行（纯 Rust，无需 C++ 依赖）
 
-- 默认后端是 **纯 Rust 引擎**（`crates/fdm`）：可配平、带街机模式，街机任务
-  强制使用它。
-- `FDM_BACKEND=jsbsim` 切到 **JSBSim**（`jsbsim-sys`），即原本的成熟物理；
-  它的 `trim` 是空操作，也不认识街机模式。
+```sh
+cargo run --no-default-features
+```
 
-属性名沿用 JSBSim 的拼写（完整契约见 `crates/flight-model/src/lib.rs`），
-所以 JSBSim 后端几乎不需要翻译。
+首次编译 Bevy 需要几分钟。
 
-## 前置依赖
+### 使用 JSBSim 后端
 
-本项目**不自带** JSBSim，而是从一个本地源码检出（checkout）编译并链接（仅默认
-桌面构建需要；Web 构建用 `--no-default-features` 完全不碰 JSBSim，见下文）：
-
-- 一份 **JSBSim 源码**（需要同时提供编译产物与运行期数据目录
-  `aircraft/`、`engine/`、`systems/`）
-- **CMake**
-- 支持 **C++17** 的编译器
-
-`jsbsim-sys/build.rs` 会从该检出编译出 `libJSBSim.so`，链接到本地
-`<target>/jsbsim-build/` 下（与具体 profile 无关，便于运行期通过 rpath 找到）。
-
-### 指定 JSBSim 源码位置
-
-按以下优先级解析（`build.rs` 与运行期 `jsbsim_sys::jsbsim_src` 逻辑一致）：
-
-1. 环境变量 **`JSBSIM_SRC`**（若设置则必须有效，否则报错退出）；
-2. 依次探测常见位置：`$HOME/gitrep/jsbsim`、`$HOME/jsbsim`、`$HOME/src/jsbsim`、
-   `/usr/local/src/jsbsim`、`/opt/jsbsim`。
-
-有效检出的判定标志是目录下存在 `src/FGFDMExec.h`。都找不到时会 panic，并列出
-探测过的路径。推荐显式设置：
+需要一份 JSBSim 源码、CMake 和支持 C++17 的编译器：
 
 ```sh
 export JSBSIM_SRC=$HOME/gitrep/jsbsim
+FDM_BACKEND=jsbsim cargo run
 ```
 
-## 构建与运行
+`jsbsim-sys` 会从该目录编译 `libJSBSim.so` 并动态链接。未设置 `JSBSIM_SRC` 时，依次探测 `~/gitrep/jsbsim`、`~/jsbsim`、`~/src/jsbsim`、`/usr/local/src/jsbsim`、`/opt/jsbsim`。
 
-```sh
-cargo run
-```
-
-首次运行会先编译 JSBSim（耗时较长），之后增量构建很快。左上角 HUD 显示空速、
-高度、姿态、油门、转速等；按 `H` 可切换控制输入叠加层，按 `C` 在机外跟随与
-座舱内视角之间切换（机模带内饰时才有座舱视角，见下）。
-
-### Web 构建（wasm）
-
-Web 版不带 JSBSim（C++ 库无法链入 wasm），物理始终走纯 Rust 引擎；设置与
-737 航程账本持久化到 `localStorage`（键 `myflightsim.config` /
-`myflightsim.ledger`）：
+### 浏览器版
 
 ```sh
 rustup target add wasm32-unknown-unknown
 cargo install trunk --locked
 
-trunk serve                     # 开发：http://localhost:8080/myFlightSim/
-trunk build                     # 发布：dist/ 即静态站点目录
+trunk serve     # http://localhost:8080/myFlightSim/
+trunk build     # 输出到 dist/
 ```
 
-`Trunk.toml` 已经把 `--no-default-features`、`--release` 和
-`--public-url /myFlightSim/` 写好，本地命令与 CI 完全一致。`dist/` 可部署到任何
-静态托管；本仓库的 GitHub Pages 由
-[`.github/workflows/pages.yml`](.github/workflows/pages.yml) 在每次 push 时自动
-构建并发布。菜单机库的 4 个
-机型模型按需异步加载；首次驾驶 737 会现场取 83 MB 的座舱模型，网络慢时
-座舱会先空一段。
+`Trunk.toml` 已固定 `--no-default-features` 与 `/myFlightSim/` 公共路径；Web 版不包含 JSBSim。
 
-## 键位
+## 机型与课程
 
-| 按键 | 作用 | JSBSim 通道 |
-| --- | --- | --- |
-| `W` / `S` | 俯仰（抬头 / 低头） | `fcs/elevator-cmd-norm` |
-| `D` / `A` | 横滚（右滚 / 左滚） | `fcs/aileron-cmd-norm` |
-| `Q` / `E` | 偏航（左偏 / 右偏） | `fcs/rudder-cmd-norm` |
-| `Shift` / `Ctrl` | 油门（固定翼）或总距（直升机） | `fcs/throttle-cmd-norm` / `fcs/collective-cmd-norm` |
-| `Z` / `X` | 俯仰配平 | `fcs/pitch-trim-cmd-norm` |
-| `F` / `V` | 襟翼放下 / 收起（固定翼；c172 四档 UP/10°/20°/30°） | `fcs/flap-cmd-norm` |
-| `B` | 机轮刹车（松开回位） | `fcs/{left,right}-brake-cmd-norm` |
-| `T` | 按当前状态重新配平（保留空速与位置） | — |
-| `Space` | 直升机悬停配平（AH-64D 真实模式） | — |
-| `J` | AH-64D 街机：自动悬停 / 垂直起降 / 降落 | `fcs/heli-hover-enable` |
-| `B` | AH-64D 街机：自动平衡（松杆回平） | `fcs/heli-balance-enable` |
-| `S` / `W` | AH-64D 街机（自动平衡开）：前进 / 后退速度指令——全杆前推 ≈47 kt，松杆回停悬停 | `fcs/elevator-cmd-norm` |
-| `D` / `A` | AH-64D 街机（自动平衡开）：右 / 左侧移（≈24 kt），悬停横挪用 | `fcs/aileron-cmd-norm` |
-| `G` | 切换自动驾驶（仅 737） | — |
-| `U` | 起落架收放（F-22 / 737） | `gear/gear-cmd-norm` |
-| `J` | 推力矢量开关（仅 F-22） | `fcs/tvc-enable` |
-| `Tab` | 锁定 / 切换 HUD 锥内目标（仅 F-22 街机） | — |
-| `K` | 切换 AIM-9 / AIM-120（仅 F-22 街机） | — |
-| `R` | TSD 距离档位 10/20/40 km（仅 F-22 街机） | — |
-| `Enter` | 发射所选导弹（仅 F-22 街机，需已锁定） | — |
-| `G` | 按住机炮开火（仅 F-22 街机） | — |
-| `L` | 释放热焰弹（仅 F-22 街机） | — |
-| 菜单 | 出生点与任务选择（PLAY 页 / F-22 的 FREE FLY 与 MISSIONS；旧的 R/P/Y 快捷键已移除） | — |
-| `M` | 主开关（仅 C172，冷启动流程第一步） | `propulsion/ignition-enable` |
-| `I` | 按住启动机拖桨（仅 C172，着火后可松开） | `fcs/starter-cmd-norm` |
-| `L` | 外部灯光总开关：航行灯+信标+频闪+着陆灯（仅 C172；黄昏/夜晚自动开） | — |
-| `L` | 减速板（仅 737） | `fcs/speedbrake-cmd-norm` |
-| `K` | 反推力（仅 737，仅地面起效） | `fcs/reverse-cmd-norm` |
-| `;` | 737 操纵台：机外收起/展开；座舱内升起/降下 | — |
-| `6` | APP 进近模式（LOC + GS，仅 737） | `autopilot.app_armed` |
-| `K` | 反推力（仅 737，仅地面起效） | `fcs/reverse-cmd-norm` |
+| 机型 | 内容 |
+| --- | --- |
+| C172 | 自由飞行；M1 滑行（冷启动）、M2 起飞、M3 落地 |
+| 737 | 自由飞行；M1 滑行、M2 起飞、M3 落地、M4 复飞、M5 中断起飞、M6 自动化进近 |
+| F-22 | `FREE FLY` 真实气动；`MISSIONS` 街机空战 |
+| AH-64D | 自由飞行；`SETTINGS` 中可切换 Realistic / Arcade |
 
-`J` 在 F-22 上是 TVC、在 AH-64D 上是悬停/垂直起降；`B` 在固定翼上是机轮刹车、
-在 AH-64D 街机上是自动平衡；`G` 在 F-22 **街机**上是机炮、在 737 上是自动驾驶；
-`K` 在 F-22 街机上是切换导弹、在 737 上是反推力；`R` 在 F-22 街机上是 TSD
-距离档位；`L` 在 F-22 街机上是热焰弹、在 C172 上是灯光、在 737 上是减速板。
-每架飞机的键位独立，不会互相冲突。
-| `H` | 显示 / 隐藏输入叠加层 | — |
-| `C` | 切换跟随相机 / 座舱内视角 | — |
+菜单使用方向键选择、`Enter` 确认、`Esc` 返回；各机型的 `TUTORIAL` 页包含操作说明、真机程序与尚未建模的项目。
 
-每架飞机的操作键**各自独立**（完全解耦），但共有控制项的默认键写得一致，所以
-肌肉记忆可以跨机型延续。缺省的机种（如 C172）用通用的一套；F-22 多出起落架与
-推力矢量，AH-1S 用手里的总距取代油门、没有襟翼与刹车，737 才有自动驾驶。
+## 操作
 
-选中 C172 / AH-64D 后，子菜单是 `PLAY / TUTORIAL / INFO / SETTINGS`；737 是
-`PLAY / TUTORIAL / INFO`；F-22 是 `FREE FLY / MISSIONS / SETTINGS / TUTORIAL / INFO`。
-`FREE FLY` 直接用真实气动模型在跑道出生，`MISSIONS` 才进入街机空战；F-22 没有
-街机模式开关，`SETTINGS` 调的是空战兵力与弹药。`TUTORIAL` 是该机型的操作教程，分三块写：**游戏里现在怎么飞**
-（按键直接取该机型的固定绑定）、**真机的实际程序**（从 preflight 到落地），以及
-**尚未建模的 TODO**（例如混合比、磁电机、FMC、武器系统）。方向键逐行滚动，
-`PgUp` / `PgDn` 翻页，`Esc` 关闭。
+| 按键 | 作用 |
+| --- | --- |
+| `W` / `S` | 俯仰 |
+| `A` / `D` | 横滚 |
+| `Q` / `E` | 偏航 |
+| `Shift` / `Ctrl` | 油门（F-22 为 `Space` / `Ctrl`；AH-64D 为总距） |
+| `Z` / `X` | 俯仰配平 |
+| `F` / `V` | 襟翼（C172 / 737） |
+| `B` | 机轮刹车（AH-64D 街机为自动平衡） |
+| `U` | 起落架（737 / F-22） |
+| `T` | 按当前状态重新配平 |
+| `H` | 显示 / 隐藏输入叠加层 |
+| `C` | 切换舱外 / 座舱视角 |
+| `N` | 座舱视线回正 |
+| `O` | 开关 HUD（F-22 / AH-64D） |
+| `Esc` | 暂停 / 返回 |
 
-键位是**固定的**：每架飞机的默认键按人体工程学调过，不再提供游戏内改键。
+机型专属：
 
-按键符号约定来自 c172p 的气动导数：`+elevator-cmd-norm` 使机头**下压**、
-`+aileron-cmd-norm` 使飞机**右滚**、`+rudder-cmd-norm` 使机头**左偏**。每个键都
-映射到能给出直观响应的符号，所以命令值取该键“正向”的相反数。平移类轴
-（升降舵、副翼、方向舵、刹车）松开即回中；保持类轴（油门、配平、襟翼）按键
-累积、松开保持。C172 的键盘律单独调过，见下。
+- **C172**：`M` 总开关，按住 `I` 启动机，`L` 灯光。
+- **737**：`G` 自动驾驶，`1`–`6` 对应 MCP 的 HDG / ALT / V/S / LVL CHG / A-T / APP，`[` `]` 调节速度，`M` 切换 Speed/Mach，`L` 减速板，`K` 反推，`;` 操纵台。
+- **AH-64D**：`J` 自动悬停 / 垂直起降，`B` 自动平衡，`Space` 旋翼配平。
+- **F-22**：`J` 推力矢量，`Tab` 锁定 / 切换目标，`Enter` 发射导弹，`K` 切换导弹，按住 `G` 机炮，`L` 热焰弹，`R` 切换雷达距离档。
 
-### C172 的键盘手感与操纵指示
+键位按机型固定，不提供游戏内改键。座舱视角下可移动鼠标环视，左键操作面板与仪表。
 
-舱外视角底部、姿态仪两侧有两个圆：左边是方向盘（俯仰/滚转，左侧琥珀色刻度是
-配平中位），右边是脚蹬（方向舵 + 左右刹车条）。它们显示的是键盘送给 FDM 的原始
-指令，属于**键盘辅助**，不是真机仪表；舱内视角暂时隐藏。
-
-C172 的键盘律和其他机型不同：俯仰/滚转轻点给 **4% 步进**，按住 **120 ms** 后连续
-偏转；松开先保持 **100 ms** 再回中；按住 `Space`（或 `Alt`）= **0.25x 精细模式**，
-圆盘边框变琥珀色。舵的最大速率降到 `1.5/s`，俯仰/滚转 `2.5/s`。
-
-配平后 2D 方向盘会回中，但舱外模型的升降舵读的是 `fcs/elevator-pos-rad`（含配平），
-所以平尾仍保持偏转；琥珀色小条显示的就是这个配平偏移。
-
-C172 的 `SETTINGS` 里还有两个键盘辅助，默认都关：
-
-- **BANK HOLD**：松开 `A/D` 后捕获并保持当前坡度；再点 `A/D` 改目标，地面/低速/大坡度自动退出。
-- **TURN COORD**：没按 `Q/E` 时按滑球自动补方向舵；一踩舵立刻让位。
-
-辅助工作时，左圆顶部显示青色 `BANK`，右圆顶部显示青色 `COORD`。白色方向盘/脚蹬始终只表示
-飞行员输入，青色文字表示辅助在工作；真机 C172 没有这两个系统。
-
-## 街机空战（F-22）
-
-`F-22 > MISSIONS` 里的 `ARCHIPELAGO` / `ALPINE` 现在是一张空战靶场：进入后 F-22 以街机
-模式空中出生，机头前方按 `SETTINGS` 的数量生成红色靶机（每波 1-10 架可调，击落整波即
-任务完成）。靶机不按固定航线飞：它们各自绕锚地做**随机漫游**（每隔几秒换一个随机航向，
-柔和转弯、缓慢爬升或下降，并在锚点半径 1.8 km 内游走）。`Tab` 在机头 25°
-锥内锁定/切换目标，锁定框变金色并在下方显示距离；`Enter` 发射一枚 AIM-9（两侧
-弹舱门自动打开，导弹按比例导引追击），按住 `G` 开炮，`L` 放热焰弹。
-
-按 `K` 在 **AIM-9** 与 **AIM-120** 之间切换，HUD 武器块里选中的一项带亮框。
-AIM-120 的锁定距离 18 km、弹速更快、射程更远，但转弯不如 AIM-9；模型没有主弹舱，
-它从腹部中线发射。
-
-右上角是 **TSD 战术显示**（航向朝上，机头在上方）：红点 = 靶机，
-金点 = 当前锁定目标；`R` 在 **10 / 20 / 40 km** 距离档位间切换，外圈就是当前档位、
-内圈是它的一半。锁定后雷达下方还会显示目标的**距离、接近率、航向和高度差**。
-不用转头也能知道敌机在哪个方位。
-
-锁定目标进入机炮射程后，HUD 上会出现一个**提前量圆环**：把机头准星压在圆环上开火，就是在打目标的前置点（与真机的 gun pipper 同一思路）。
-
-**每一架靶机都会攻击**：只要咬到你的尾后，就会在 2.6 km、机头 18° 锥内发射红外弹
-（全局同时在天的敌弹最多 2 枚）。屏幕边缘会出现
-**指向来袭弹的箭头 + 距离**（如 `1.2KM`；背后来的弹会压到屏幕下缘）。
-来袭弹比你的 AIM-9 慢、转弯也弱：**急转脱锁**或撒热焰弹
-（热焰弹靠近导弹约 0.35 秒即可诱骗）都能摆脱。**被击中即任务失败**：与撞地同一
-流程——爆炸、全场冻结、弹出 **MISSION FAILED** 卡片（`R` 原地重开，`Esc` 返回
-菜单），没有出生点重生。默认每架次 2 枚 AIM-9、2 枚 AIM-120、480 发炮弹、
-8 组热焰弹。击落整波敌机即任务完成：弹出 **MISSION SUCCESS** 卡片
-（Enter 继续自由飞行——本架次不再出现敌机，Esc 返回菜单）。真实模式不带武器。
-
-任务里**没有任何保护性接管**：地形回避拉起和边界自动回中都关闭了，低空完全自由，
-责任在你。三种方式直接失败——**被敌机导弹击中**、**撞地/撞海**，或**飞出 48 km
-任务边界**（以竞技场中心为圆心的内切圆，地图四角少量地形在圈外但飞不出去）。
-失败瞬间爆炸、全场冻结，
-弹出 **MISSION FAILED** 卡片：`R` 原地重开本任务（敌机刷新、击杀数清零、弹药补满），
-`Esc` 返回菜单。TSD 上会用**红色虚线圆圈**标出边界（按真实比例缩放，靠近时像一堵
-墙扫过雷达面）；距离档位低看不到圈时，信息区会在 10 km 内显示 `BND` 读数提醒。
-敌机不吃地形碰撞：生成时自动"坐床"到整个锚地游走范围都高于所跨地形（山里不会刷出
-看不见的靶机），漫游时也始终贴着地形下限，永远不会扎进山体。
-
-`F-22 > SETTINGS` 可以在出击前调整街机空战的兵力与弹药：
-
-- **ENEMY COUNT**：本次任务的敌机数量，`1`-`10`（默认 3，全部是红色靶机）；
-- **GUN ROUNDS / MISSILES / FLARES**：炮弹、导弹、热焰弹数量，可选 `STOCK`（原默认）、
-  `1`-`10`，或 `INF`（无限，HUD 显示满格且不再递减）；
-- 设置会写进 `config.cfg`（`[f22.combat]` 段），下次启动仍然生效。
-
-## 机场（C172 默认场景）
-
-C172 的默认飞行场景现在是一个程序化机场 **MYFS**：
-
-- 跑道 36/18，1200 m × 30 m，入口在出生点前方；`R` 回到跑道内，机头朝 360；
-- 西侧有 PAPI（四灯），东侧有滑行道、停机坪、机库和塔台；
-- 跑道有入口条、中心线、瞄准点、接地带、边线和跑道边灯；
-- 36 和 18 两个方向都有 PAPI 和入口编号地面字符（涂刷式）；滑行道连接处有
-  hold-short 双实线/双虚线；西侧有机坪加油泵：**在泵旁停稳（远离 12 m、
-  地面、近零地速）就会自动把两翼油箱加满（370 lb 总容量）**；
-- **滑行引导**：`P` 在机坪站位出生（(75, −150)，机头朝西沿黄色引入线；
-  引入线从加油泵联道通到滑行道中线，站位处有停机横杠，夜间由蓝滑行灯
-  引路）。滑行中状态块显示 `TAXI Δ ±m` 引入线偏移，停稳后按采样均值评级
-  （<1 m GOOD / <2.5 m OK / 其余 SLOPPY）；30 kt 以上视为飞行，滑行表不采样；
-- 燃油是真实消耗：发动机每步烧油，油量表（左列第四块表，双针 L/R）和状态
-  文本行实时显示余量；烧空的发动机会真正熄火，加油不会自动重新点火，
-  要走冷启动流程（见下）；
-- 风向袋在跑道东侧，随风速垂坠/摆动；
-- HUD 左上角显示 `[MYFS RWY 36]`；
-- 原来的训练网格在 C172 机场场景下隐藏，避免和跑道 z-fighting。
-
-PAPI 在 3° 下滑道上读作 2 红 2 白；高于下滑道全白，低于全红。
-
-落地后会出现一张评分卡：接地率、中线偏差、速度、接地点、坡度、侧风分量、
-弹跳次数，以及 0–100 分和 `GREASE / GOOD / FIRM / HARD / CRASH / OFF-FIELD`
-等级。侧风 ≥3 kt 时附加侧风技术分：按预期偏流角 `asin(xwind / 接地空速)`
-考核机头对正——迎风偏流的教科书姿态不扣分，不偏流或反向偏距要扣 5–20 分；
-静风天同样歪着的接地不扣。评分只在 MYFS 的 C172 场景生效；任务地图不参与。
-
-任务地图（Archipelago / Alpine）不受影响，仍然用它们自己的地形。
-
-### C172 燃油与冷启动
-
-- 燃油：两个翼箱各 185 lb 容量、默认各装 100 lb（与 JSBSim 模板一致）。发动机
-  全油门约 55–60 lb/hr，正常飞行烧不完一箱。
-- 冷启动：GLOBAL 设置新增 `ENGINE` 行（AUTO / COLD，持久化）。`COLD` 下出生时
-  发动机停机、火花关闭；流程：`M` 开总开关 → 按住 `I` 里的启动机带动桨叶约
-  两秒 → 发动机在高转速自持 → 松开 `I`。总开关开着且按住 `I` 才会带动；没电
-  只是原地转桨。`COLD` 切换即时生效（飞行中切到 COLD = 直接停车）。
-- 键位：`M`（总开关）、`I`（启动机，按住），键表在教程里。
-- 反馈：状态文本行新增 `MASTER/ENGINE/FUEL`；仪表盘左列新增双针燃油表
-- 检查单：流程式检查单自动打勾——`ENGINE = COLD` 下左下角出现 COLD START
-  检查单（总开关 → 启动机 → 发动机运转），完成后流转到 BEFORE TAKEOFF（襟翼
-  10°、满油门），离地后自动收板；空中熄火会自行重新打开 COLD START 卡。
-## 自动驾驶
-
-只有 **737** 有自动驾驶（真实民航如此；C172 / F-22 / AH-1S 上没有，`G` 无反应）。
-按 `G` 接管，键鼠输入交还给自动驾驶。它跑一条地面起飞 → 爬升 → 巡航的任务：
-滑跑对正 → 抬轮 → 爬升到 3000 ft → 稳到 110 kt 平飞巡航（航向 0）。逻辑在
-`jsbsim-sys/src/autopilot.rs`，无头示例与游戏里跑的是**同一套控制律**。
-
-### 737 的减速板与反推（`L` / `K`）
-
-- `L` 是减速板手柄：写 `fcs/speedbrake-cmd-norm`，FDM 用 0.6 s 走动出
-  `fcs/speedbrake-pos-norm`。张开即增加 CDsb 阻力项（0.02）并削 15% 升力
-  （kCLsb），两处数值都取自 JSBSim 737 模型文件。PFD 底部绿色 `SPOILERS`
-  表示 boards out。
-- `K` 是反推：写 `fcs/reverse-cmd-norm`，FDM 用 1.2 s 走动到
-  `fcs/reverse-pos-norm`。只在**机轮承重**时才真正咬到推力（每台发动机最大
-  0.45 × 20000 lbf 的负推力）；一旦升空立即自动收起（复飞安全），所以进近里
-  误触它无害。反转手柄会顺带解除 A/T（真实机收油门减速的效果）。PFD 底部
-  琥珀色 `REV` 表示反推已咬上。
-- 两个键都是 toggle（点一下切换状态，不用按住）；`R` 重置到跑道会把两根
-  手柄都收回。
-- 后端差异：减速板在 JSBSim 后端**同样有效**（属性名一致，JSBSim 737 模型
-  文件自带该通道）；反推则是 Rust FDM 新增的属性——JSBSim 的 737 模型
-  没有反推，切到该后端时 `K` 只是纯开关，没有物理效果。
-
-### 737 操纵台（2D 控制台）
-
-737 的襟翼、油门、减速板、起落架和反推集中在一块可点击的操纵台上，画在
-MCP 正上方；它是一张烘焙好的金属底板加**实时**控件，不是另一套状态：
-
-- 机外跟随视角按 `;` 展开 / 收起。窗口高度低于约 900 px 时自动隐藏，给
-  PFD 让位；条带宽度按窗口在启动时定一次。
-- 座舱里低头看中央操纵台（油门台），准星变亮并显示
-  `CLICK TO OPEN CONTROL STAND`，点一下把整块操纵台升到面前；`;` 也能
-  升起，`Esc` 或点面板外关闭。MCP 与操纵台共用同一个焦点槽，不会同时
-  叠两层。
-- **拖动**襟翼手柄和两个油门手柄；**点击**起落架、减速板、反推（反推是
-  油门下方的锁扣条）。点击走的是和键盘完全相同的输入路径
-  （`Bindings::set` / `input::apply_toggle`），所以鼠标和键盘不会落到
-  不同状态；手动拖油门会断开 A/T。
-- 发动机表是 **N2**（`engine_rpm`，60–100），不是 N1；襟翼档位
-  UP/1/2/5/10/15/25/30/40 在屏幕上等距，`ACTUAL` 指针和数字按实际襟翼
-  位置滞后于手柄；起落架灯、`SPD BRK`、`A/T`、`REV` 灯都是实时的。
-- 737 的文字 HUD 因此只保留 ALT/IAS/TRIM，不再重复 RPM/FLAP/GEAR。
-
-### ILS 进近与 APP 模式（`6` / MCP 上的 APP 键）
-
-- MYFS 跑道 36/18 各有一套 ILS：航向信标在跑道中心线，下滑道 3°、在跑道
-  入口与地面相交。两者都只在**进近有效区**内生效（入口前约 0.08–5 NM），
-  几何计算在 `src/ils.rs`，每个固定步长由 `advance_fdm` 重新算一遍喂给
-  自动驾驶与 PFD。
-- `6`（或点 MCP 上的 APP 键）预位双波束：偏差在 1.6° 内且在下滑中 →
-  LOC 截获（绿色 FMA `LOC`）；在 LOC 上且偏差 < 0.25° 并继续下降 →
-  G/S 截获。PFD 上出现 LOC/GS 菱形偏差指示（1 点 = 1.25° / 0.35°），
-  预位时显示白色 `APP`。
-- G/S 模式按 3° × 地速的下降率压剖面（约 −700 fpm @155 kt），50 ft 以下
-  自动接管（FLARE），27 ft 把油门收到慢车（RETARD），接地即自动断开
-  A/P。落地后轮子上的事（减速板、反推、刹车）是飞行员自己的。
-- GPWS-lite：贴着波束下掉 0.55° 以上 → 琥珀 `GLIDESLOPE`；2000 ft 以下
-  −1400 fpm → 琥珀 `SINK RATE`。
-- 快速演练：启动游戏前设 `FINAL=1` 环境变量，直接坐在 5 km 五边、
-  1300 ft、155 kt、起落架放下、襟翼进近位。真实飞法是先飞出去绕回来
-  （或 `Y` 的空中起点被换了位置——它仍回到跑道上空）。
- - **C172 的 CDI 仪表**吃同一份数据：`src/gauge/cdi.rs`。旋转航道卡固在
-   当前波束航道上（卡 `0` = 由南进近 36，`18` = 由北进近 18——OBS 旋钮
-   未建模）；白色 LOC 偏差针左右摆动（针指往该飞的方向，每点 22.5°），
-   琥珀下滑指针沿右侧点列上下滑（在波束下方时指上）。信号有效显示白色
-   `TO`，出有效区双针回中并显示琥珀 `OFF`。半刻度 = 2 点 = 1.25°/0.35°，
-   与 737 PFD 同源同值。
-
-## 天气
-
-天气是**全局设置**（与机型无关），在菜单的 `SETTINGS → GLOBAL` 里有四行：
-`WEATHER` 切换晴 / 小雨 / 中雨 / 暴雨，`WIND 300DEG` 切换静风 / 5 / 10 / 15 kt，
-`ENGINE` 切换 AUTO / COLD（仅 C172 生效），`TIME OF DAY` 切换 DAY / DUSK / NIGHT。
-这些**都没有快捷键**，但都是**实时生效**的——空中按方向键切到 NIGHT，太阳当场
-落下去。风向固定从 300°（西北偏西）吹来——对跑道 36 是顶风加
-右侧风，起降都要对正侧风修正；要换风向需要改 `weather.rs` 里的 `WIND_FROM_DEG`。雨是一池固定在**相机周围的雨条**
-（细长四边形，逐帧下落并在盒子边界回收），绕竖轴朝向相机，所以池子大小固定、
-不用生成新对象，跟天穹的云是同一套“回收”思路。**地面溅水**是另一池贴地的圆环
-（`Annulus`，无贴图），出生即快速扩张并淡出，寿命到点就换到相机附近的随机落点
-——只在**相机贴近地面**时出现（万米高空看不到地面涟漪，画出来只会像噪点）。
-雨量同时驱动**阴天**：天穹换用更暗更灰、云量更大的预烘焙贴图，太阳与照度也
-一并压暗。
-
-**风会回灌 FDM**：`sim.rs` 每个 FDM 步把风速经 `atmosphere/wind-{north,east}-fps`
-写到模型上（两种后端都认识这组属性）。气动评估、螺旋桨进气、空速表读数都是
-**空速坐标系**的——地速 = 空速 + 风，所以侧风会真的带偏航迹、HUD 的飞行轨迹
-标记会漂，但空速表不会被风吹大；V 计划里的自动驾驶也是顶同样的风场。地面滑跑
-的摩擦、重力、积分仍然用地速，所以不会出现"风吹跑停机飞机"的失真。地面不再有
-风时（选择静风），模型行为与接入前完全一致（所有 FDM 回归测试也是在静风下跑的）。
-
-风向袋读的就是这同一份场：摆向下风，风速越大抬得越平（静风垂坠，15 kt 放平），
-机身摆回对风方向并轻微摆动。**地面还有驻车制动**：地速 < 1 kt、油门 < 2%、
-没有踩刹车时会自动刹住，风天也不滑走；给油或踩刹车即解锁。注意 C172 出生就带
-60% 油门（教程设计如此），所以出生即会缓慢滑跑，这是老的键盘行为，不是风引入的。
-
-一个提醒：风天出生时**空速表不是 0**——空速表读的是空速，飞机停着也有 15 kt
-读数，这是真实飞机的行为，不是 bug。
-
-**时段与夜航**：`TIME OF DAY` 的 DUSK 把太阳压到地平线上（暖低光，云和地形
-被太阳入射角同步压暗）；NIGHT 换成月光 + 星空，地面暗下来，只留灯光在场：
-跑道白边灯、绿入口灯、红端灯、蓝滑行道灯、机坪泛光灯、塔台信标。C172 的外部
-灯包（`L`）在黄昏/夜间自动点亮：翼尖红/绿航行灯、尾白灯、闪红信标、双闪频闪
-和一盏真实的着陆聚光灯（Shadow 关，造价可控）——夜里进近时锥外只有跑道灯，
-请保持它们居中。技术上：一个 `night_factor`（0/0.5/1）同时喂给天穹/地形/水面
-三个自算光照的 shader（dusk 的云按太阳仰角减半照明）和 Bevy 太阳/环境光；
-跑道灯都是 emissive 材质，白天照常亮着只是被日光淹没。
-
-## 设置持久化
-
-天气、风、时段，以及 AH-64D 的街机选择和 C172 的键盘辅助，写在一个文本配置文件
-里：`myflightsim/config.cfg`，位于 `$XDG_CONFIG_HOME`（缺省 `~/.config`）下。
-格式是手写的简单文本（无 serde 依赖），例如：
+## 项目结构
 
 ```
-weather = 2
-wind = 1
-time = 1
-
-[c172p.assist]
-bank-hold = 1
-
-[arcade]
-ah1s = 1
+src/                  Bevy 应用：菜单、飞行桥接、HUD/座舱、课程与评分
+crates/flight-model/  FlightModel 属性总线（后端无关）
+crates/fdm/           纯 Rust 飞行力学（默认后端，wasm 可用）
+jsbsim-sys/           JSBSim 绑定与可选后端（仅桌面）
+assets/               模型、贴图、音频、着色器
+examples/             离屏截图与标定工具（--features shots）
 ```
 
-键位本身是固定的，不写入配置文件；旧版本留下的 `[机型]` 键位段会被忽略并在下次
-保存时清掉。读写走 `config.rs` 里的 `ConfigStore` 抽象：桌面写文件，Web
-（wasm）版写 `localStorage`，其余代码不动。
+物理与画面之间由 `FlightModel` 的命名属性总线隔开，因此输入、相机、HUD 和自动驾驶不依赖具体后端。设计取向是把 JSBSim 和机模已经提供的能力真实地暴露出来，而不是复刻一套完整的整机模拟。
 
-## 目录结构
-
-```
-.
-├── src/
-│   ├── main.rs        # 可执行入口：调用库里的 run()
-│   ├── lib.rs         # Bevy App 组装（截图示例也以库形式复用它）
-│   ├── app_state.rs   # Menu / Flying 状态
-│   ├── sim.rs         # 飞行模型 <-> Bevy 世界桥接、定步长与插值
-│   ├── view.rs        # 场景/相机/HUD、操纵面驱动（骨骼旋转 / 绕铰链线旋转）
-│   ├── input.rs       # 键位 -> FCS 命令（按机型档案的固定键位构建）
-│   ├── controls.rs    # 舱外键盘操纵指示：方向盘 / 脚蹬双圆
-│   ├── assist.rs      # C172 可选键盘辅助：bank hold / turn coordination
-│   ├── aerodrome.rs   # C172 默认机场：跑道、滑行道、PAPI、风向袋
-│   ├── landing.rs     # C172 落地评分：接地率/中线/速度/接地点/侧风技术
-│   ├── takeoff.rs     # 737 起飞评分：抬轮速度对 PFD VR 线、姿态、收轮时机
-│   ├── approach.rs    # 737 稳定进近门：1000 ft 廊道稳定标准告警
-│   ├── hop.rs         # 737 航程账本：单元 hop 总分持久化（桌面 ledger.cfg / web localStorage）
-│   ├── checklist.rs   # C172 检查单：冷启动 / 起飞前，随状态自动打勾
-│   ├── taxi.rs        # C172 滑行引导：引入线偏移 + 停机评级
-│   ├── aircraft_profile.rs # 每机型的控制键位档案（数据表）
-│   ├── config.rs      # 用户设置持久化（天气/辅助/街机；ConfigStore 抽象）
-│   ├── menu.rs        # 开始菜单：选机 + 全局设置页 + 机型设置
-│   ├── tutorial.rs    # 每机型教程页：游戏操作 / 真机程序 / TODO 清单
-│   ├── gauge/         # 座舱仪表（UI 组件）：9 个实时表，底角布局 / 座舱面板贴附
-│   ├── sky.rs         # 程序化天空：跟随相机的渐变天穹 + fBm 云（无贴图素材）
-│   ├── weather.rs     # 天气+时段档：雨幕/阴天/太阳与夜Factor，驱动 sky/view/map/lights 变暗
-│   └── lens.rs        # 镜头雨滴后处理
-├── crates/
-│   ├── flight-model/  # FlightModel trait：属性总线接口（后端无关的缝）
-│   └── fdm/           # 纯 Rust 飞行力学（默认后端；wasm 可用）
-├── jsbsim-sys/        # JSBSim 的 Rust 绑定（本地验证后端；web 构建不含）
-│   ├── src/lib.rs     # 安全封装 (Fdm) 与源码定位
-│   ├── src/autopilot.rs
-│   ├── shim/shim.cpp  # C ABI 垫片
-│   ├── build.rs       # 编译 libJSBSim、链接垫片
-│   └── examples/      # takeoff.rs：无头自动驾驶演示
-├── examples/          # sim_view_shot.rs、cockpit_shot.rs、
-│                      # panel_calib.rs、panel_view_shot.rs、
-│                      # ah64_cockpit_shot.rs、ah64_cockpit_view.rs
-├── tools/             # ah64_cockpit.py 座舱建模、prepare_apache.py 外模拆分（Blender）
-├── docs/ah64_cockpit/ # AH-64D 座舱预览图
-├── assets/            # c172_full.glb、f22.glb、ah64d.glb、ah64d_cockpit.glb…
-└── CREDITS.md         # 3D 模型署名
-```
-
-## 已知问题
-
-功能缺口（例如“混合比未建模”“ATC 未做”）写在各机型教程的 TODO 里。
-
-## 验证与调试
-
-除游戏本体外，仓库里有几个无头/离屏的验证工具：
-
-- `cargo run -p jsbsim-sys --example takeoff` —— 无窗口跑完整自动驾驶任务，
-  打印遥测表（高度/空速/升降率/姿态/油门/phase）。用来证明 FDM 本身能飞出一条
-  正常的航线，从而把手感问题归因到“操纵”而非“模拟”。
-- `cargo run --features shots --example sim_view_shot` —— 离屏渲染场景，逐个偏转副翼 / 升降舵 /
-  方向舵各出一张图，核对新机模的操纵面接线；`COCKPIT=1 cargo run --features shots --example
-  sim_view_shot` 则强制座舱视角，只出一张图，核对内饰框景。
-- `cargo run --features shots --example cockpit_shot` —— 单独加载大机模 + 自由相机，用来手工调
-  座舱眼睛位置（见下）。
-- `cargo run --features shots --example panel_calib` —— 座舱面板标定：把 `src/gauge/mod.rs` 里
-  的 7 个表位重新投回屏幕，在画面上撒红球标记，用来核对/测量面板表盘的中心与
-  半径（读数取自 `/tmp/dials.txt`，缺省用内置值）。
-- `cargo run --features shots --example panel_view_shot` —— 带实时仪表的座舱渲染截图，用来验证
-  7 个表是否正好贴在模型画好的表盘上（`COCKPIT=0` 则回到屏幕底角布局对照，
-  `LOOK=<角度>` 让座舱视角转过去，检查转头时表是否仍跟着贴在表盘上）。
-- `cargo run --features shots --example ah64_cockpit_shot` —— 在引擎里加载 AH-64D 座舱 GLB，
-  用固定 1600×900 的离屏相机渲染一张主视角图（窗口只负责事件循环，画面写到
-  `/tmp/opencode/ah64_cockpit_bevy.png`）。用来核对材质、透明座舱玻璃和发光 MPD
-  在 Bevy 里的实际观感。调眼位用 `AH64_EYE_Y`（米）/`AH64_PITCH`（度）/`AH64_FOV`
-  （度）/`AH64_OUT`（文件名）覆盖，默认与游戏内座舱静息视角一致。
-- `cargo run --features shots --example ah64_cockpit_view` —— **实时环视** AH-64D 座舱：右键拖拽
-  转头，`WASD` 平移，`E`/`Q` 升降，`1`–`6` 预设视角，`R` 回眼点，`F5` 重新加载
-  GLB，`G` 隐藏/显示座舱玻璃，`P` 截图，`Esc` 退出。
-
-截图/无头检查用的开发开关（不影响正常启动）：`AUTOFLY=ah1s` 直接进入 AH-64D，
-`MAP=ARCHIPELAGO|ALPINE` 直接进入街机任务地图，`COMBAT=1` 在自由飞行中也生成
-空战靶机（需 F-22 + 街机），`COMBAT_LOCK=1` 直接把第一个靶机锁上（截图用），
-`COMBAT_WEAPON=bvr` 开局选中 AIM-120，
-`COCKPIT=1` 开舱内视角，`ARCADE=1` 开街机，`AIRBORNE=1` 空中起始，
-`AHOVER=1` 直接开自动悬停，`LOOK_LOCK=1` 锁住座舱视线（截图用），
-`COCKPIT_LOOK=yaw,pitch`（度）设置舱内初始视线，`FOCUS=<表名>` 直接打开某块
-实时仪表的特写（截图用），
-`SHOT=/tmp/game.png` 启动约 3 秒后自动截图。例如：
+## 开发
 
 ```sh
-CARGO_MANIFEST_DIR=$PWD AUTOFLY=ah1s COCKPIT=1 ARCADE=1 AHOVER=1 \
-  SHOT=/tmp/ah64.png ./target/debug/my_flight_sim
+cargo test --no-default-features   # 纯 Rust 测试
+cargo test                         # 含 JSBSim（需要 JSBSIM_SRC）
+
+cargo run -p jsbsim-sys --example takeoff   # 无头自动驾驶演示
 ```
 
-`jsbsim-sys` 里还有一个单元测试 `c172p_climbs_after_throttle_up`：加载 c172p、
-加油门、跑 2 秒，断言飞机确实爬升并保持空速。运行：
+截图与标定工具挂在 `shots` feature 上，按需单独构建：
 
 ```sh
-cargo test
+cargo run --features shots --example menu_shot
 ```
 
-这些 `*_shot` 示例不参与日常构建：它们挂在 `shots` feature 上
-（`Cargo.toml` 里的 `required-features`），`cargo test` 会跳过它们——上面的
-命令因此都带 `--features shots`；只跑某个示例时按需编译一个，不再让
-`cargo test` 全量构建二十来个每张 2 GB 的截图程序。示例直接依赖
-`my_flight_sim` 库（`src/lib.rs`），不再各自用 `#[path]` 复制一份 `src` 模块树。
+## 许可与署名
 
-## 机模与座舱视角
+代码以 **LGPL-2.1** 发布，见 [`LICENSE`](LICENSE) 与 [`NOTICE.md`](NOTICE.md)。`crates/fdm` 的气动数据转录自 JSBSim（LGPL-2.1）。
 
-C172 用带内饰的大机模 `assets/c172_full.glb`（机外蒙皮 + 座舱内饰 + 仪表面板，
-故支持 `C` 座舱视角），随仓库一起入库。大机模没有骨骼也没有动画：舵面是各自独立
-的节点、几何烘焙在同一坐标系里，所有节点原点都落在机体重心，所以 `view.rs` 的
-`C172_SURFACES` 表用“绕各自前缘线旋转”（`Transform::rotate_around`）把它们铰接
-起来——轴与铰链点由绑定姿态顶点量出来。座舱相机的眼睛位置同样写在 `model_spec`
-里（模型坐标系，鼻朝 +Z）。
-
-大机模的面板是**静态贴图**，表针不会动。为了不让屏幕底角的 9 个实时表和贴图画好
-的表盘打架，座舱视角下这 9 个表会**贴到面板上**：`gauge/mod.rs` 里为每个表存了一份
-机体坐标系下的表盘位置（中心 + 两个半径向量，由 `panel_calib` 量出），
-`seat_panel` 每帧把它投影到当前相机上，再把整个控件（表盘、数字、指针）移动、
-缩放、旋转到位。因为位置来自相机而不是固定屏幕像素，**自由视角、横滚、改窗口大小
-都不会错位**；表盘转到相机背后时该表自动隐藏。留作静态的其余表盘（刹车压力、
-GYRO/LOC、备用高度表、VOR、备用升降率等）不动——模型上没有转速表，9 个表是“尽量
-对上”，不是一一对应。
-
-座舱视角下支持**鼠标自由环视**：移动鼠标即转动视线（机体系下先偏航后俯仰，俯仰限
-±80°），`N` 键把视线回正，`C` 退出座舱视角或按 `Esc` 回菜单时也会自动回正。相机
-**位置始终钉在飞行员眼睛上**，转头只改变朝向——面板与地平线只是相对头部平移/旋转，
-仪表仍由 `seat_panel` 逐帧重投影贴回原表位。进入座舱视角时鼠标会被隐藏并锁定在窗口
-内（得到无边界位移），离开座舱视角、回到菜单或窗口失焦时立即释放。
-
-舱内面板上的 9 个实时表还支持**仪表特写**：每块实时表都套一圈暗红描边，屏幕中央
-的准星对准哪块，哪块的描边就变亮，屏幕底部提示 `CLICK TO ZOOM`。按鼠标左键后，
-镜头在约半秒内把垂直视场从 45° 收到 16°，同时把视线转到该表盘正中；**眼位保持
-不动**，所以不会穿过面板、遮光罩或操纵盘。聚焦期间视角完全冻结，飞行操纵照常；
-再按左键会把镜头和视线一起退回进入前的状态。只有实时联动的表盘参与，
-模型上静态贴图画出的表盘（刹车压力、备用高度表等）不套描边。
-
-## AH-64D 座舱模型（PLT 后座）
-
-`assets/ah64d_cockpit.glb` 是按 DCS AH-64D 指南描述的后座（PLT）主视角座舱，
-由 `tools/ah64_cockpit.py` 程序化生成。它不是 Boeing 工程图，尺寸按公开照片和
-座舱照片量到“看起来对”的近似值；玻璃框、主仪表面板、两台 MPD、EUFD、备用仪表、
-HDU/IHADSS 面板、侧控制台和 HOCAS 做了细节，地板、座椅、后隔板、隔音层按“够用”
-处理。
-
-![AH-64D cockpit, pilot eye](docs/ah64_cockpit/forward.jpg)
-
-![AH-64D instrument panel](docs/ah64_cockpit/panel.jpg)
-
-集成到游戏后的街机悬停画面（舱内 IHADSS + 完整面板）：
-
-![AH-64D arcade cockpit](docs/ah64_cockpit/game_cockpit.jpg)
-
-舱外追尾视角的同一套 HUD：
-
-![AH-64D chase HUD](docs/ah64_cockpit/game_chase.jpg)
-
-- **坐标**：眼点在原点；`+X` 飞行员左侧、`+Y` 上、`+Z` 机头，单位为米。
-  因此将来接 `cockpit_spec` 时 `eye = Some([0.0, 0.0, 0.0])`，`offset` 填
-  飞行员眼点相对飞机重心的位置，`yaw = π`（和 C172 一样把模型 `+Z` 机头转到
-  机体的 `-Z`）。AH-64D 的实际眼点抬高 0.18 m、座舱 FOV 约 65°、rest pitch
-  ≈ -5°，这样不用抬头就能看到风挡/天窗，同时低头能看到 MPD。
-- **玻璃框**：两片前风挡 + 中央立柱、A 柱、侧窗（含前侧柱/斜撑/后角窗）、
-  顶部两块天窗、下颌窗、风挡雨刷、雨刷电机、导流/除雾唇口、铰链/锁扣、
-  canopy jettison 手柄和螺栓。
-- **主面板**：左/右 MPD（各 20 个软键、VID/BRT 旋钮、DAY/NT/MONO 开关）、
-  EUFD、master caution/warning、火警/灭火、武器、IHADSS、雨刷、备用姿态/
-  空速/高度表、罗盘、HDU 校准镜、KDU 键盘和断路器条。
-- **屏幕内容**：左 MPD 是发动机/TQ 页，右 MPD 是 TSD 地图页，EUFD 是电台/
-  系统消息。内容是独立节点，将来可以直接按页面名隐藏或替换。
-- **HUD**：AH-64D **没有传统固定 HUD**，HUD 是 IHADSS 头盔单目镜。模型里做了
-  HDU 控制面板、HDU 校准目镜、右侧 HDU 收纳盒（含收纳的单目镜）和后隔板上的
-  头盔/单目镜，并留了 `IHADSS_ANCHOR` 锚点。游戏里的绿色符号由
-  `assets/shaders/ah64_hud*.wesl` 以屏幕叠加实现：舱内和舱外都显示，`O` 开关。
-  它画了 IHADSS 圆环、航向带、空速/气压高度/雷达高度、升降速度、扭矩/转速/
-  总距、航路点、航迹矢量，以及 `ARC` / `BAL` / `HOVER` / `VTOL` / `LAND` / `GND`
-  状态字。
-- **节点名**：静态组 `CANOPY_FRAME`、`CANOPY_GLASS`、`GLARESHIELD`、
-  `INSTRUMENT_PANEL`、`PANEL_HARDWARE`、`STANDBY_INSTRUMENTS`、`CONSOLE_L`、
-  `CONSOLE_R`、`CENTER_PEDESTAL`、`SEAT`；可动/可换页组 `MPD_SCREEN_L/R`、
-  `MPD_CONTENT_L/R`、`EUFD_CONTENT`、`CAUTION_CONTENT`、`CYCLIC`、
-  `COLLECTIVE`、`PEDALS`；锚点 `EYE_PILOT`、`MPD_LEFT_ANCHOR`、
-  `MPD_RIGHT_ANCHOR`、`EUFD_ANCHOR`、`IHADSS_ANCHOR`。
-- **重新生成**：需要 Blender 5.x。
-
-  ```sh
-  blender -b --factory-startup --python tools/ah64_cockpit.py
-  # 只要 GLB、不渲染预览：
-  blender -b --factory-startup --python tools/ah64_cockpit.py -- --no-preview
-
-  # 可选的 Apache 外模拆分（主/尾旋翼节点）
-  blender -b --factory-startup --python tools/prepare_apache.py
-  ```
-
-  GLB 写到 `assets/ah64d_cockpit.glb`，Blender 预览写到
-  `/tmp/opencode/ah64_cockpit_preview/`。
-
-- **引擎预览（截图）**：`cargo run --features shots --example ah64_cockpit_shot`，输出
-  `/tmp/opencode/ah64_cockpit_bevy.png`（1600×900 离屏）。
-- **引擎预览（实时环视）**：
-
-  ```sh
-  cargo run --features shots --example ah64_cockpit_view
-  ```
-
-  右键拖拽环视，`WASD` 平移，`E`/`Q` 升降，`Shift`/`Ctrl` 加速/减速，
-  `1`–`6` 切到主视角/面板/左台/右台/顶框/地板预设，`R` 回到眼点，
-  `G` 隐藏/显示座舱玻璃，`P` 截图到 `/tmp/opencode/ah64_cockpit_view.png`，
-  `Esc` 退出。
-
-  改模型时不用关 viewer：在另一个终端重跑
-  `blender -b --factory-startup --python tools/ah64_cockpit.py -- --no-preview`
-  生成新的 GLB，回到 viewer 按 `F5` 强制重新加载。第一次启动会等几秒加载
-  10 MB 的 GLB 和编译着色器。
-
-## AH-64D 外模与街机模式
-
-`assets/ah64d.glb` 是 Sketchfab 的 “Boeing AH-64D Apache Combat Helicopter”
-（CC BY 4.0，署名见 CREDITS），用来替换原来的 Mi-24 视觉模型；物理仍是
-AH-1S 的 FDM（作为 Apache 的临时替身）。`tools/prepare_apache.py` 把下载的
-GLB 拆成 `AH64_Airframe` / `AH64_MainRotor` / `AH64_TailRotor` 三个节点，
-主旋翼和尾旋翼由 `drive_surfaces` 按实时转速旋转。
-
-![AH-64D rotor split](docs/ah64_cockpit/rotor_split.jpg)
-
-上图是拆分诊断：绿色是主旋翼（四片都在），青色是侧置尾旋翼（四片都在），
-红色/机色是静止的垂尾。早期版本只选中了两片主旋翼，并把垂尾当成尾旋翼；
-现在尾旋翼按 `y ≈ +0.10` 的侧置桨毂选择，垂尾留在机身上不转。
-
-座舱视角：`ah64d_cockpit.glb` 通过 `view.rs` 的 `cockpit_spec("ah1s")` 挂到
-眼点；`C` / 菜单里的座舱视角可在舱内/舱外切换。
-
-街机模式在 **Settings → 当前机型 → flight model** 里切到 **Arcade**：
-
-- `J` 自动悬停 / 垂直起降：地面按一次 → 自动升到约 15 ft 并悬停；空中按一次 →
-  保持当前高度；再按一次 → 缓慢下降并自动落地（落地后自动关闭）。
-- `B` 自动平衡：滚转/俯仰姿态自动回平，松杆后自动稳定；关闭后仍保留街机速率
-  指令，但不再自动回平。
-- 街机纵向控制仍然用 `Shift`/`Ctrl`（总距），但自动悬停优先；`WASD`/`Q E` 做
-  姿态和偏航机动。街机模式没有旋翼失速、尾桨失效或地面共振。
-- HUD 会显示 `ARC`、`BAL`、`HOVER`/`VTOL`/`LAND` 和 `GND` 状态字。
-
-只影响 AH-64D（内部 id 仍为 `ah1s`，以兼容现有配置）；其他机型忽略这些属性。
-JSBSim 后端不认识街机属性，街机模式请用默认 Rust FDM。
-
-目前已经接在内部 id `ah1s`（菜单显示 AH-64D）上；`view.rs` 的座舱项是：
-
-```rust
-"ah1s" => Some(ModelSpec {
-    file: "ah64d_cockpit.glb",
-    scale: 1.0,
-    drop: 0.0,
-    offset: [0.0, 1.05, -2.0], // 眼点相对机体 CG
-    yaw: std::f32::consts::PI,
-    eye: Some([0.0, 0.18, 0.0]), // 比原始眼点高一截
-    eye_yaw: 0.0,
-    eye_pitch: -5.0_f32.to_radians(),
-}),
-```
-
-目前只有 PLT 后座。CPG 前座可以用同一套脚本扩展：中间换成 TEDAC 大屏和
-左右手 grip，其余玻璃框/侧台基本复用。
-
-## 署名
-
-3D 模型 `assets/c172_full.glb`（作者 KOG_THORNS）来自 Sketchfab，采用
-**CC BY 4.0** 许可。完整的 TASL 署名见 [CREDITS.md](CREDITS.md)。
+`assets/` 不在上述许可范围内：模型、音频与着色器按各自条款分发，其中两件为 **CC BY-NC-SA**，因此本项目及任何构建**不得商用**。完整署名见 [`CREDITS.md`](CREDITS.md)。
