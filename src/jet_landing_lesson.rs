@@ -26,6 +26,7 @@ use bevy::prelude::*;
 use crate::airfield::AirfieldSpec;
 use crate::app_state::{AppState, unpaused};
 use crate::autopilot::VertMode;
+use crate::lesson_telem::Telem;
 use crate::mission::{ActiveLesson, Lesson};
 use crate::scoring::{score, word};
 use crate::sim::AircraftState;
@@ -119,36 +120,9 @@ struct TouchFrame {
     along: f64,
 }
 
-/// One frame's readouts the tick needs: pure and testable, like the jet
-/// takeoff lesson's `Telem`.
 /// The MCP speed window the frame flew with — the `[` arithmetic's input.
 fn mcp_window(t: &Telem) -> f64 {
     t.mcp_ias
-}
-
-pub struct Telem {
-    on_ground: bool,
-    gs_kts: f64,
-    cas_kts: f64,
-    /// AAL, feet (the field sits at sea level).
-    alt_ft: f64,
-    vs_fpm: f64,
-    /// World position — the centreline offset and the along-track come off it.
-    pos: Vec3,
-    on_runway: bool,
-    /// ILS deviations, degrees (+ right / + above); zero outside the volume.
-    loc_dev_deg: f64,
-    gs_dev_deg: f64,
-    /// Along-course distance to the threshold, metres.
-    dist_m: f64,
-    /// The MCP IAS window, kt (the prompt's [ arithmetic reads it).
-    mcp_ias: f64,
-    gear_pos: f64,
-    flap_deg: f64,
-    reverse_pos: f64,
-    /// The A/P's vertical mode - the coupling recipe stays up until the
-    /// beams are flying.
-    vert: VertMode,
 }
 
 #[derive(Resource, Default)]
@@ -607,21 +581,13 @@ fn step_m3(
     tick(
         &mut m,
         Telem {
-            on_ground: aircraft.on_ground,
-            gs_kts: aircraft.gs_kts,
-            cas_kts: aircraft.cas_kts,
-            alt_ft: aircraft.alt_ft,
-            vs_fpm: aircraft.vs_fpm,
-            pos: aircraft.pos,
             on_runway: spec.on_runway(aircraft.pos.x, aircraft.pos.z),
             loc_dev_deg: if on_beam { ils.loc_dev_deg } else { 0.0 },
             gs_dev_deg: if on_beam { ils.gs_dev_deg } else { 0.0 },
             dist_m: ils.dist_m,
-            gear_pos: aircraft.gear_pos,
             mcp_ias: mcp.ias_kts,
-            flap_deg: aircraft.flap_deg,
-            reverse_pos: aircraft.reverse_pos,
             vert: ap.vert,
+            ..Telem::sample(&aircraft)
         },
         time.elapsed_secs(),
         time.delta_secs(),
@@ -678,6 +644,7 @@ mod tests {
             flap_deg: flap,
             reverse_pos: 0.0,
             vert: VertMode::Off,
+            ..Telem::default()
         }
     }
 

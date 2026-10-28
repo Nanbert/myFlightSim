@@ -39,17 +39,170 @@
 
 use bevy::prelude::*;
 
-/// The lesson HUD tags, in menu order (`Lesson::label`).
-const LESSON_LABELS: [&str; 9] = [
-    "M1 TAXI",
-    "M2 TAKEOFF",
-    "M3 LANDING",
-    "M1 TAXI",
-    "M2 TAKEOFF",
-    "M3 LANDING",
-    "M4 GO-AROUND",
-    "M5 RTO",
-    "M6 AUTOMATION",
+use crate::aircraft_profile::Action;
+use crate::sim::Sim;
+
+/// Everything that varies between lessons, in one table. `menu.rs` used to
+/// carry a chain of `matches!(lesson, ...)` blocks for the seat, the pinned
+/// flap/throttle and the MCP windows, and `lesson_flow.rs` another for the
+/// grade card; both now read the row for the active lesson, so adding a
+/// lesson is one entry here plus its meter.
+pub struct LessonSpec {
+    /// The HUD/home-field tag, and the PLAY row's label.
+    pub label: &'static str,
+    /// Seat the FDM at the lesson's start (stand, threshold, final, ...).
+    pub seat: fn(&mut Sim),
+    /// Cold and dark at spawn: the COLD START checklist is part of the drill.
+    pub cold_start: bool,
+    /// Controls pinned from the first frame: `(action, value)`.
+    pub pins: &'static [(Action, f64)],
+    /// The MCP's speed window at spawn; `None` keeps the 250 kt default.
+    pub mcp_ias_kts: Option<f64>,
+    /// The MCP's vertical-speed window at spawn; `None` keeps the default.
+    pub mcp_vs_fpm: Option<f64>,
+    /// The nose wheel's lead over the belly for the hold-line incursion.
+    pub nose_lead_m: f32,
+    /// The grade card's title.
+    pub title: &'static str,
+    /// Whether the grade card offers Enter to fly on.
+    pub continue_after: bool,
+    /// The off-pavement FAIL text (the landing lesson reads "OFF RUNWAY").
+    pub off_pavement: &'static str,
+}
+
+/// The off-pavement FAIL card for the taxi drills.
+const FAIL_OFF_PAVEMENT: &str = "FAIL - OFF TAXIWAY\nThe wheels left the pavement.";
+/// The landing lesson's pavement fail reads like a landing, not a taxi.
+const FAIL_OFF_RUNWAY: &str = "FAIL - OFF RUNWAY\nThe wheels settled off the pavement.";
+
+/// Row per [`Lesson`] discriminant, in the same order as the enum.
+static LESSON_SPECS: [LessonSpec; 9] = [
+    // M1 TAXI (C172): cold and dark at the stand; the card ends the lesson.
+    LessonSpec {
+        label: "M1 TAXI",
+        seat: Sim::reset_stand,
+        cold_start: true,
+        pins: &[],
+        mcp_ias_kts: None,
+        mcp_vs_fpm: None,
+        nose_lead_m: 1.5,
+        title: "HOLD SHORT - GRADED",
+        continue_after: false,
+        off_pavement: FAIL_OFF_PAVEMENT,
+    },
+    // M2 TAKEOFF (C172): warm on the threshold.
+    LessonSpec {
+        label: "M2 TAKEOFF",
+        seat: Sim::reset_ground,
+        cold_start: false,
+        pins: &[],
+        mcp_ias_kts: None,
+        mcp_vs_fpm: None,
+        nose_lead_m: 1.5,
+        title: "TAKEOFF - GRADED",
+        continue_after: true,
+        off_pavement: FAIL_OFF_PAVEMENT,
+    },
+    // M3 LANDING (C172): 2 NM final, flaps 20 pinned from the first frame.
+    LessonSpec {
+        label: "M3 LANDING",
+        seat: Sim::reset_final_c172,
+        cold_start: false,
+        pins: &[(Action::Flap, 0.67)],
+        mcp_ias_kts: None,
+        mcp_vs_fpm: None,
+        nose_lead_m: 1.5,
+        title: "LANDING - GRADED",
+        continue_after: true,
+        off_pavement: FAIL_OFF_RUNWAY,
+    },
+    // M1 TAXI (737): warm at ZSNM, idle and parked at the stand. The
+    // profile's 60% taxi throttle would have her rolling before the first
+    // frame; the RTO below pins the same because its SETUP row grades the
+    // thrust the pilot sets himself.
+    LessonSpec {
+        label: "M1 TAXI",
+        seat: Sim::reset_stand,
+        cold_start: false,
+        pins: &[(Action::Throttle, 0.0)],
+        mcp_ias_kts: None,
+        mcp_vs_fpm: None,
+        nose_lead_m: crate::jet_taxi::NOSE_LEAD_M,
+        title: "HOLD SHORT - GRADED",
+        continue_after: false,
+        off_pavement: FAIL_OFF_PAVEMENT,
+    },
+    // M2 TAKEOFF (737): lined up on the numbers.
+    LessonSpec {
+        label: "M2 TAKEOFF",
+        seat: Sim::reset_threshold,
+        cold_start: false,
+        pins: &[],
+        mcp_ias_kts: None,
+        mcp_vs_fpm: None,
+        nose_lead_m: 1.5,
+        title: "TAKEOFF - GRADED",
+        continue_after: true,
+        off_pavement: FAIL_OFF_PAVEMENT,
+    },
+    // M3 LANDING (737): flaps 5 and the beam's own power pinned (~0.25 — the
+    // descent's gravity share carries most of the drag). Level power (~0.5)
+    // had the APP-coupled seat accelerating down the beam; dirty-ing up then
+    // decelerates her into the ladder's targets on its own.
+    LessonSpec {
+        label: "M3 LANDING",
+        seat: Sim::reset_final_jet,
+        cold_start: false,
+        pins: &[(Action::Flap, 5.0 / 40.0), (Action::Throttle, 0.25)],
+        mcp_ias_kts: Some(160.0),
+        mcp_vs_fpm: Some(-950.0),
+        nose_lead_m: 1.5,
+        title: "LANDING - GRADED",
+        continue_after: true,
+        off_pavement: FAIL_OFF_PAVEMENT,
+    },
+    // M4 GO-AROUND: landing config and the draggy beam's power (~0.43: the
+    // m4_probe sweep crosses the 1,000 ft gate at −600 fpm and 144 kt, ~30 s
+    // in, so the seat rides the descent until the call).
+    LessonSpec {
+        label: "M4 GO-AROUND",
+        seat: Sim::reset_go_around_jet,
+        cold_start: false,
+        pins: &[(Action::Flap, 30.0 / 40.0), (Action::Throttle, 0.43)],
+        mcp_ias_kts: Some(140.0),
+        mcp_vs_fpm: Some(-700.0),
+        nose_lead_m: 1.5,
+        title: "GO-AROUND - GRADED",
+        continue_after: true,
+        off_pavement: FAIL_OFF_PAVEMENT,
+    },
+    // M5 RTO: lined up, idle and parked; the pilot sets takeoff thrust.
+    LessonSpec {
+        label: "M5 RTO",
+        seat: Sim::reset_threshold,
+        cold_start: false,
+        pins: &[(Action::Throttle, 0.0)],
+        mcp_ias_kts: None,
+        mcp_vs_fpm: None,
+        nose_lead_m: 1.5,
+        title: "RTO - GRADED",
+        continue_after: true,
+        off_pavement: FAIL_OFF_PAVEMENT,
+    },
+    // M6 AUTOMATION: the seat's own cruise; the rest of the windows are the
+    // lesson, so only the speed rides at 210 from the start.
+    LessonSpec {
+        label: "M6 AUTOMATION",
+        seat: Sim::reset_auto_lesson,
+        cold_start: false,
+        pins: &[],
+        mcp_ias_kts: Some(210.0),
+        mcp_vs_fpm: None,
+        nose_lead_m: 1.5,
+        title: "AUTOMATION - GRADED",
+        continue_after: false,
+        off_pavement: FAIL_OFF_PAVEMENT,
+    },
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -81,16 +234,35 @@ pub enum Lesson {
 }
 
 impl Lesson {
+    /// Every lesson, in menu/discriminant order — the table's index is the
+    /// enum's discriminant, so this also checks the two stay aligned.
+    pub const ALL: [Lesson; 9] = [
+        Lesson::Taxi,
+        Lesson::Takeoff,
+        Lesson::Landing,
+        Lesson::JetTaxi,
+        Lesson::JetTakeoff,
+        Lesson::JetLanding,
+        Lesson::JetGoAround,
+        Lesson::JetRto,
+        Lesson::JetAutomation,
+    ];
+
+    /// This lesson's row in [`LESSON_SPECS`].
+    pub fn spec(self) -> &'static LessonSpec {
+        &LESSON_SPECS[self as usize]
+    }
+
     /// The lesson's label, which doubles as the HUD's home-field tag while
     /// the lesson is in the air.
     pub fn label(self) -> &'static str {
-        LESSON_LABELS[self as usize]
+        self.spec().label
     }
 
     /// True when the lesson starts cold and dark and the COLD START checklist
     /// is part of the drill.
     pub fn cold_start(self) -> bool {
-        matches!(self, Lesson::Taxi)
+        self.spec().cold_start
     }
 }
 
@@ -255,6 +427,42 @@ mod tests {
         assert_eq!(PLAY_MENU_JET[5].label, "M5 RTO");
         assert_eq!(PLAY_MENU_JET[6].lesson, Some(Lesson::JetAutomation));
         assert_eq!(PLAY_MENU_JET[6].label, "M6 AUTOMATION");
+    }
+
+    #[test]
+    fn every_lesson_has_a_spec_at_its_own_index() {
+        for (i, lesson) in Lesson::ALL.iter().enumerate() {
+            assert_eq!(*lesson as usize, i, "{lesson:?} sits at its index");
+            assert_eq!(lesson.spec().label, lesson.label());
+        }
+    }
+
+    #[test]
+    fn play_rows_agree_with_the_spec_labels() {
+        for row in PLAY_MENU.iter().chain(PLAY_MENU_JET.iter()) {
+            if let Some(lesson) = row.lesson {
+                assert_eq!(row.label, lesson.label(), "{lesson:?}'s row label");
+            }
+        }
+    }
+
+    #[test]
+    fn specs_carry_each_drills_configuration() {
+        use crate::aircraft_profile::Action;
+
+        let landing = Lesson::JetLanding.spec();
+        assert_eq!(landing.mcp_ias_kts, Some(160.0));
+        assert_eq!(landing.mcp_vs_fpm, Some(-950.0));
+        assert!(landing.pins.contains(&(Action::Flap, 5.0 / 40.0)));
+        assert!(landing.pins.contains(&(Action::Throttle, 0.25)));
+
+        let auto = Lesson::JetAutomation.spec();
+        assert_eq!(auto.mcp_ias_kts, Some(210.0));
+        assert_eq!(auto.mcp_vs_fpm, None, "the V/S window is the lesson's work");
+        // The ground drills end at the stop; the airborne cards fly on.
+        assert!(!auto.continue_after);
+        assert!(!Lesson::Taxi.spec().continue_after);
+        assert!(Lesson::Takeoff.spec().continue_after);
     }
 
     #[test]

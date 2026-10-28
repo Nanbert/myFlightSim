@@ -850,8 +850,10 @@ mod tests {
 
     #[test]
     fn probe_matches_the_coverage_bias() {
-        let mut domain = CloudDomain::default();
-        domain.coverage_bias = -2.0;
+        let mut domain = CloudDomain {
+            coverage_bias: -2.0,
+            ..Default::default()
+        };
         let probe = CloudProbe::new(domain, 1);
         let p = Vec3::new(domain.center.x, 2_000.0, domain.center.z);
         assert_eq!(probe.density_at(p), 0.0, "no coverage means no cloud");

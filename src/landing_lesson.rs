@@ -37,6 +37,7 @@ use bevy::prelude::*;
 
 use crate::aerodrome::{on_runway, runway_along, THRESHOLD_Z};
 use crate::app_state::{unpaused, AppState};
+use crate::lesson_telem::Telem;
 use crate::mission::{ActiveLesson, Lesson};
 use crate::scoring::{score, word};
 use crate::sim::AircraftState;
@@ -269,21 +270,6 @@ impl LandingLesson {
     }
 }
 
-/// One frame's readouts the tick needs, extracted from [`AircraftState`]:
-/// pure and testable, like the takeoff lesson's `Telem`.
-pub struct Telem {
-    on_ground: bool,
-    gs_kts: f64,
-    cas_kts: f64,
-    /// AGL above the field (the aerodrome datum), feet.
-    agl_ft: f64,
-    vs_fpm: f64,
-    heading_deg: f64,
-    /// World position — the centreline offset and the along-track come off it.
-    pos: Vec3,
-    on_runway: bool,
-}
-
 /// Feed one frame's readouts. Pure over its own state, for tests.
 fn tick(ll: &mut LandingLesson, t: Telem, now: f32, dt: f32) {
     // The vertical-speed smoothing runs every frame like the free-flight
@@ -509,14 +495,8 @@ fn step_m3(
     tick(
         &mut ll,
         Telem {
-            on_ground: aircraft.on_ground,
-            gs_kts: aircraft.gs_kts,
-            cas_kts: aircraft.cas_kts,
-            agl_ft: aircraft.alt_ft,
-            vs_fpm: aircraft.vs_fpm,
-            heading_deg: aircraft.heading_deg,
-            pos: aircraft.pos,
             on_runway: on_runway(aircraft.pos.x, aircraft.pos.z),
+            ..Telem::sample(&aircraft)
         },
         time.elapsed_secs(),
         time.delta_secs(),
@@ -568,6 +548,7 @@ mod tests {
             heading_deg: 0.0,
             pos: Vec3::new(x, (agl * 0.3048) as f32, z),
             on_runway: x.abs() <= 15.0 && (-1061.0..141.0).contains(&z),
+            ..Telem::default()
         }
     }
 
@@ -714,9 +695,11 @@ mod tests {
         );
         assert!(bounced.final_ > 0.0, "a bounce pulls, never zeroes");
         // The card carries the bounce line.
-        let mut ll = LandingLesson::default();
-        ll.done = Some(bounced);
-        ll.settled = true;
+        let ll = LandingLesson {
+            done: Some(bounced),
+            settled: true,
+            ..Default::default()
+        };
         let text = ll.finals_text().expect("the card");
         assert!(text.contains("BOUNCE ×1"), "{text}");
     }
@@ -738,7 +721,7 @@ mod tests {
             // Disarmed: the same approach just... lands slow. The flag owns
             // the swap, one line to re-arm the classroom.
             assert_eq!(ll.fail, None, "the gate is off");
-            assert_eq!(ll.live.is_some(), true, "the prompt still runs");
+            assert!(ll.live.is_some(), "the prompt still runs");
         }
     }
 

@@ -69,7 +69,14 @@ impl Plugin for UiThemePlugin {
             .resource::<AssetServer>()
             .load("fonts/ShareTechMono-Regular.ttf");
         app.insert_resource(UiFonts { mono })
-            .add_systems(Update, apply_default_font);
+            .add_systems(Update, apply_default_font)
+            // The floating reports are spawned once at `Startup` and their
+            // display is written only while unpaused, so leaving the flight
+            // must hide them all together — see `hide_float_panels`.
+            .add_systems(
+                OnExit(crate::app_state::AppState::Flying),
+                hide_float_panels,
+            );
     }
 }
 
@@ -101,12 +108,17 @@ pub enum ReportAnchor {
     Center,
 }
 
-/// One of the five floating flight-report panels (takeoff grade, landing
-/// roll, approach banner, checklist card, hop ledger). They render the same
-/// 14 px monospace box — dark translucent pane, hairline border, absolute pin,
-/// `GlobalZIndex(14)`, hidden until their update system fills the text in.
-/// Only the marker component and the anchor previously varied, which used to
-/// mean five near-identical 23-line spawn blocks. Call sites pass their unit
+/// Marker on everything [`float_report`] spawns. One shared `OnExit` system
+/// hides them all, so a panel added later cannot forget its own hide and
+/// linger over the menu.
+#[derive(Component, Default)]
+pub struct FloatPanel;
+
+/// One of the floating flight-report panels (takeoff grade, landing roll,
+/// approach banner, checklist card, hop ledger, lesson prompt). They render the
+/// same 14 px monospace box — dark translucent pane, hairline border, absolute
+/// pin, `GlobalZIndex(14)`, hidden until their update system fills the text in.
+/// Only the marker component and the anchor vary. Call sites pass their unit
 /// marker via `M::default()`.
 pub fn float_report<M: Component + Default>(commands: &mut Commands, anchor: ReportAnchor) {
     if matches!(anchor, ReportAnchor::Center) {
@@ -122,6 +134,7 @@ pub fn float_report<M: Component + Default>(commands: &mut Commands, anchor: Rep
             .id();
         commands.spawn((
             M::default(),
+            FloatPanel,
             Text::new(""),
             TextFont {
                 font_size: FontSize::Px(14.0),
@@ -162,6 +175,7 @@ pub fn float_report<M: Component + Default>(commands: &mut Commands, anchor: Rep
 
     commands.spawn((
         M::default(),
+        FloatPanel,
         Text::new(""),
         TextFont {
             font_size: FontSize::Px(14.0),
@@ -322,6 +336,12 @@ pub fn key_footer(
         }
         commands.entity(footer).add_child(cell);
     }
+}
+
+/// Hide every floating report on leaving the flight; the flight systems that
+/// would otherwise rewrite their display are gated on `unpaused` and stop.
+fn hide_float_panels(q: Query<&mut Node, With<FloatPanel>>) {
+    set_display(q, Display::None);
 }
 
 pub fn set_display<M: Component>(mut q: Query<&mut Node, With<M>>, want: Display) {

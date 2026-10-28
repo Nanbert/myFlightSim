@@ -76,8 +76,7 @@ impl Plugin for LandingPlugin {
         app.init_resource::<LandingState>()
             .add_systems(Startup, spawn_report)
             .add_systems(OnEnter(AppState::Flying), reset_landing)
-            .add_systems(Update, update_landing.run_if(unpaused))
-            .add_systems(OnExit(AppState::Flying), hide_report);
+            .add_systems(Update, update_landing.run_if(unpaused));
     }
 }
 
@@ -99,12 +98,6 @@ const TOUCHDOWN_MIN_AIR: f32 = 1.5;
 /// Ground speed above which the vehicle is credibly *flying* rather than
 /// sitting (or dropping onto) its gear.
 const AIRBORNE_GS: f64 = 10.0;
-
-fn hide_report(mut q: Query<&mut Node, With<LandingReport>>) {
-    for mut node in &mut q {
-        node.display = Display::None;
-    }
-}
 
 fn update_landing(
     time: Res<Time>,

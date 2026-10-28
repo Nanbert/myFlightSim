@@ -104,8 +104,7 @@ impl Plugin for TakeoffPlugin {
         app.init_resource::<TakeoffState>()
             .add_systems(Startup, spawn_report)
             .add_systems(OnEnter(AppState::Flying), reset_takeoff)
-            .add_systems(Update, update_takeoff.run_if(unpaused))
-            .add_systems(OnExit(AppState::Flying), hide_report);
+            .add_systems(Update, update_takeoff.run_if(unpaused));
     }
 }
 
@@ -117,12 +116,6 @@ fn reset_takeoff(mut state: ResMut<TakeoffState>) {
     // A fresh flight keeps nothing but the session best.
     let best = state.best;
     *state = TakeoffState { best, ..default() };
-}
-
-fn hide_report(mut q: Query<&mut Node, With<TakeoffReport>>) {
-    for mut node in &mut q {
-        node.display = Display::None;
-    }
 }
 
 fn update_takeoff(

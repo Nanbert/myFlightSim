@@ -791,24 +791,40 @@ fn update_menu_ui(
     }
     // The page renders as structured rows (menu_page module); freeform pages
     // fold their prose through `freeform`, which keeps the old text look.
-    pages.0 = match sel.current_page().copied() {
-        Some(Page::Submenu) => submenu_lines(sel.top, sel.sub),
-        Some(Page::Exit) => exit_lines(),
-        Some(Page::Global) => global_settings_lines(&weather, &settings),
-        Some(Page::Play) => play_lines(sel.aircraft_id(), &play),
-        Some(Page::Missions) => missions_lines(&missions),
-        Some(Page::Settings) => {
-            aircraft_settings_lines(sel.aircraft_id(), &config, &aircraft_settings)
-        }
-        Some(Page::Feel) => feel_lines(sel.aircraft_id(), &config, &feel_state),
-        Some(Page::Tutorial) => {
-            menu_page::freeform(&tutorial::render(sel.aircraft_id(), tutorial_state.scroll))
-        }
-        Some(Page::Info) => tutorial::info_lines(sel.aircraft_id()),
-        Some(Page::McpGuide) => crate::mcp_guide::lines(guide_state.topic),
-        Some(p) => menu_page::freeform(&page_text(p, &sel)),
-        None => Vec::new(),
-    };
+    // Rebuilding the rows allocates a `Vec<PageLine>` and its strings, so it
+    // only happens when one of the inputs actually changed. A `Res::is_changed`
+    // check is enough: every source below is written only by menu input (or a
+    // page change), never per frame, so an idle menu skips the whole rebuild.
+    let rows_dirty = sel.is_changed()
+        || weather.is_changed()
+        || settings.is_changed()
+        || play.is_changed()
+        || missions.is_changed()
+        || config.is_changed()
+        || aircraft_settings.is_changed()
+        || feel_state.is_changed()
+        || tutorial_state.is_changed()
+        || guide_state.is_changed();
+    if rows_dirty {
+        pages.0 = match sel.current_page().copied() {
+            Some(Page::Submenu) => submenu_lines(sel.top, sel.sub),
+            Some(Page::Exit) => exit_lines(),
+            Some(Page::Global) => global_settings_lines(&weather, &settings),
+            Some(Page::Play) => play_lines(sel.aircraft_id(), &play),
+            Some(Page::Missions) => missions_lines(&missions),
+            Some(Page::Settings) => {
+                aircraft_settings_lines(sel.aircraft_id(), &config, &aircraft_settings)
+            }
+            Some(Page::Feel) => feel_lines(sel.aircraft_id(), &config, &feel_state),
+            Some(Page::Tutorial) => {
+                menu_page::freeform(&tutorial::render(sel.aircraft_id(), tutorial_state.scroll))
+            }
+            Some(Page::Info) => tutorial::info_lines(sel.aircraft_id()),
+            Some(Page::McpGuide) => crate::mcp_guide::lines(guide_state.topic),
+            Some(p) => menu_page::freeform(&page_text(p, &sel)),
+            None => Vec::new(),
+        };
+    }
     // The diagram layer only shows under its own page (the layer reads this
     // in its sync system).
     let want_shown = matches!(sel.current_page(), Some(Page::McpGuide));
@@ -1784,14 +1800,7 @@ fn start_flight(
         sim.reset_air(map.spawn_alt_ft(), map.spawn_kts());
     } else {
         match active.0 {
-            Some(Lesson::Taxi) | Some(Lesson::JetTaxi) => sim.reset_stand(),
-            Some(Lesson::Takeoff) => sim.reset_ground(),
-            Some(Lesson::JetTakeoff) => sim.reset_threshold(),
-            Some(Lesson::JetLanding) => sim.reset_final_jet(),
-            Some(Lesson::JetGoAround) => sim.reset_go_around_jet(),
-            Some(Lesson::JetRto) => sim.reset_threshold(),
-            Some(Lesson::JetAutomation) => sim.reset_auto_lesson(),
-            Some(Lesson::Landing) => sim.reset_final_c172(),
+            Some(lesson) => (lesson.spec().seat)(&mut sim),
             None => sim.reset_ground(),
         }
     }
@@ -1814,57 +1823,14 @@ fn start_flight(
     if arcade {
         controls.enable_arcade(id);
     }
-    // The landing lesson flies flaps 20: the app writes its bindings every
-    // step, so the flap lever and displays hold the approach detent from the
-    // first frame (the FDM seat itself places command + position after IC —
-    // see `sim::reset_final_at`).
-    if matches!(active.0, Some(Lesson::Landing)) {
-        if let Some(b) = controls
-            .list
-            .iter_mut()
-            .find(|b| b.action == crate::aircraft_profile::Action::Flap)
-        {
-            b.value = 0.67;
-        }
-    }
-    // The jet taxi and RTO lessons start at idle with the parking brake
-    // holding her: the profile's 60% taxi throttle would have the 737
-    // rolling before the first frame — and the RTO's SETUP row grades the
-    // thrust the pilot sets himself.
-    if matches!(active.0, Some(Lesson::JetTaxi) | Some(Lesson::JetRto)) {
-        if let Some(b) = controls
-            .list
-            .iter_mut()
-            .find(|b| b.action == crate::aircraft_profile::Action::Throttle)
-        {
-            b.value = 0.0;
-        }
-    }
-    // The jet landing lesson arrives at flaps 5. The pinned throttle is the
-    // 3-degree beam's own book value (~0.25: the descent's gravity share
-    // carries most of the drag), not level power - level power (~0.5) had
-    // the APP-coupled seat accelerating down the beam. Dirty-ing up then
-    // decelerates her into the ladder's targets on its own.
-    if matches!(active.0, Some(Lesson::JetLanding)) {
-        for b in controls.list.iter_mut() {
-            match b.action {
-                crate::aircraft_profile::Action::Flap => b.value = 5.0 / 40.0,
-                crate::aircraft_profile::Action::Throttle => b.value = 0.25,
-                _ => {}
-            }
-        }
-    }
-    // The jet go-around lesson arrives at landing config: flaps 30 and gear
-    // down (the FDM seat places them after IC — see `sim::reset_go_around_jet`).
-    // The pinned throttle is the FDM's own beam value for this draggy config
-    // (the m4_probe sweep: 0.43 crosses the 1,000 ft gate at −600 fpm and
-    // 144 kt, ~30 s in), so the seat rides the descent until the call.
-    if matches!(active.0, Some(Lesson::JetGoAround)) {
-        for b in controls.list.iter_mut() {
-            match b.action {
-                crate::aircraft_profile::Action::Flap => b.value = 30.0 / 40.0,
-                crate::aircraft_profile::Action::Throttle => b.value = 0.43,
-                _ => {}
+    // The lesson's pinned controls: the app writes its bindings every step,
+    // so the lever and the displays hold the approach detent / idle thrust
+    // from the first frame. The values (and why each was chosen — the beam's
+    // own power, the RTO's hand-set thrust) live in `LessonSpec`.
+    if let Some(spec) = active.0.map(Lesson::spec) {
+        for &(action, value) in spec.pins {
+            if let Some(b) = controls.list.iter_mut().find(|b| b.action == action) {
+                b.value = value;
             }
         }
     }
@@ -1873,26 +1839,16 @@ fn start_flight(
     // the 737's autopilot can be engaged once airborne.
     ap.reset();
     mcp.reset();
-    // The arrival's own plan in the windows: A/T (5) holds the seat's 180
-    // instead of the 250 default, and V/S (3) descends at the beam's own
-    // rate instead of sitting level on the 0 default (and never letting the
-    // glideslope capture).
-    if matches!(active.0, Some(Lesson::JetLanding)) {
-        mcp.ias_kts = 160.0;
-        mcp.vs_fpm = -950.0;
-    }
-    // The go-around's own plan in the windows: the seat's 140 and the beam's
-    // own sink, so a coupled seat holds the descent until the call.
-    if matches!(active.0, Some(Lesson::JetGoAround)) {
-        mcp.ias_kts = 140.0;
-        mcp.vs_fpm = -700.0;
-    }
-    // The automation lesson arrives at the seat's own cruise: the IAS window
-    // rides 210 so the A/T (once the modes hand it over) holds the seat's
-    // speed until the arrival call dials 180. The rest of the windows stay at
+    // The lesson's own plan in the windows (the arrival rides the beam's
+    // speed and sink, the automation only its cruise speed); the rest stay at
     // their defaults — setting them is the lesson.
-    if matches!(active.0, Some(Lesson::JetAutomation)) {
-        mcp.ias_kts = 210.0;
+    if let Some(spec) = active.0.map(Lesson::spec) {
+        if let Some(ias) = spec.mcp_ias_kts {
+            mcp.ias_kts = ias;
+        }
+        if let Some(vs) = spec.mcp_vs_fpm {
+            mcp.vs_fpm = vs;
+        }
     }
     rp.init = false;
 }

@@ -25,6 +25,7 @@ use bevy::prelude::*;
 
 use crate::app_state::{AppState, unpaused};
 use crate::autopilot::{AtMode, LatMode, VertMode};
+use crate::lesson_telem::Telem;
 use crate::mission::{ActiveLesson, Lesson};
 use crate::scoring::{score, word};
 use crate::sim::AircraftState;
@@ -99,31 +100,6 @@ enum Phase {
     Flying,
     /// A fail or the established hold froze the attempt.
     Graded,
-}
-
-/// One frame's readouts the tick needs: pure and testable, like the other
-/// jet lessons' `Telem`.
-#[derive(Clone, Copy)]
-pub struct Telem {
-    ap: bool,
-    lat: LatMode,
-    vert: VertMode,
-    app_armed: bool,
-    at: AtMode,
-    mcp_hdg: f64,
-    mcp_alt: f64,
-    mcp_vs: f64,
-    mcp_ias: f64,
-    cas_kts: f64,
-    alt_ft: f64,
-    /// The actual magnetic heading (the bug is the target, not the fact).
-    hdg_deg: f64,
-    roll_deg: f64,
-    /// ILS glideslope deviation at the frame, degrees (+ above); zero
-    /// outside the volume — the capture frame is always inside it.
-    gs_dev_deg: f64,
-    /// World position — the along-course distance reads off z.
-    pos: Vec3,
 }
 
 #[derive(Resource, Default)]
@@ -300,7 +276,7 @@ fn tick(m: &mut JetAutomationMeter, t: Telem, now: f32, dt: f32) {
                 if m.fail.is_none() {
                     if let Some(at) = m.turn_at {
                         if m.gs_at.is_none() && m.secs - at > LEG2_BUDGET_S {
-                            let err = heading_err(t.hdg_deg, TURN_BUG).abs();
+                            let err = heading_err(t.heading_deg, TURN_BUG).abs();
                             if err > 5.0 {
                                 m.fail = Some(FAIL_LEG);
                                 m.fail_detail = Some(
@@ -383,7 +359,7 @@ fn tick(m: &mut JetAutomationMeter, t: Telem, now: f32, dt: f32) {
                 m.gs_at = Some(m.secs);
                 m.gs_dev = t.gs_dev_deg;
                 m.gs_alt = t.alt_ft;
-                m.gs_hdg_err = heading_err(t.hdg_deg, TURN_BUG).abs() as f32;
+                m.gs_hdg_err = heading_err(t.heading_deg, TURN_BUG).abs() as f32;
             }
             if let Some(_gs) = m.gs_at {
                 if t.vert == VertMode::Gs && t.ap {
@@ -543,12 +519,8 @@ fn step_m6(
             mcp_alt: mcp.alt_ft,
             mcp_vs: mcp.vs_fpm,
             mcp_ias: mcp.ias_kts,
-            cas_kts: aircraft.cas_kts,
-            alt_ft: aircraft.alt_ft,
-            hdg_deg: aircraft.heading_deg,
-            roll_deg: aircraft.roll_deg,
             gs_dev_deg: if ils.available { ils.gs_dev_deg } else { 0.0 },
-            pos: aircraft.pos,
+            ..Telem::sample(&aircraft)
         },
         time.elapsed_secs(),
         time.delta_secs(),
@@ -614,10 +586,11 @@ mod tests {
             mcp_ias: 210.0,
             cas_kts: 210.0,
             alt_ft: alt,
-            hdg_deg: 0.0,
+            heading_deg: 0.0,
             roll_deg: 0.0,
             gs_dev_deg: 0.0,
             pos: Vec3::new(0.0, 0.0, z),
+            ..Telem::default()
         }
     }
 
@@ -678,12 +651,12 @@ mod tests {
         run(m, &mut secs, 30, level, 0.0, 120.0);
         let mut turning = frame(3560.0, SEAT_Z - 2_130.0);
         turning.mcp_hdg = 330.0;
-        turning.hdg_deg = 340.0;
+        turning.heading_deg = 340.0;
         turning.roll_deg = -20.0;
         run(m, &mut secs, 40, turning, 0.0, 120.0);
         let mut rolled = frame(3560.0, SEAT_Z - 3_530.0);
         rolled.mcp_hdg = 330.0;
-        rolled.hdg_deg = 330.0;
+        rolled.heading_deg = 330.0;
         run(m, &mut secs, 30, rolled, 0.0, 120.0);
         // V/S 2800 down, the window set before the press.
         let mut vs = frame(3560.0, SEAT_Z - 3_830.0);
@@ -712,7 +685,7 @@ mod tests {
         loc.app_armed = true;
         loc.at = AtMode::Speed;
         loc.mcp_ias = 180.0;
-        loc.hdg_deg = 335.0;
+        loc.heading_deg = 335.0;
         tick_at(m, loc, secs);
         secs += DT;
         let mut gs = frame(1382.0, SEAT_Z - 11_000.0);
@@ -721,7 +694,7 @@ mod tests {
         gs.app_armed = false;
         gs.at = AtMode::Speed;
         gs.mcp_ias = 180.0;
-        gs.hdg_deg = 333.0;
+        gs.heading_deg = 333.0;
         gs.gs_dev_deg = 0.08;
         run(m, &mut secs, 110, gs, 0.0, 0.0);
     }
@@ -772,12 +745,12 @@ mod tests {
         run(&mut m, &mut secs, 30, level, 0.0, 120.0);
         let mut turning = frame(3560.0, SEAT_Z - 2_130.0);
         turning.mcp_hdg = 330.0;
-        turning.hdg_deg = 340.0;
+        turning.heading_deg = 340.0;
         turning.roll_deg = -20.0;
         run(&mut m, &mut secs, 40, turning, 0.0, 120.0);
         let mut rolled = frame(3560.0, SEAT_Z - 3_530.0);
         rolled.mcp_hdg = 330.0;
-        rolled.hdg_deg = 330.0;
+        rolled.heading_deg = 330.0;
         run(&mut m, &mut secs, 30, rolled, 0.0, 120.0);
         let mut vs = frame(3560.0, SEAT_Z - 3_830.0);
         vs.vert = VertMode::Vs;
@@ -801,14 +774,14 @@ mod tests {
         loc.app_armed = true;
         loc.at = AtMode::Speed;
         loc.mcp_ias = 180.0;
-        loc.hdg_deg = 335.0;
+        loc.heading_deg = 335.0;
         tick_at(&mut m, loc, secs);
         secs += DT;
         let mut gs = frame(1382.0, SEAT_Z - 11_000.0);
         gs.lat = LatMode::Loc;
         gs.vert = VertMode::Gs;
         gs.at = AtMode::Speed;
-        gs.hdg_deg = 333.0;
+        gs.heading_deg = 333.0;
         gs.mcp_ias = 180.0;
         gs.gs_dev_deg = 0.08;
         run(&mut m, &mut secs, 110, gs, 0.0, 0.0);
@@ -930,12 +903,12 @@ mod tests {
         run(&mut m, &mut secs, 30, level, 0.0, 120.0);
         let mut turning = frame(3560.0, SEAT_Z - 2_130.0);
         turning.mcp_hdg = 330.0;
-        turning.hdg_deg = 340.0;
+        turning.heading_deg = 340.0;
         turning.roll_deg = -20.0;
         run(&mut m, &mut secs, 40, turning, 0.0, 120.0);
         let mut rolled = frame(3560.0, SEAT_Z - 3_530.0);
         rolled.mcp_hdg = 330.0;
-        rolled.hdg_deg = 330.0;
+        rolled.heading_deg = 330.0;
         run(&mut m, &mut secs, 30, rolled, 0.0, 120.0);
         let mut vs = frame(3560.0, SEAT_Z - 3_830.0);
         vs.vert = VertMode::Vs;
@@ -993,7 +966,7 @@ mod tests {
         // The turn: the V/S brief with the distance.
         let mut turning = frame(3560.0, SEAT_Z - 2_130.0);
         turning.mcp_hdg = 330.0;
-        turning.hdg_deg = 340.0;
+        turning.heading_deg = 340.0;
         turning.roll_deg = -20.0;
         run(&mut m, &mut secs, 30, turning, 0.0, 120.0);
         let live = m.live.clone().expect("the intercept brief");

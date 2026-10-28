@@ -408,7 +408,7 @@ fn engine_sfx_rearm(mut commands: Commands, sfx: Option<ResMut<EngineSfx>>) {
     let Some(mut sfx) = sfx else {
         return;
     };
-    stop_crank_loop(&mut commands, &mut *sfx);
+    stop_crank_loop(&mut commands, &mut sfx);
     sfx.prev = None;
 }
 
@@ -594,7 +594,7 @@ fn ignition_catch() -> Vec<i16> {
         // Combustion pops: low thumps with a noise edge, uneven like reality.
         for (t0, f0, amp) in [(0.38, 85.0, 0.85), (0.52, 110.0, 0.7), (0.63, 130.0, 0.6)] {
             let dt = t - t0;
-            if dt >= 0.0 && dt < 0.12 {
+            if (0.0..0.12).contains(&dt) {
                 s += amp * (std::f32::consts::TAU * f0 * dt).sin() * (-dt / 0.035).exp();
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 let r = (seed >> 8) as f32 / 8_388_608.0 - 1.0;

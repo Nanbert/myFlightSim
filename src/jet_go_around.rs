@@ -27,6 +27,7 @@ use bevy::prelude::*;
 
 use crate::app_state::{AppState, unpaused};
 use crate::autopilot::{AtMode, VertMode};
+use crate::lesson_telem::Telem;
 use crate::mission::{ActiveLesson, Lesson};
 use crate::scoring::{score, word};
 use crate::sim::AircraftState;
@@ -119,24 +120,6 @@ struct TrigFrame {
     pitch: f64,
     throttle: f64,
     at: AtMode,
-}
-
-/// One frame's readouts the tick needs: pure and testable, like the jet
-/// takeoff lesson's `Telem`.
-#[derive(Clone, Copy)]
-pub struct Telem {
-    on_ground: bool,
-    cas_kts: f64,
-    alt_ft: f64,
-    vs_fpm: f64,
-    pitch_deg: f64,
-    roll_deg: f64,
-    throttle: f64,
-    flap_deg: f64,
-    /// Achieved gear position: 1 down, 0 up.
-    gear_pos: f64,
-    at: AtMode,
-    vert: VertMode,
 }
 
 #[derive(Resource, Default)]
@@ -520,17 +503,9 @@ fn step_m4(
     tick(
         &mut m,
         Telem {
-            on_ground: aircraft.on_ground,
-            cas_kts: aircraft.cas_kts,
-            alt_ft: aircraft.alt_ft,
-            vs_fpm: aircraft.vs_fpm,
-            pitch_deg: aircraft.pitch_deg,
-            roll_deg: aircraft.roll_deg,
-            throttle: aircraft.throttle,
-            flap_deg: aircraft.flap_deg,
-            gear_pos: aircraft.gear_pos,
             at: ap.at,
             vert: ap.vert,
+            ..Telem::sample(&aircraft)
         },
         time.elapsed_secs(),
         time.delta_secs(),
@@ -590,6 +565,7 @@ mod tests {
             gear_pos: 1.0,
             at: AtMode::Off,
             vert: VertMode::Off,
+            ..Telem::default()
         }
     }
 

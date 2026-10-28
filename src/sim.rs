@@ -77,31 +77,57 @@ pub fn startup_aircraft() -> String {
     std::env::var("AIRCRAFT").unwrap_or_else(|_| "c172p".to_owned())
 }
 
+/// Which flight-dynamics implementation a [`Sim`] drives. Selecting it
+/// explicitly (rather than through the environment) keeps tests independent:
+/// `std::env::set_var` is process-global and unsafe to race, so a test that
+/// needs the Rust engine says so on the constructor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    /// The pure-Rust `fdm` engine — the default on every platform.
+    Rust,
+    /// The C++ JSBSim oracle, desktop-only (needs the `jsbsim` feature).
+    Jsbsim,
+}
+
+impl Backend {
+    /// `FDM_BACKEND=jsbsim` opts back into the C++ model.
+    fn from_env() -> Self {
+        if std::env::var("FDM_BACKEND").as_deref() == Ok("jsbsim") {
+            Backend::Jsbsim
+        } else {
+            Backend::Rust
+        }
+    }
+}
+
 impl Sim {
     pub fn new(name: &str) -> Self {
-        // Backend selection. The pure-Rust engine is the default;
-        // `FDM_BACKEND=jsbsim` opts back into the C++ model.
-        let rust = std::env::var("FDM_BACKEND").as_deref() != Ok("jsbsim");
-        Self::build(name, rust)
+        Self::with_backend(name, Backend::from_env())
+    }
+
+    /// Build with an explicit backend — the test path, and the arcade path
+    /// below.
+    pub fn with_backend(name: &str, backend: Backend) -> Self {
+        Self::build(name, backend)
     }
 
     /// Arcade missions always run the Rust engine: `fcs/arcade-enable` is
     /// implemented there, while the JSBSim aircraft models ignore it.
     pub fn new_arcade(name: &str) -> Self {
-        Self::build(name, true)
+        Self::build(name, Backend::Rust)
     }
 
-    fn build(name: &str, rust: bool) -> Self {
+    fn build(name: &str, backend: Backend) -> Self {
         // Web builds drop the `jsbsim` feature (C++ can't link to wasm), so
         // there the Rust engine runs no matter what the env says.
-        let rust = rust || cfg!(not(feature = "jsbsim"));
-        let (model, backend): (Box<dyn FlightModel>, &str) = if rust {
+        let rust = backend == Backend::Rust || cfg!(not(feature = "jsbsim"));
+        let (model, backend_label): (Box<dyn FlightModel>, &str) = if rust {
             (Box::new(fdm::Fdm::new(name)), "Rust")
         } else {
             Self::jsbsim_backend(name)
         };
         let display = if name == "ah1s" { "AH-64D" } else { name };
-        let label = format!("{backend} {display}");
+        let label = format!("{backend_label} {display}");
         let mut sim = Sim {
             model,
             label,
@@ -847,20 +873,17 @@ mod tests {
     }
 
     fn rust_sim() -> Sim {
-        std::env::set_var("FDM_BACKEND", "rust");
-        Sim::new("c172p")
+        Sim::with_backend("c172p", Backend::Rust)
     }
 
     /// Retractable-gear variant (the F-22) for the reset tests.
     fn rust_f22() -> Sim {
-        std::env::set_var("FDM_BACKEND", "rust");
-        Sim::new("f22")
+        Sim::with_backend("f22", Backend::Rust)
     }
 
     #[test]
     fn reset_final_seats_inside_the_ils_gate() {
-        std::env::set_var("FDM_BACKEND", "rust");
-        let mut sim = Sim::new("737");
+        let mut sim = Sim::with_backend("737", Backend::Rust);
         sim.reset_final();
         let (pos, _, _) = sim.pose();
         let spec = crate::airfield::AirfieldSpec::zsnm();
@@ -884,8 +907,7 @@ mod tests {
 
     #[test]
     fn reset_final_c172_seats_inside_the_ils_gate() {
-        std::env::set_var("FDM_BACKEND", "rust");
-        let mut sim = Sim::new("c172p");
+        let mut sim = Sim::with_backend("c172p", Backend::Rust);
         sim.reset_final_c172();
         let spec = crate::airfield::AirfieldSpec::myfs();
         let ils = crate::ils::compute(&sim, &spec);
@@ -1024,8 +1046,7 @@ mod m3_probe {
         // The coached flow, headless: G-5-3-6, the ladder-paced config, and
         // the A/T window dialled down with the ladder (the [ key's work).
         // The 1,000 ft gate's four criteria must all be green.
-        std::env::set_var("FDM_BACKEND", "rust");
-        let mut sim = Sim::new("737");
+        let mut sim = Sim::with_backend("737", Backend::Rust);
         sim.reset_final_jet();
         for _ in 0..120 {
             sim.model.set("fcs/throttle-cmd-norm", 0.25);
@@ -1033,13 +1054,15 @@ mod m3_probe {
         }
         let spec = AirfieldSpec::zsnm();
         let mut ap = Autopilot::default();
-        let mut mcp = Mcp::default();
-        mcp.ias_kts = 160.0;
-        mcp.vs_fpm = -950.0;
-        ap.toggle(&mut *sim.model);
-        ap.press_mode(ToggleAction::AutoThrottle, &mut *sim.model);
-        ap.press_mode(ToggleAction::VsMode, &mut *sim.model);
-        ap.press_mode(ToggleAction::Approach, &mut *sim.model);
+        let mut mcp = Mcp {
+            ias_kts: 160.0,
+            vs_fpm: -950.0,
+            ..Default::default()
+        };
+        ap.toggle(&*sim.model);
+        ap.press_mode(ToggleAction::AutoThrottle, &*sim.model);
+        ap.press_mode(ToggleAction::VsMode, &*sim.model);
+        ap.press_mode(ToggleAction::Approach, &*sim.model);
         assert!(ap.engaged, "the seat must not refuse the A/P");
         let dt = 1.0 / 120.0;
         let mut t = 0.0f64;
@@ -1098,8 +1121,7 @@ mod m4_probe {
     /// is not graded; it only has to reach the call.
     #[test]
     fn the_m4_seat_descends_through_the_gate() {
-        std::env::set_var("FDM_BACKEND", "rust");
-        let mut sim = Sim::new("737");
+        let mut sim = Sim::with_backend("737", Backend::Rust);
         sim.reset_go_around_jet();
         for _ in 0..120 {
             sim.model.set("fcs/throttle-cmd-norm", 0.43);
@@ -1134,8 +1156,7 @@ mod m4_probe {
     /// flaps 15 low, and the climb must capture the 3,000 ft window.
     #[test]
     fn the_coupled_go_around_captures_the_missed_altitude() {
-        std::env::set_var("FDM_BACKEND", "rust");
-        let mut sim = Sim::new("737");
+        let mut sim = Sim::with_backend("737", Backend::Rust);
         sim.reset_go_around_jet();
         for _ in 0..120 {
             sim.model.set("fcs/throttle-cmd-norm", 0.43);
@@ -1235,9 +1256,8 @@ mod m5_probe {
     /// the no-reverse run shows what the buckets are worth on the drill.
     #[test]
     fn the_rto_stops() {
-        std::env::set_var("FDM_BACKEND", "rust");
         for reverse in [true, false] {
-            let mut sim = Sim::new("737");
+            let mut sim = Sim::with_backend("737", Backend::Rust);
             sim.reset_threshold();
             for _ in 0..120 {
                 sim.model.set("fcs/throttle-cmd-norm", 0.0);
@@ -1312,8 +1332,7 @@ mod m6_probe {
     /// and the leg budgets are tuned here.
     #[test]
     fn the_coupled_arrival_establishes() {
-        std::env::set_var("FDM_BACKEND", "rust");
-        let mut sim = Sim::new("737");
+        let mut sim = Sim::with_backend("737", Backend::Rust);
         sim.reset_auto_lesson();
         let spec = AirfieldSpec::zsnm();
         let mut ap = Autopilot::default();
@@ -1442,14 +1461,13 @@ mod trim_probe {
 
     #[test]
     fn probe_seat_trims() {
-        std::env::set_var("FDM_BACKEND", "rust");
         for (flap, gear, tag) in [
             (5.0 / 40.0, 0.0, "flaps5 gear-up"),
             (15.0 / 40.0, 0.0, "flaps15 gear-up"),
             (5.0 / 40.0, 1.0, "flaps5 gear-dn"),
             (0.33, 1.0, "reset_final cfg"),
         ] {
-            let mut sim = Sim::new("737");
+            let mut sim = Sim::with_backend("737", Backend::Rust);
             sim.reset_final_jet();
             sim.model.set("fcs/flap-cmd-norm", flap);
             sim.model.set("fcs/flap-pos-norm", flap);

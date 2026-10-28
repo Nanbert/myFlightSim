@@ -92,8 +92,7 @@ impl Plugin for ApproachPlugin {
         app.init_resource::<ApproachState>()
             .add_systems(Startup, spawn_banner)
             .add_systems(OnEnter(AppState::Flying), reset_approach)
-            .add_systems(Update, update_approach.run_if(unpaused))
-            .add_systems(OnExit(AppState::Flying), hide_banner);
+            .add_systems(Update, update_approach.run_if(unpaused));
     }
 }
 
@@ -103,15 +102,6 @@ fn spawn_banner(mut commands: Commands) {
 
 fn reset_approach(mut state: ResMut<ApproachState>) {
     *state = default();
-}
-
-/// The banner is spawned once at `Startup` and its display is written only
-/// while unpaused, so the exit has to hide it — otherwise a gate verdict
-/// showing at the moment of leaving lingers over the menu.
-fn hide_banner(mut banner: Query<&mut Node, With<ApproachBanner>>) {
-    for mut node in &mut banner {
-        node.display = Display::None;
-    }
 }
 
 fn update_approach(

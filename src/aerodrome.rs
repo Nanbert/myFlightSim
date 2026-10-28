@@ -884,8 +884,8 @@ pub fn on_pavement(x: f32, z: f32) -> bool {
 /// E-class parallel taxiway, rapid exits, ICAO-standard markings, ALSF-style
 /// approach lighting, PAPI both ends, terminal massing, and tower.
 fn spawn_zsnm(
-    mut commands: &mut Commands,
-    mut meshes: &mut ResMut<Assets<Mesh>>,
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
 ) {
     use crate::airfield::AirfieldSpec;
@@ -977,25 +977,25 @@ fn spawn_zsnm(
     };
 
     // --- ground, runway, taxiway, apron ---
-    slab(&mut commands, &grass, 50_000.0, 50_000.0, 0.0, 0.0, GRASS_Y);
-    slab(&mut commands, &asphalt, spec.rwy_width, spec.rwy_length, 0.0, spec.rwy_center_z(), PAVE_Y);
-    slab(&mut commands, &asphalt, spec.taxi_width, spec.taxi_z0 - spec.taxi_z1, spec.taxi_x, (spec.taxi_z0 + spec.taxi_z1) * 0.5, PAVE_Y + 0.004);
+    slab(commands, &grass, 50_000.0, 50_000.0, 0.0, 0.0, GRASS_Y);
+    slab(commands, &asphalt, spec.rwy_width, spec.rwy_length, 0.0, spec.rwy_center_z(), PAVE_Y);
+    slab(commands, &asphalt, spec.taxi_width, spec.taxi_z0 - spec.taxi_z1, spec.taxi_x, (spec.taxi_z0 + spec.taxi_z1) * 0.5, PAVE_Y + 0.004);
     for c in &spec.connectors {
         let stub_w = spec.taxi_x - spec.rwy_width * 0.5;
-        slab(&mut commands, &asphalt, stub_w, spec.connector_half_depth * 2.0, (spec.taxi_x + spec.rwy_width * 0.5) * 0.5, c.z, PAVE_Y + 0.003);
+        slab(commands, &asphalt, stub_w, spec.connector_half_depth * 2.0, (spec.taxi_x + spec.rwy_width * 0.5) * 0.5, c.z, PAVE_Y + 0.003);
     }
     if let Some(ref apron) = spec.apron {
-        slab(&mut commands, &concrete, apron.width, apron.depth, apron.x, apron.z, PAVE_Y + 0.005);
+        slab(commands, &concrete, apron.width, apron.depth, apron.x, apron.z, PAVE_Y + 0.005);
     }
 
     // --- markings (ICAO Annex 14, scaled by `s`) ---
     let edge_x = spec.rwy_width * 0.5 - 0.15 * s;
     for x in [-edge_x, edge_x] {
-        slab(&mut commands, &paint, 0.3 * s, spec.rwy_length - 2.0, x, spec.rwy_center_z(), PAINT_Y);
+        slab(commands, &paint, 0.3 * s, spec.rwy_length - 2.0, x, spec.rwy_center_z(), PAINT_Y);
     }
     let mut z = spec.threshold_z - 60.0;
     while z > spec.rwy_end_z + 60.0 {
-        slab(&mut commands, &paint, 0.45 * s, 36.0 * s, 0.0, z, PAINT_Y);
+        slab(commands, &paint, 0.45 * s, 36.0 * s, 0.0, z, PAINT_Y);
         z -= 60.0 * s;
     }
     let bar_w = 3.0 * s;
@@ -1005,18 +1005,18 @@ fn spawn_zsnm(
         let into = if end == spec.threshold_z { -1.0_f32 } else { 1.0 };
         for i in 0..12 {
             let x = -spec.rwy_width * 0.5 + bar_w * 0.5 + i as f32 * (bar_w + gap);
-            slab(&mut commands, &paint, bar_w, bar_l, x, end + into * (6.0 * s + bar_l * 0.5), PAINT_Y);
+            slab(commands, &paint, bar_w, bar_l, x, end + into * (6.0 * s + bar_l * 0.5), PAINT_Y);
         }
     }
     let dsc = 1.5_f32;
-    paint_designator(&mut commands, &quad, &paint, "36", 0.0, spec.threshold_z - 24.0, 1.0, -1.0, dsc);
-    paint_designator(&mut commands, &quad, &paint, "18", 0.0, spec.rwy_end_z + 24.0, -1.0, 1.0, dsc);
+    paint_designator(commands, &quad, &paint, "36", 0.0, spec.threshold_z - 24.0, 1.0, -1.0, dsc);
+    paint_designator(commands, &quad, &paint, "18", 0.0, spec.rwy_end_z + 24.0, -1.0, 1.0, dsc);
     let aim_l = 45.0 * s;
     let aim_w = 9.0 * s;
     let aim_x = 15.3 * s;
     for (end, into) in [(spec.threshold_z, -1.0_f32), (spec.rwy_end_z, 1.0_f32)] {
         for x in [-aim_x, aim_x] {
-            slab(&mut commands, &paint, aim_w, aim_l, x, end + into * 311.0 * s, PAINT_Y);
+            slab(commands, &paint, aim_w, aim_l, x, end + into * 311.0 * s, PAINT_Y);
         }
     }
     let tdz_l = 22.5 * s;
@@ -1025,49 +1025,49 @@ fn spawn_zsnm(
     for (end, into) in [(spec.threshold_z, -1.0_f32), (spec.rwy_end_z, 1.0_f32)] {
         for d in [152.0_f32, 457.0, 610.0, 762.0] {
             for x in [-tdz_x, tdz_x] {
-                slab(&mut commands, &paint, tdz_w, tdz_l, x, end + into * d * s, PAINT_Y);
+                slab(commands, &paint, tdz_w, tdz_l, x, end + into * d * s, PAINT_Y);
             }
         }
     }
-    slab(&mut commands, &yellow, 0.3 * s, spec.taxi_z0 - spec.taxi_z1, spec.taxi_x, (spec.taxi_z0 + spec.taxi_z1) * 0.5, PAINT_Y + 0.002);
+    slab(commands, &yellow, 0.3 * s, spec.taxi_z0 - spec.taxi_z1, spec.taxi_x, (spec.taxi_z0 + spec.taxi_z1) * 0.5, PAINT_Y + 0.002);
     for c in &spec.connectors {
         let stub_len = spec.taxi_x - spec.rwy_width * 0.5;
-        slab(&mut commands, &yellow, stub_len, 0.3 * s, (spec.taxi_x + spec.rwy_width * 0.5) * 0.5, c.z, PAINT_Y + 0.002);
+        slab(commands, &yellow, stub_len, 0.3 * s, (spec.taxi_x + spec.rwy_width * 0.5) * 0.5, c.z, PAINT_Y + 0.002);
         let hold_len = spec.connector_half_depth * 2.0;
         for x in &spec.hold_solid_xs {
-            slab(&mut commands, &yellow, 0.3 * s, hold_len, *x, c.z, PAINT_Y + 0.004);
+            slab(commands, &yellow, 0.3 * s, hold_len, *x, c.z, PAINT_Y + 0.004);
         }
         for x in &spec.hold_dashed_xs {
             let dz_step = spec.connector_half_depth;
             for dz in [-dz_step, 0.0, dz_step] {
-                slab(&mut commands, &yellow, 0.3 * s, 3.0 * s, *x, c.z + dz, PAINT_Y + 0.004);
+                slab(commands, &yellow, 0.3 * s, 3.0 * s, *x, c.z + dz, PAINT_Y + 0.004);
             }
         }
     }
     if let Some(ref stand) = spec.stand {
-        slab(&mut commands, &yellow, 0.3 * s, 4.0, (spec.taxi_x + stand.x) * 0.5, stand.z, PAINT_Y + 0.002);
-        slab(&mut commands, &yellow, 0.3 * s, 6.0, stand.x, stand.z, PAINT_Y + 0.002);
+        slab(commands, &yellow, 0.3 * s, 4.0, (spec.taxi_x + stand.x) * 0.5, stand.z, PAINT_Y + 0.002);
+        slab(commands, &yellow, 0.3 * s, 6.0, stand.x, stand.z, PAINT_Y + 0.002);
     }
 
     // --- buildings ---
     let box_mesh = |meshes: &mut ResMut<Assets<Mesh>>, w: f32, h: f32, d: f32| {
         meshes.add(Cuboid::new(w, h, d))
     };
-    let terminal = box_mesh(&mut meshes, 120.0, 25.0, 300.0);
-    let terminal_roof = box_mesh(&mut meshes, 130.0, 2.0, 310.0);
+    let terminal = box_mesh(meshes, 120.0, 25.0, 300.0);
+    let terminal_roof = box_mesh(meshes, 130.0, 2.0, 310.0);
     commands.spawn((Mesh3d(terminal), MeshMaterial3d(concrete.clone()), Transform::from_xyz(350.0, 12.5, -1500.0), DespawnOnExit(AppState::Flying)));
     commands.spawn((Mesh3d(terminal_roof), MeshMaterial3d(roof.clone()), Transform::from_xyz(350.0, 26.0, -1500.0), DespawnOnExit(AppState::Flying)));
-    let pier = box_mesh(&mut meshes, 20.0, 15.0, 80.0);
+    let pier = box_mesh(meshes, 20.0, 15.0, 80.0);
     for z in [-1500.0, -1350.0, -1650.0] {
         commands.spawn((Mesh3d(pier.clone()), MeshMaterial3d(metal.clone()), Transform::from_xyz(270.0, 7.5, z), DespawnOnExit(AppState::Flying)));
     }
-    let tower = box_mesh(&mut meshes, 8.0, 45.0, 8.0);
-    let tower_cab = box_mesh(&mut meshes, 14.0, 6.0, 14.0);
+    let tower = box_mesh(meshes, 8.0, 45.0, 8.0);
+    let tower_cab = box_mesh(meshes, 14.0, 6.0, 14.0);
     commands.spawn((Mesh3d(tower), MeshMaterial3d(concrete.clone()), Transform::from_xyz(180.0, 22.5, -1700.0), DespawnOnExit(AppState::Flying)));
     commands.spawn((Mesh3d(tower_cab), MeshMaterial3d(dark.clone()), Transform::from_xyz(180.0, 48.0, -1700.0), DespawnOnExit(AppState::Flying)));
-    let cargo = box_mesh(&mut meshes, 100.0, 12.0, 60.0);
+    let cargo = box_mesh(meshes, 100.0, 12.0, 60.0);
     commands.spawn((Mesh3d(cargo), MeshMaterial3d(metal.clone()), Transform::from_xyz(350.0, 6.0, -1800.0), DespawnOnExit(AppState::Flying)));
-    let maint = box_mesh(&mut meshes, 60.0, 10.0, 40.0);
+    let maint = box_mesh(meshes, 60.0, 10.0, 40.0);
     commands.spawn((Mesh3d(maint), MeshMaterial3d(metal.clone()), Transform::from_xyz(180.0, 5.0, -1200.0), DespawnOnExit(AppState::Flying)));
 
     // --- runway edge lights: 45.72 m spacing ---

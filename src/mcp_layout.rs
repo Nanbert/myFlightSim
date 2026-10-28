@@ -223,8 +223,10 @@ mod tests {
         for &(rect, _, _) in WINDOWS {
             assert!(rect.x0 >= PANEL.x0 && rect.x1 <= PANEL.x1);
         }
-        assert!(AT_SWITCH.x0 >= PANEL.x0 && AT_SWITCH.x1 <= PANEL.x1);
-        assert!(VS_WHEEL.x0 >= PANEL.x0 && VS_WHEEL.x1 <= PANEL.x1);
+        const {
+            assert!(AT_SWITCH.x0 >= PANEL.x0 && AT_SWITCH.x1 <= PANEL.x1);
+            assert!(VS_WHEEL.x0 >= PANEL.x0 && VS_WHEEL.x1 <= PANEL.x1);
+        }
     }
 
     #[test]

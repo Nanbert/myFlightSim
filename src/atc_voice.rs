@@ -69,8 +69,8 @@ const M2_JET_TAKEOFF_CLIP: &str =
 /// three six." — read back by the PNF.
 const M3_JET_LANDING_CLIP: &str =
     "audio/atc/b737_m3_jet_landing_Uncle_Fu_and_Aiden.wav";
-/// The 737 M4 GO-AROUND mid-flight callout (8.5 s, ATC 1.3x + 0.7 s silence
-/// + pilot readback + radio ambience): "Flight 172, go around, go around."
+/// The 737 M4 GO-AROUND mid-flight callout (8.5 s; ATC 1.3x, 0.7 s silence,
+/// pilot readback, radio ambience): "Flight 172, go around, go around."
 /// Urgent crew call — the shorter silence reflects the split-second reaction
 /// budget. Fires at 1000 ft in [`crate::jet_go_around`].
 const M4_GO_AROUND_CLIP: &str =
@@ -79,8 +79,8 @@ const M4_GO_AROUND_CLIP: &str =
 /// pilot readback + radio ambience): "Flight 172, stop, stop." Urgent
 /// crew call — fires at 100 kt in [`crate::jet_rto`].
 const M5_RTO_CLIP: &str = "audio/atc/b737_m5_rto_Uncle_Fu_and_Aiden.wav";
-/// The 737 M6 AUTOMATION mid-flight callout (14.5 s, ATC 1.3x + 1 s silence
-/// + pilot readback + radio ambience): "Flight 172, ALT HOLD." The calm
+/// The 737 M6 AUTOMATION mid-flight callout (14.5 s; ATC 1.3x, 1 s silence,
+/// pilot readback, radio ambience): "Flight 172, ALT HOLD." The calm
 /// ATC stop-climb — fires at 3500 ft in [`crate::jet_automation`].
 const M6_AUTOMATION_CLIP: &str =
     "audio/atc/b737_m6_automation_Uncle_Fu_and_Aiden.wav";

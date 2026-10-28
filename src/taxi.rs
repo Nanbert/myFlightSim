@@ -277,9 +277,11 @@ impl HoldShort {
                     off.abs()
                 };
                 let taxi = crate::scoring::score(avg, HS_TIGHT, HS_TAXI_CAP);
-                let line = (dist >= 0.0)
-                    .then_some(crate::scoring::score(dist, HS_TIGHT, HS_LINE_CAP))
-                    .unwrap_or(0.0);
+                let line = if dist >= 0.0 {
+                    crate::scoring::score(dist, HS_TIGHT, HS_LINE_CAP)
+                } else {
+                    0.0
+                };
                 self.done = Some(HoldFinals {
                     avg,
                     dist,
@@ -699,7 +701,7 @@ mod tests {
         hs_roll(&mut hs, 2.0, 6.0, 40.0, CONN_Z);
         hs_roll(&mut hs, PARK, 0.2, 40.0, CONN_Z);
         assert_eq!(hs.done, None, "nothing to grade");
-        assert_eq!(hs.settled, false);
+        assert!(!hs.settled);
         // And a fresh approach after the pause grades only itself.
         hs_roll(&mut hs, 1.0, 6.0, 34.0, CONN_Z);
         hs_roll(&mut hs, PARK, 0.2, 25.0, CONN_Z);

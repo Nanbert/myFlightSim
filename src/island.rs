@@ -62,8 +62,8 @@ fn heights() -> &'static (usize, &'static [f32]) {
             "archipelago.f32: expected {stride}² f32 heights"
         );
         let mut out = Vec::with_capacity(stride * stride);
-        for chunk in bytes.chunks_exact(4) {
-            out.push(f32::from_le_bytes(chunk.try_into().unwrap()));
+        for chunk in bytes.as_chunks::<4>().0 {
+            out.push(f32::from_le_bytes(*chunk));
         }
         (stride, out.leak())
     })

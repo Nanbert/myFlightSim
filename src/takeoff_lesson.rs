@@ -30,6 +30,7 @@ use bevy::prelude::*;
 
 use crate::aerodrome::on_runway;
 use crate::app_state::{unpaused, AppState};
+use crate::lesson_telem::Telem;
 use crate::mission::{ActiveLesson, Lesson};
 use crate::scoring::{score, word};
 use crate::sim::AircraftState;
@@ -124,22 +125,6 @@ const W_CLIMB: f32 = 0.20;
 const FAIL_SANK: &str = "FAIL - SANK BACK\nThe climb out settled back onto the runway.";
 const FAIL_STEEP: &str = "FAIL - STEEP LOW TURN\nBanked past 30 degrees below the climb gate.";
 const FAIL_STALL: &str = "FAIL - STALLED IN THE CLIMB\nThe climb ate its speed below the gate.";
-
-/// One frame's readouts the tick needs, extracted from [`AircraftState`]:
-/// pure and testable, like the taxi meter's `step`.
-#[derive(Clone, Copy)]
-pub struct Telem {
-    on_ground: bool,
-    gs_kts: f64,
-    cas_kts: f64,
-    alt_ft: f64,
-    pitch_deg: f64,
-    roll_deg: f64,
-    heading_deg: f64,
-    on_runway: bool,
-    /// World position — the roll samples the runway centreline off it.
-    pos: Vec3,
-}
 
 #[derive(Resource, Default)]
 pub struct TakeoffLesson {
@@ -402,15 +387,8 @@ fn step_m2(
     tick(
         &mut tl,
         Telem {
-            on_ground: aircraft.on_ground,
-            gs_kts: aircraft.gs_kts,
-            cas_kts: aircraft.cas_kts,
-            alt_ft: aircraft.alt_ft,
-            pitch_deg: aircraft.pitch_deg,
-            roll_deg: aircraft.roll_deg,
-            heading_deg: aircraft.heading_deg,
             on_runway: on_runway(aircraft.pos.x, aircraft.pos.z),
-            pos: aircraft.pos,
+            ..Telem::sample(&aircraft)
         },
         time.elapsed_secs(),
         time.delta_secs(),
@@ -471,7 +449,8 @@ mod tests {
             roll_deg: roll,
             heading_deg: heading,
             on_runway: x.abs() <= 15.0,
-            pos: Vec3::new(x as f32, (alt / 3.28) as f32, 90.0),
+            pos: Vec3::new(x, (alt / 3.28) as f32, 90.0),
+            ..Telem::default()
         }
     }
 

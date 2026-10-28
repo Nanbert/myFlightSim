@@ -172,8 +172,9 @@ impl Mcp {
 }
 
 /// Lateral modes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LatMode {
+    #[default]
     Off,
     HdgSel,
     /// Captured the localizer (APP). The A/P steers the captured course with a
@@ -182,8 +183,9 @@ pub enum LatMode {
 }
 
 /// Vertical modes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum VertMode {
+    #[default]
     Off,
     AltHold,
     Vs,
@@ -196,8 +198,9 @@ pub enum VertMode {
 }
 
 /// Autothrottle modes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AtMode {
+    #[default]
     Off,
     Speed,
     N1,

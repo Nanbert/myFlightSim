@@ -9,6 +9,7 @@ use bevy::post_process::motion_blur::MotionBlur;
 use bevy::prelude::*;
 use bevy::text::FontSize;
 use bevy::window::{CursorGrabMode, CursorOptions};
+use bevy::world_serialization::WorldInstanceReady;
 use std::collections::{HashMap, HashSet};
 
 use crate::aircraft_profile;
@@ -638,6 +639,9 @@ impl Plugin for ViewPlugin {
             .init_resource::<Chase>()
             .init_resource::<LaunchKick>()
             .init_resource::<CockpitTune>()
+            // The glTF props to hide are only addressable once the async
+            // instance exists — see `hide_scene_junk`.
+            .add_observer(hide_scene_junk)
             .add_systems(Startup, (setup_scene, setup_hud))
             .add_systems(OnExit(AppState::Flying), reset_camera_feel)
             // Enter the chase pose *pinned*: without this the offset left over
@@ -664,7 +668,6 @@ impl Plugin for ViewPlugin {
                     drive_gear.run_if(unpaused),
                     draw_grid,
                     dim_lights,
-                    hide_scene_junk,
                     // Ungated: the menu showcase flies the same materials.
                     tame_airframe_materials,
                     sync_hud_visibility,
@@ -1060,15 +1063,25 @@ fn is_control_bone(name: &str) -> bool {
 /// ground-grid quad (`Object_113`) and a boarding ladder (`Object_89`) parked
 /// off the left side. Hide them so they don't fly with the jet.
 ///
-/// The hide is re-asserted every frame instead of once on `Added<Name>`: with
-/// the one-shot version the props still rendered on the web build (whose async
-/// scene instantiation is what exposed it), and matching a handful of names
-/// per frame is free.
-fn hide_scene_junk(mut q: Query<(&Name, &mut Visibility)>) {
+/// This runs on the instance-ready hook rather than once on `Added<Name>`: the
+/// web build resolves the glTF asynchronously, and the one-shot version ran
+/// before the nodes existed, so the props still rendered (a full-world sweep
+/// every frame was the workaround). The hook fires once, after the whole
+/// hierarchy is spawned.
+fn hide_scene_junk(
+    ready: On<WorldInstanceReady>,
+    names: Query<&Name>,
+    children: Query<&Children>,
+    mut commands: Commands,
+) {
     const JUNK: [&str; 2] = ["Object_113", "Object_89"];
-    for (name, mut vis) in &mut q {
-        if JUNK.contains(&name.as_str()) && *vis != Visibility::Hidden {
-            *vis = Visibility::Hidden;
+    let mut stack = vec![ready.entity];
+    while let Some(e) = stack.pop() {
+        if names.get(e).is_ok_and(|n| JUNK.contains(&n.as_str())) {
+            commands.entity(e).insert(Visibility::Hidden);
+        }
+        if let Ok(kids) = children.get(e) {
+            stack.extend(kids.iter());
         }
     }
 }

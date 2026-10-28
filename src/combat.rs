@@ -1574,10 +1574,11 @@ fn fire_weapons(
                 };
                 match combat.weapon {
                     Weapon::Ir if combat.missiles > 0 || combat.missiles_inf => {
+                        // The pylon alternates: odd shots ride the right rail.
                         let left = if combat.missiles_inf {
-                            combat.ir_shots % 2 == 0
+                            combat.ir_shots.is_multiple_of(2)
                         } else {
-                            combat.missiles % 2 == 0
+                            (combat.missiles as u32).is_multiple_of(2)
                         };
                         combat.ir_shots = combat.ir_shots.wrapping_add(1);
                         radio.write(RadioEvent(RadioCue::FoxTwo));
@@ -1752,7 +1753,7 @@ fn fire_weapons(
                 DespawnOnExit(AppState::Flying),
             ));
             // Gun gas every few rounds: a thin puff that falls behind the jet.
-            if combat.gun_shots % GUN_SMOKE_EVERY == 0 {
+            if combat.gun_shots.is_multiple_of(GUN_SMOKE_EVERY) {
                 let mat = mats.add(StandardMaterial {
                     base_color: Color::srgba(0.66, 0.66, 0.68, 0.30),
                     alpha_mode: AlphaMode::Blend,
@@ -2079,7 +2080,7 @@ fn guide_missiles(
             boom(&mut commands, &assets, at);
             combat.kills += 1;
             radio.write(RadioEvent(RadioCue::Splash));
-            if combat.kills % 2 == 0 {
+            if combat.kills.is_multiple_of(2) {
                 radio.write(RadioEvent(RadioCue::GoodKill));
             }
         }
@@ -2157,7 +2158,7 @@ fn update_tracers(
                 boom(&mut commands, &assets, at);
                 combat.kills += 1;
                 radio.write(RadioEvent(RadioCue::Splash));
-                if combat.kills % 2 == 0 {
+                if combat.kills.is_multiple_of(2) {
                     radio.write(RadioEvent(RadioCue::GoodKill));
                 }
             }
@@ -3080,12 +3081,14 @@ mod tests {
         assert_eq!((stock.missiles, stock.rounds), (2, 480));
         assert!(!stock.missiles_inf && !stock.rounds_inf);
 
-        let mut combat = Combat::default();
-        combat.settings = CombatConfig {
-            enemies: 5,
-            rounds: AmmoSetting::Count(10),
-            missiles: AmmoSetting::Count(4),
-            flares: AmmoSetting::Infinite,
+        let mut combat = Combat {
+            settings: CombatConfig {
+                enemies: 5,
+                rounds: AmmoSetting::Count(10),
+                missiles: AmmoSetting::Count(4),
+                flares: AmmoSetting::Infinite,
+            },
+            ..Default::default()
         };
         apply_stores(&mut combat);
         assert_eq!((combat.rounds, combat.missiles, combat.bvr), (10, 4, 4));

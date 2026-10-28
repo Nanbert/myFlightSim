@@ -17,6 +17,7 @@ use bevy::window::PrimaryWindow;
 
 use crate::aircraft_profile;
 use crate::app_state::{unpaused, AppState};
+use crate::hero_panel::{self, HeroSpec};
 use crate::mcp_layout::{CROP_H, CROP_W};
 use crate::mcp_ui::{spawn_panel_contents, FmaLabel, FocusAnim, FMA_BG, FMA_GREEN};
 use crate::sim::Sim;
@@ -24,18 +25,10 @@ use crate::view::{PanelFocus, Ui};
 
 /// The panel leaves this much of the viewport free on each axis, matching the
 /// old 3D stage's fit. It is wider than the HUD margins so the labels breathe.
-const FIT_W: f32 = 1.14;
-const FIT_H: f32 = 1.20;
-
-/// The scrim's tone and how opaque it is at full focus. The cockpit shows
-/// through undimmed enough to read the PFDs, and is never blacked out.
-const SCRIM_RGB: [f32; 3] = [0.02, 0.02, 0.02];
-const SCRIM_ALPHA: f32 = 0.40;
-
-/// Raise speed: a slow dolly-in reads as deliberate.
-const RAISE_K: f32 = 9.0;
-/// Dismiss speed: a slow fade-out reads as a laggy click.
-const CLOSE_K: f32 = 55.0;
+const HERO: HeroSpec = HeroSpec {
+    crop: Vec2::new(CROP_W, CROP_H),
+    fit: Vec2::new(1.14, 1.20),
+};
 
 /// The centred panel. Its node is laid out at the asset size and scaled by
 /// `UiTransform`, so all children stay in `mcp_layout` coordinates.
@@ -86,7 +79,7 @@ fn spawn_hero(mut commands: Commands, sim: Res<Sim>, assets: Res<AssetServer>) {
             display: Display::None,
             ..default()
         },
-        BackgroundColor(scrim(1.0)),
+        BackgroundColor(HERO.scrim(1.0)),
         GlobalZIndex(29),
         DespawnOnExit(AppState::Flying),
     ));
@@ -145,25 +138,9 @@ fn spawn_hero(mut commands: Commands, sim: Res<Sim>, assets: Res<AssetServer>) {
         });
 }
 
-/// The panel width that fits `viewport` with `FIT_W` / `FIT_H` margins.
+/// The panel width that fits the viewport — the FMA bar rides the same fit.
 fn hero_width(viewport: Vec2) -> f32 {
-    let by_width = viewport.x / FIT_W;
-    let by_height = viewport.y / FIT_H * (CROP_W / CROP_H);
-    by_width.min(by_height)
-}
-
-fn viewport(windows: &Query<&Window, With<PrimaryWindow>>) -> Vec2 {
-    windows
-        .single()
-        .map(|window| window.size())
-        .unwrap_or(Vec2::new(1280.0, 800.0))
-}
-
-fn set_display(node: &mut Node, show: bool) {
-    let display = if show { Display::Flex } else { Display::None };
-    if node.display != display {
-        node.display = display;
-    }
+    HERO.width(viewport)
 }
 
 fn sync_hero(
@@ -174,52 +151,16 @@ fn sync_hero(
     mut root: Query<(&mut Node, &mut UiTransform), With<HeroPanel>>,
     mut backdrop: Query<(&mut Node, &mut BackgroundColor), (With<HeroBackdrop>, Without<HeroPanel>)>,
 ) {
-    let cockpit = ui.as_deref().is_some_and(|ui| ui.cockpit);
-    let focused = cockpit && ui.as_deref().is_some_and(|ui| ui.is_focused(PanelFocus::Mcp));
-    let want = if focused { 1.0 } else { 0.0 };
-    if cockpit {
-        // Exponential ease; snap when close so the panel stops re-laying out.
-        // Raising and dismissing use different rates: a slow fade-out reads as
-        // a laggy dismissal.
-        let dt = time.delta_secs();
-        anim.e += (want - anim.e) * ease_k(dt, want < anim.e);
-        if (want - anim.e).abs() < 0.002 {
-            anim.e = want;
-        }
-    } else {
-        anim.e = 0.0;
-    }
-
-    let show = cockpit && (focused || anim.e > 0.001);
-    // A small dolly: 94% at the start of the raise, 100% when settled.
-    let scale = (hero_width(viewport(&windows)) / CROP_W) * (0.94 + 0.06 * anim.e);
-    for (mut node, mut tf) in &mut root {
-        set_display(&mut node, show);
-        tf.scale = Vec2::splat(scale);
-    }
-    // The scrim fades with the panel, so the cockpit returns at the same
-    // moment the panel leaves.
-    for (mut node, mut color) in &mut backdrop {
-        set_display(&mut node, show);
-        color.0 = scrim(anim.e);
-    }
-}
-
-/// The ease constant for a frame: `closing` picks the fast dismiss. `dt` is
-/// frame time in seconds.
-fn ease_k(dt: f32, closing: bool) -> f32 {
-    let k = if closing { CLOSE_K } else { RAISE_K };
-    (1.0_f64 - (-(k as f64 * dt as f64)).exp()) as f32
-}
-
-/// The scrim's opacity at progress `e` in the raise.
-fn scrim_alpha(e: f32) -> f32 {
-    SCRIM_ALPHA * e
-}
-
-/// The scrim at progress `e`: clear at 0, deepest at 1.
-fn scrim(e: f32) -> Color {
-    Color::srgba(SCRIM_RGB[0], SCRIM_RGB[1], SCRIM_RGB[2], scrim_alpha(e))
+    hero_panel::sync::<HeroPanel, HeroBackdrop>(
+        PanelFocus::Mcp,
+        &HERO,
+        &time,
+        ui.as_deref(),
+        &mut anim.e,
+        &windows,
+        &mut root,
+        &mut backdrop,
+    );
 }
 
 fn sync_hero_fma(
@@ -229,14 +170,14 @@ fn sync_hero_fma(
     mut bar: Query<&mut Node, With<HeroFma>>,
 ) {
     let show = ui.as_deref().is_some_and(|ui| ui.cockpit) && anim.e > 0.25;
-    let viewport = viewport(&windows);
+    let viewport = hero_panel::viewport(&windows);
     let hero_w = hero_width(viewport);
-    let hero_h = hero_w * CROP_H / CROP_W;
+    let hero_h = HERO.height(viewport);
     let left = (viewport.x - hero_w) * 0.5;
     let top = ((viewport.y - hero_h) * 0.5 - 30.0).max(8.0);
 
     for mut node in &mut bar {
-        set_display(&mut node, show);
+        hero_panel::set_display(&mut node, show);
         if show {
             node.left = Val::Px(left);
             node.top = Val::Px(top);
@@ -245,45 +186,26 @@ fn sync_hero_fma(
     }
 }
 
-/// A press outside closes the panel, but the click that opened it must not.
-fn outside_click_closes(was_focused: bool, just_pressed: bool, inside: bool) -> bool {
-    was_focused && just_pressed && !inside
-}
-
 fn hero_pointer(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    ui: Option<ResMut<Ui>>,
+    mut ui: Option<ResMut<Ui>>,
     mut was_focused: Local<bool>,
 ) {
-    let Some(mut ui) = ui else {
-        return;
-    };
-    let focused = ui.cockpit && ui.is_focused(PanelFocus::Mcp);
-    if !focused {
-        *was_focused = false;
-        return;
-    }
-    let Some(window) = windows.single().ok() else {
-        return;
-    };
-    let Some(cursor) = window.cursor_position() else {
-        return;
-    };
-    let viewport = window.size();
-    let hero_w = hero_width(viewport);
-    let hero_h = hero_w * CROP_H / CROP_W;
-    let inside = Rect::from_center_size(viewport * 0.5, Vec2::new(hero_w, hero_h)).contains(cursor);
-    let closes = outside_click_closes(*was_focused, mouse.just_pressed(MouseButton::Left), inside);
-    *was_focused = true;
-    if closes {
-        ui.panel_focus = None;
-    }
+    hero_panel::pointer_closes(
+        PanelFocus::Mcp,
+        &HERO,
+        &mouse,
+        &windows,
+        ui.as_deref_mut(),
+        &mut was_focused,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hero_panel::{ease_k, outside_click_closes, scrim_alpha, SCRIM_ALPHA};
 
     #[test]
     fn the_click_that_opens_the_panel_does_not_close_it() {
@@ -299,15 +221,15 @@ mod tests {
     fn the_panel_fits_the_viewport() {
         // Portrait: width-limited, exactly `FIT_W` margins.
         let portrait = hero_width(Vec2::new(1024.0, 1280.0));
-        assert!((portrait - 1024.0 / FIT_W).abs() < 1e-3);
+        assert!((portrait - 1024.0 / HERO.fit.x).abs() < 1e-3);
         // Landscape: still width-limited, and it leaves side margins.
         let landscape = hero_width(Vec2::new(1920.0, 1080.0));
-        assert!((landscape - 1920.0 / FIT_W).abs() < 1e-3);
+        assert!((landscape - 1920.0 / HERO.fit.x).abs() < 1e-3);
         assert!(landscape < 1920.0);
         // A very wide, short viewport becomes height-limited.
         let short = hero_width(Vec2::new(4000.0, 600.0));
-        assert!((short - 600.0 / FIT_H * (CROP_W / CROP_H)).abs() < 1e-3);
-        assert!(short < 4000.0 / FIT_W);
+        assert!((short - 600.0 / HERO.fit.y * (CROP_W / CROP_H)).abs() < 1e-3);
+        assert!(short < 4000.0 / HERO.fit.x);
     }
 
     #[test]
@@ -340,6 +262,6 @@ mod tests {
         // Focused: the scrim reaches its deepest alpha — dim, never opaque, so
         // the PFDs stay readable behind the panel.
         assert!((scrim_alpha(1.0) - SCRIM_ALPHA).abs() < 1e-6);
-        assert!(SCRIM_ALPHA < 0.5);
+        const { assert!(SCRIM_ALPHA < 0.5) };
     }
 }

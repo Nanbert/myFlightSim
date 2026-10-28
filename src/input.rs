@@ -808,8 +808,7 @@ mod tests {
         // into the bindings, then drive the model the way `advance_fdm` does
         // (write `effective()` every step). The hover must hold with sticks
         // centered.
-        std::env::set_var("FDM_BACKEND", "rust");
-        let mut sim = crate::sim::Sim::new("ah1s");
+        let mut sim = crate::sim::Sim::with_backend("ah1s", crate::sim::Backend::Rust);
         // Airborne at the altitude the FDM's own hover test validates (2000 ft);
         // `trim_heli` seats a zero-airspeed hover there.
         sim.reset_air(2000.0, 0.0);
@@ -838,8 +837,7 @@ mod tests {
     fn hover_trim_preserves_the_current_airspeed() {
         // The complaint this fixes: the trim used to zero the velocity, so it
         // felt like a reset. It must now keep the current airspeed.
-        std::env::set_var("FDM_BACKEND", "rust");
-        let mut sim = crate::sim::Sim::new("ah1s");
+        let mut sim = crate::sim::Sim::with_backend("ah1s", crate::sim::Backend::Rust);
         sim.reset_air(2000.0, 0.0);
 
         // Fly forward (nose-down cyclic accelerates it), then trim.
@@ -880,8 +878,7 @@ mod tests {
         // forward. (It is also pitch-unstable — see the FDM's airframe aero —
         // which is why it's hard to keep in trim by hand.)
         use bevy::prelude::ButtonInput;
-        std::env::set_var("FDM_BACKEND", "rust");
-        let mut sim = crate::sim::Sim::new("ah1s");
+        let mut sim = crate::sim::Sim::with_backend("ah1s", crate::sim::Backend::Rust);
         sim.reset_air(2000.0, 0.0);
         let mut bindings = Bindings::for_aircraft("ah1s");
         sim.trim_now();
@@ -1110,8 +1107,7 @@ mod tests {
 
     #[test]
     fn the_panel_toggle_path_flips_the_selected_property() {
-        std::env::set_var("FDM_BACKEND", "rust");
-        let mut sim = crate::sim::Sim::new("737");
+        let mut sim = crate::sim::Sim::with_backend("737", crate::sim::Backend::Rust);
         let mut ap = crate::autopilot::Autopilot::default();
         let mut mcp = crate::autopilot::Mcp::default();
         let mut bindings = Bindings::for_aircraft("737");

@@ -21,6 +21,7 @@
 use bevy::prelude::*;
 
 use crate::app_state::{AppState, unpaused};
+use crate::lesson_telem::Telem;
 use crate::mission::{ActiveLesson, Lesson};
 use crate::pfd::vr_for_flaps;
 use crate::scoring::{score, word};
@@ -86,20 +87,6 @@ enum Phase {
     Called,
     /// A fail or the stop froze the attempt.
     Graded,
-}
-
-/// One frame's readouts the tick needs: pure and testable, like the other
-/// jet lessons' `Telem`.
-#[derive(Clone, Copy)]
-pub struct Telem {
-    on_ground: bool,
-    gs_kts: f64,
-    /// World position — the centreline offset rides on x.
-    pos: Vec3,
-    on_runway: bool,
-    throttle: f64,
-    flap_deg: f64,
-    reverse_pos: f64,
 }
 
 #[derive(Resource, Default)]
@@ -420,13 +407,8 @@ fn step_m5(
     tick(
         &mut m,
         Telem {
-            on_ground: aircraft.on_ground,
-            gs_kts: aircraft.gs_kts,
-            pos: aircraft.pos,
             on_runway: spec.on_runway(aircraft.pos.x, aircraft.pos.z),
-            throttle: aircraft.throttle,
-            flap_deg: aircraft.flap_deg,
-            reverse_pos: aircraft.reverse_pos,
+            ..Telem::sample(&aircraft)
         },
         time.elapsed_secs(),
         time.delta_secs(),
@@ -484,6 +466,7 @@ mod tests {
             throttle,
             flap_deg: 5.0,
             reverse_pos: rev,
+            ..Telem::default()
         }
     }
 

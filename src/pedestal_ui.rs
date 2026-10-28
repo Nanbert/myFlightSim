@@ -25,6 +25,7 @@ use bevy::window::PrimaryWindow;
 use crate::aircraft_profile::{Action, ToggleAction};
 use crate::app_state::{unpaused, AppState};
 use crate::autopilot::{AtMode, Autopilot};
+use crate::hero_panel::{self, HeroSpec};
 use crate::input::{apply_toggle, Bindings};
 use crate::mcp_layout::LABEL;
 use crate::mcp_ui::spawn_label;
@@ -75,8 +76,10 @@ struct StandFocusAnim {
 }
 
 /// Hero fit: leave a margin on the long axis so the labels breathe.
-const FIT_W: f32 = 1.14;
-const FIT_H: f32 = 1.28;
+const HERO: HeroSpec = HeroSpec {
+    crop: Vec2::new(CROP_W, CROP_H),
+    fit: Vec2::new(1.14, 1.28),
+};
 
 /// A moving lever part. `scale` is the panel's asset-px-to-screen-px factor,
 /// stored so the sync system can place a node without a transform query.
@@ -274,10 +277,9 @@ fn spawn_hero(mut commands: Commands, sim: Res<Sim>, assets: Res<AssetServer>) {
 /// The hero's width at this viewport. It is a wide strip, so it is almost
 /// always width-limited; the height term only matters on very wide, short
 /// windows.
+#[cfg(test)]
 fn hero_width(viewport: Vec2) -> f32 {
-    let by_width = viewport.x / FIT_W;
-    let by_height = viewport.y / FIT_H * (CROP_W / CROP_H);
-    by_width.min(by_height)
+    HERO.width(viewport)
 }
 
 fn sync_hero(
@@ -288,42 +290,16 @@ fn sync_hero(
     mut root: Query<(&mut Node, &mut UiTransform), With<StandHero>>,
     mut backdrop: Query<(&mut Node, &mut BackgroundColor), (With<StandBackdrop>, Without<StandHero>)>,
 ) {
-    let cockpit = ui.as_deref().is_some_and(|ui| ui.cockpit);
-    let focused = cockpit && ui.as_deref().is_some_and(|ui| ui.is_focused(PanelFocus::Pedestal));
-    let want = if focused { 1.0 } else { 0.0 };
-    if cockpit {
-        let dt = time.delta_secs();
-        // Raising is deliberate, dismissing is snappy.
-        let k = if want < anim.e { 55.0 } else { 9.0 };
-        let ease = (1.0 - (-(k * dt)).exp()).clamp(0.0, 1.0);
-        anim.e += (want - anim.e) * ease;
-        if (want - anim.e).abs() < 0.002 {
-            anim.e = want;
-        }
-    } else {
-        anim.e = 0.0;
-    }
-
-    let show = cockpit && (focused || anim.e > 0.001);
-    let scale = (hero_width(
-        windows
-            .single()
-            .map(|window| window.size())
-            .unwrap_or(Vec2::new(1280.0, 800.0)),
-    ) / CROP_W)
-        * (0.94 + 0.06 * anim.e);
-    for (mut node, mut tf) in &mut root {
-        if node.display != if show { Display::Flex } else { Display::None } {
-            node.display = if show { Display::Flex } else { Display::None };
-        }
-        tf.scale = Vec2::splat(scale);
-    }
-    for (mut node, mut color) in &mut backdrop {
-        if node.display != if show { Display::Flex } else { Display::None } {
-            node.display = if show { Display::Flex } else { Display::None };
-        }
-        color.0 = Color::srgba(0.02, 0.02, 0.02, 0.40 * anim.e);
-    }
+    hero_panel::sync::<StandHero, StandBackdrop>(
+        PanelFocus::Pedestal,
+        &HERO,
+        &time,
+        ui.as_deref(),
+        &mut anim.e,
+        &windows,
+        &mut root,
+        &mut backdrop,
+    );
 }
 
 /// Esc lowers the stand when it is the raised panel. The MCP owns its own Esc
@@ -344,32 +320,17 @@ fn close_on_escape(keys: Res<ButtonInput<KeyCode>>, mut ui: Option<ResMut<Ui>>) 
 fn hero_pointer(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    ui: Option<ResMut<Ui>>,
+    mut ui: Option<ResMut<Ui>>,
     mut was_focused: Local<bool>,
 ) {
-    let Some(mut ui) = ui else {
-        return;
-    };
-    let focused = ui.cockpit && ui.is_focused(PanelFocus::Pedestal);
-    if !focused {
-        *was_focused = false;
-        return;
-    }
-    let Some(window) = windows.single().ok() else {
-        return;
-    };
-    let Some(cursor) = window.cursor_position() else {
-        return;
-    };
-    let viewport = window.size();
-    let width = hero_width(viewport);
-    let height = width * CROP_H / CROP_W;
-    let inside = Rect::from_center_size(viewport * 0.5, Vec2::new(width, height)).contains(cursor);
-    let closes = *was_focused && mouse.just_pressed(MouseButton::Left) && !inside;
-    *was_focused = true;
-    if closes {
-        ui.panel_focus = None;
-    }
+    hero_panel::pointer_closes(
+        PanelFocus::Pedestal,
+        &HERO,
+        &mouse,
+        &windows,
+        ui.as_deref_mut(),
+        &mut was_focused,
+    );
 }
 
 /// Lay the live layer over the baked plate. `scale` is screen px per asset px;
@@ -1065,11 +1026,11 @@ mod tests {
         // Portrait: still width-limited (a wide strip), and the label column
         // is not clipped.
         let portrait = hero_width(Vec2::new(1024.0, 1280.0));
-        assert!((portrait - 1024.0 / FIT_W).abs() < 1e-3);
+        assert!((portrait - 1024.0 / HERO.fit.x).abs() < 1e-3);
         // A very wide, short window becomes height-limited.
         let short = hero_width(Vec2::new(4000.0, 600.0));
-        assert!(short < 4000.0 / FIT_W);
-        assert!((short * CROP_H / CROP_W - 600.0 / FIT_H).abs() < 1e-3);
+        assert!(short < 4000.0 / HERO.fit.x);
+        assert!((short * CROP_H / CROP_W - 600.0 / HERO.fit.y).abs() < 1e-3);
     }
 
     #[test]
@@ -1086,8 +1047,10 @@ mod tests {
         // follow the state, or it would lie while the A/T is flying.
         let mut sim = Sim::new("737");
         sim.model.set("fcs/throttle-cmd-norm", 0.42);
-        let mut state = AircraftState::default();
-        state.throttle = 0.42;
+        let state = AircraftState {
+            throttle: 0.42,
+            ..Default::default()
+        };
         let bindings = Bindings::for_aircraft("737");
         let v = lever_value(LeverId::ThrottleLeft, &bindings, &sim, &state);
         assert!((v - 0.42).abs() < 1e-9);
