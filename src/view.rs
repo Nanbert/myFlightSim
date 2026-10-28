@@ -639,9 +639,11 @@ impl Plugin for ViewPlugin {
             .init_resource::<Chase>()
             .init_resource::<LaunchKick>()
             .init_resource::<CockpitTune>()
-            // The glTF props to hide are only addressable once the async
-            // instance exists — see `hide_scene_junk`.
+            // The glTF nodes these touch (the junk props, the control rig, the
+            // 737's yoke) are only addressable once the async instance exists.
             .add_observer(hide_scene_junk)
+            .add_observer(capture_rig)
+            .add_observer(hide_737_yoke)
             .add_systems(Startup, (setup_scene, setup_hud))
             .add_systems(OnExit(AppState::Flying), reset_camera_feel)
             // Enter the chase pose *pinned*: without this the offset left over
@@ -662,8 +664,6 @@ impl Plugin for ViewPlugin {
                     update_hud.run_if(unpaused),
                     toggle_ui.run_if(unpaused),
                     sync_view_models.run_if(unpaused),
-                    hide_737_yoke.run_if(unpaused),
-                    capture_rig.run_if(unpaused),
                     drive_surfaces.run_if(unpaused),
                     drive_gear.run_if(unpaused),
                     draw_grid,
@@ -850,53 +850,61 @@ fn sync_view_models(
     mut exterior: Query<&mut Visibility, (With<ExteriorModel>, Without<CockpitModel>)>,
     mut cockpit: Query<&mut Visibility, (With<CockpitModel>, Without<ExteriorModel>)>,
 ) {
+    // Writes are guarded: an unconditional `Mut` write marks the visibility
+    // changed and re-propagates the whole model subtree every frame, even
+    // while the view mode is steady.
     let split = !cockpit.is_empty();
+    let exterior_want = if ui.cockpit && split {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
     for mut visibility in &mut exterior {
-        *visibility = if ui.cockpit && split {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        };
+        if *visibility != exterior_want {
+            *visibility = exterior_want;
+        }
     }
+    // The cockpit stays on screen while the MCP panel is up: `mcp_panel`
+    // dims it with a translucent scrim, so the PFDs stay readable behind
+    // the panel rather than swapping to a black room.
+    let cockpit_want = if ui.cockpit {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
     for mut visibility in &mut cockpit {
-        // The cockpit stays on screen while the MCP panel is up: `mcp_panel`
-        // dims it with a translucent scrim, so the PFDs stay readable behind
-        // the panel rather than swapping to a black room.
-        *visibility = if ui.cockpit {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
+        if *visibility != cockpit_want {
+            *visibility = cockpit_want;
+        }
     }
 }
 
 /// Hide the 737 cockpit's captain yoke once its glTF subtree has spawned.
-/// The glTF scene loads asynchronously as a child of the marker entity, so
-/// this walks the subtree each frame and clears the marker when it lands.
+/// The marker sits on the model root, which is exactly the entity
+/// `WorldInstanceReady` names, so one walk on that hook replaces the old
+/// every-frame retry.
 fn hide_737_yoke(
-    mut commands: Commands,
-    roots: Query<(Entity, &Children), With<Hide737Yoke>>,
-    mut nodes: Query<(&Name, &mut Visibility)>,
+    ready: On<WorldInstanceReady>,
+    roots: Query<Entity, With<Hide737Yoke>>,
+    mut names: Query<(&Name, &mut Visibility)>,
     children: Query<&Children>,
+    mut commands: Commands,
 ) {
-    for (root, kids) in &roots {
-        let mut stack: Vec<Entity> = kids.iter().collect();
-        let mut found = false;
-        while let Some(e) = stack.pop() {
-            if let Ok((name, mut visibility)) = nodes.get_mut(e) {
-                if name.as_str() == "Cube.488" {
-                    *visibility = Visibility::Hidden;
-                    found = true;
-                }
-            }
-            if let Ok(kids) = children.get(e) {
-                stack.extend(kids.iter());
+    if !roots.contains(ready.entity) {
+        return;
+    }
+    let mut stack = vec![ready.entity];
+    while let Some(e) = stack.pop() {
+        if let Ok((name, mut visibility)) = names.get_mut(e) {
+            if name.as_str() == "Cube.488" && *visibility != Visibility::Hidden {
+                *visibility = Visibility::Hidden;
             }
         }
-        if found {
-            commands.entity(root).remove::<Hide737Yoke>();
+        if let Ok(kids) = children.get(e) {
+            stack.extend(kids.iter());
         }
     }
+    commands.entity(ready.entity).remove::<Hide737Yoke>();
 }
 
 /// Drop the captured bind poses so the next aircraft's control bones are captured
@@ -1031,19 +1039,53 @@ pub fn sync_aircraft(
     t.rotation = rp.prev_rot.slerp(rp.curr_rot, a);
 }
 
-/// Grab each control surface's bind-pose transform the first frame it exists
-/// (the glTF scene loads asynchronously, so this can't be done in `Startup`).
-fn capture_rig(names: Query<(Entity, &Name, &Transform)>, mut rig: ResMut<ControlRig>) {
-    if !rig.rest.is_empty() {
+/// Grab each control surface's bind-pose transform when its glTF instance is
+/// ready. This used to retry every frame until the rig was non-empty — which
+/// never happened on the 737 (its node names aren't in the bone list), so that
+/// flight swept every named entity every frame. The ready hook fires once per
+/// instance, after the whole hierarchy exists, so there is nothing to retry.
+fn capture_rig(
+    ready: On<WorldInstanceReady>,
+    roots: Query<Entity, With<AircraftRoot>>,
+    parents: Query<&ChildOf>,
+    names: Query<(&Name, &Transform)>,
+    children: Query<&Children>,
+    mut rig: ResMut<ControlRig>,
+) {
+    // Only the flown aircraft: the menu showcase may load the same model.
+    if !under_aircraft(ready.entity, &roots, &parents) {
         return;
     }
-    for (e, n, t) in &names {
-        if is_control_bone(n.as_str()) {
-            rig.rest.insert(e, (n.clone(), *t));
+    let mut stack = vec![ready.entity];
+    while let Some(e) = stack.pop() {
+        if let Ok((n, t)) = names.get(e) {
+            if is_control_bone(n.as_str()) {
+                rig.rest.insert(e, (n.clone(), *t));
+            }
+            if let Some(i) = F22_GEAR.iter().position(|p| p.name == n.as_str()) {
+                rig.gear.push((e, i));
+            }
         }
-        if let Some(i) = F22_GEAR.iter().position(|p| p.name == n.as_str()) {
-            rig.gear.push((e, i));
+        if let Ok(kids) = children.get(e) {
+            stack.extend(kids.iter());
         }
+    }
+}
+
+/// True when `entity` sits under an [`AircraftRoot`].
+fn under_aircraft(
+    mut entity: Entity,
+    roots: &Query<Entity, With<AircraftRoot>>,
+    parents: &Query<&ChildOf>,
+) -> bool {
+    loop {
+        if roots.contains(entity) {
+            return true;
+        }
+        let Ok(parent) = parents.get(entity) else {
+            return false;
+        };
+        entity = parent.parent();
     }
 }
 

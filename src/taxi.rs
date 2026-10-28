@@ -424,9 +424,13 @@ fn update_hold(
         hs.finals_text()
     };
     if let Some(body) = body {
-        text.0 = body;
-        node.display = Display::Flex;
-    } else {
+        if text.0 != body {
+            text.0 = body;
+        }
+        if node.display != Display::Flex {
+            node.display = Display::Flex;
+        }
+    } else if node.display != Display::None {
         node.display = Display::None;
     }
 }

@@ -223,10 +223,14 @@ fn sync_steady_lights(
         Visibility::Hidden
     };
     for mut v in &mut nav {
-        *v = visible;
+        if *v != visible {
+            *v = visible;
+        }
     }
     for mut v in &mut spot {
-        *v = visible;
+        if *v != visible {
+            *v = visible;
+        }
     }
 }
 

@@ -319,7 +319,9 @@ fn update(
     state.phase = phase;
 
     if items.is_empty() {
-        node.display = Display::None;
+        if node.display != Display::None {
+            node.display = Display::None;
+        }
         return;
     }
     // The 737's corner PFDs share the bottom-left corner: lift the panel
@@ -340,8 +342,14 @@ fn update(
         out.push_str(item.label);
         out.push('\n');
     }
-    text.0 = out;
-    node.display = Display::Flex;
+    // The card is up for as long as the phase lasts; only re-shape the text
+    // and re-layout the node when the checklist actually changed.
+    if text.0 != out {
+        text.0 = out;
+    }
+    if node.display != Display::Flex {
+        node.display = Display::Flex;
+    }
 }
 
 #[cfg(test)]

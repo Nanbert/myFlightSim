@@ -190,6 +190,20 @@ const MISSILE_MESHES: [[&str; 3]; 2] = [
     ["Object_147", "Object_148", "Object_149"],
 ];
 
+/// The F-22's animated bay nodes, resolved once per flight. The drive used to
+/// scan every `Name` entity (on every flight, not just combat) and take
+/// `&mut Transform` on all of them, which also serialised the schedule.
+#[derive(Resource, Default)]
+struct BayRig(Option<Vec<(Entity, BayPart)>>);
+
+#[derive(Clone, Copy)]
+enum BayPart {
+    /// A side-bay door: its hinge sign (`DOORS`).
+    Door(f32),
+    /// A launch rail: extension offset and rotation at full bay-open (`RAILS`).
+    Rail(Vec3, f32),
+}
+
 /// The two air-to-air weapons. `Ir` is the current AIM-9-class round fired from
 /// the side bays; `Bvr` is the AIM-120-class round.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -510,6 +524,7 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Combat>()
+            .init_resource::<BayRig>()
             .init_resource::<Wander>()
             .init_resource::<SixWatch>()
             .add_systems(Startup, (setup_launch_tone, setup_combat_sfx))
@@ -635,12 +650,15 @@ fn reset_combat(
     mut commands: Commands,
     mut combat: ResMut<Combat>,
     mut six: ResMut<SixWatch>,
+    mut bay_rig: ResMut<BayRig>,
     config: Res<GameConfig>,
 ) {
     // A fresh flight forgets any mission card the previous one raised.
     commands.remove_resource::<MissionOver>();
     *combat = Combat::default();
     six.had = false;
+    // The new flight spawns a fresh glTF instance; resolve its nodes again.
+    bay_rig.0 = None;
     combat.settings = config.combat("f22");
     apply_stores(&mut combat);
 }
@@ -2468,23 +2486,64 @@ fn terrain_impact(
 fn drive_bays(
     time: Res<Time>,
     mut combat: ResMut<Combat>,
-    mut nodes: Query<(&Name, &mut Transform)>,
+    mut rig: ResMut<BayRig>,
+    names: Query<(Entity, &Name)>,
+    mut transforms: Query<&mut Transform>,
 ) {
     let target = if combat.lock.is_some() { 1.0 } else { 0.0 };
-    let step = BAY_RATE * time.delta_secs();
-    combat.bay = if combat.bay < target {
-        (combat.bay + step).min(target)
-    } else {
-        (combat.bay - step).max(target)
-    };
-    let travel = combat.bay * std::f32::consts::FRAC_PI_2;
-    for (name, mut tf) in &mut nodes {
-        if let Some((_, sign)) = DOORS.iter().find(|(n, _)| *n == name.as_str()) {
-            tf.rotation = Quat::from_axis_angle(Vec3::Z, sign * travel);
+    if combat.bay != target {
+        let step = BAY_RATE * time.delta_secs();
+        combat.bay = if combat.bay < target {
+            (combat.bay + step).min(target)
+        } else {
+            (combat.bay - step).max(target)
+        };
+    }
+
+    // Nothing to drive on a non-combat flight: skip the one-time resolve
+    // entirely, so a C172/737 flight never walks the named entities.
+    if rig.0.is_none() && combat.bay == 0.0 && combat.lock.is_none() {
+        return;
+    }
+
+    // Resolve the six animated nodes once per flight, after the glTF instance
+    // has spawned them. An empty result means the model is still loading.
+    if rig.0.is_none() {
+        let found: Vec<_> = names
+            .iter()
+            .filter_map(|(entity, name)| {
+                if let Some((_, sign)) = DOORS.iter().find(|(n, _)| *n == name.as_str()) {
+                    Some((entity, BayPart::Door(*sign)))
+                } else {
+                    RAILS
+                        .iter()
+                        .find(|(n, _, _)| *n == name.as_str())
+                        .map(|(_, offset, angle)| (entity, BayPart::Rail(*offset, *angle)))
+                }
+            })
+            .collect();
+        if found.is_empty() {
+            return;
         }
-        if let Some((_, offset, angle)) = RAILS.iter().find(|(n, _, _)| *n == name.as_str()) {
-            tf.translation = *offset * combat.bay;
-            tf.rotation = Quat::from_axis_angle(Vec3::Z, angle * combat.bay);
+        rig.0 = Some(found);
+    }
+
+    let travel = combat.bay * std::f32::consts::FRAC_PI_2;
+    let Some(parts) = rig.0.as_ref() else {
+        return;
+    };
+    for (entity, part) in parts {
+        let Ok(mut tf) = transforms.get_mut(*entity) else {
+            continue;
+        };
+        match *part {
+            BayPart::Door(sign) => {
+                tf.rotation = Quat::from_axis_angle(Vec3::Z, sign * travel);
+            }
+            BayPart::Rail(offset, angle) => {
+                tf.translation = offset * combat.bay;
+                tf.rotation = Quat::from_axis_angle(Vec3::Z, angle * combat.bay);
+            }
         }
     }
 }
@@ -2567,10 +2626,13 @@ fn update_hud(
 
     if let Ok(mut text) = status.single_mut() {
         // Stores live on the HUD now; the bottom line is just the wave.
-        text.0 = format!("WAVE {}", combat.wave);
+        let want = format!("WAVE {}", combat.wave);
+        if text.0 != want {
+            text.0 = want;
+        }
     }
     if let Ok(mut text) = lock_text.single_mut() {
-        text.0 = combat
+        let want = combat
             .lock
             .and_then(|e| bandits.get(e).ok())
             .map(|(_, tf)| {
@@ -2578,6 +2640,9 @@ fn update_hud(
                 format!("LOCK  {:.1} KM", d / 1000.0)
             })
             .unwrap_or_else(|| "NO LOCK".to_owned());
+        if text.0 != want {
+            text.0 = want;
+        }
     }
     if let Ok(mut text) = threat_text.single_mut() {
         // The center banner stays clear: inbound missile warnings live on the
@@ -2907,6 +2972,38 @@ fn update_radar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bay_drive_resolves_only_the_door_and_rail_nodes() {
+        let mut app = App::new();
+        app.init_resource::<Combat>()
+            .init_resource::<BayRig>()
+            .init_resource::<Time>()
+            .add_systems(Update, drive_bays);
+        // A lock is what asks the bays to open, and the resolve only runs then.
+        let target = app.world_mut().spawn_empty().id();
+        app.world_mut().resource_mut::<Combat>().lock = Some(target);
+        for name in [
+            "Cube.058_88",
+            "Cube.062_90",
+            "Cube.064_83",
+            "Cube.061_89",
+            "Cube.068_76",
+            "Cube.069_78",
+            // A decoy: plenty of other named nodes share the model.
+            "Object_141",
+        ] {
+            app.world_mut()
+                .spawn((Name::new(name), Transform::default()));
+        }
+        app.update();
+        let rig = app.world().resource::<BayRig>();
+        assert_eq!(
+            rig.0.as_ref().map(Vec::len),
+            Some(6),
+            "four doors and two rails, nothing else"
+        );
+    }
 
     #[test]
     fn lock_cone_and_range_gate() {

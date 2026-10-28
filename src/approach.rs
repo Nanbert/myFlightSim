@@ -126,7 +126,9 @@ fn update_approach(
         || lesson.0 == Some(crate::mission::Lesson::JetGoAround)
         || lesson.0 == Some(crate::mission::Lesson::JetAutomation)
     {
-        node.display = Display::None;
+        if node.display != Display::None {
+            node.display = Display::None;
+        }
         return;
     }
 
@@ -172,7 +174,7 @@ fn update_approach(
         state.banner_until = now + BANNER_SECS;
     }
 
-    if now > state.banner_until {
+    if now > state.banner_until && node.display != Display::None {
         node.display = Display::None;
     }
 }

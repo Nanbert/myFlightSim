@@ -155,11 +155,13 @@ fn update_panel(
         return;
     };
     if crate::aircraft_profile::normalized(&sim.name) != "737" {
-        node.display = Display::None;
+        if node.display != Display::None {
+            node.display = Display::None;
+        }
         return;
     }
     let l = &state.ledger;
-    text.0 = format!(
+    let out = format!(
         "HOP LEDGER\n\
          HOPS      {:>4}\n\
          BEST TO   {:>4}\n\
@@ -171,7 +173,14 @@ fn update_panel(
         l.green_streak,
         l.best_streak,
     );
-    node.display = Display::Flex;
+    // The ledger changes only after a flight; guard both writes so a steady
+    // cruise does not re-shape or re-layout the panel every frame.
+    if text.0 != out {
+        text.0 = out;
+    }
+    if node.display != Display::Flex {
+        node.display = Display::Flex;
+    }
 }
 
 /// Flight over: fold this flight's grades into the ledger and save once.

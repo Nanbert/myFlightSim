@@ -867,8 +867,14 @@ fn sync_panel(
         _ => FMA_GREEN,
     };
     for (mut text, mut text_color) in &mut fma {
-        text_color.0 = color;
-        text.0 = mode.clone();
+        if text_color.0 != color {
+            text_color.0 = color;
+        }
+        // The FMA string only changes when the mode does; writing it every
+        // frame re-shaped the label (and re-laid out its row) at 60 Hz.
+        if text.0 != mode {
+            text.0 = mode.clone();
+        }
     }
 
     for (press, hover, pressed, mut bg) in &mut buttons {

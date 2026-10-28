@@ -295,6 +295,8 @@ fn update_rain(
         ),
     >,
     mut drops: Query<(&mut Transform, &mut Visibility, &RainDrop)>,
+    mut hidden: Local<bool>,
+    mut last_alpha: Local<f32>,
 ) {
     let Ok(cam) = camera.single() else {
         return;
@@ -302,19 +304,43 @@ fn update_rain(
     let cam = cam.translation;
     let dt = time.delta_secs();
     let rain = weather.rain;
-
-    if let Some(mut m) = materials.get_mut(&mat.0) {
-        m.base_color.set_alpha(0.14 + 0.30 * rain);
-    }
-
     // Show a fraction of the pool proportional to intensity: light rain = thin.
     let shown = (rain * DROPS as f32) as usize;
+
+    // No rain is the common case: the 4,500-strong pool is spawned once and
+    // would otherwise be swept (and its visibility written) every frame in
+    // every state, menus included. Hide it once, then stand down.
+    if shown == 0 {
+        if !*hidden {
+            for (_, mut vis, _) in &mut drops {
+                if *vis != Visibility::Hidden {
+                    *vis = Visibility::Hidden;
+                }
+            }
+            *hidden = true;
+        }
+        return;
+    }
+    *hidden = false;
+
+    let want_alpha = 0.14 + 0.30 * rain;
+    if *last_alpha != want_alpha {
+        if let Some(mut m) = materials.get_mut(&mat.0) {
+            m.base_color.set_alpha(want_alpha);
+        }
+        *last_alpha = want_alpha;
+    }
+
     for (i, (mut tf, mut vis, drop)) in drops.iter_mut().enumerate() {
         if i >= shown {
-            *vis = Visibility::Hidden;
+            if *vis != Visibility::Hidden {
+                *vis = Visibility::Hidden;
+            }
             continue;
         }
-        *vis = Visibility::Inherited;
+        if *vis != Visibility::Inherited {
+            *vis = Visibility::Inherited;
+        }
 
         // Fall and drift, then wrap into the box that follows the camera.
         tf.translation.y -= FALL * drop.speed * dt;
@@ -348,6 +374,7 @@ fn update_splashes(
         ),
     >,
     mut splashes: Query<(&mut Transform, &mut Visibility, &mut Splash)>,
+    mut hidden: Local<bool>,
 ) {
     let Ok(cam) = camera.single() else {
         return;
@@ -355,16 +382,35 @@ fn update_splashes(
     let cam = cam.translation;
     let dt = time.delta_secs();
     let rain = weather.rain;
-    let visible = rain > 0.02 && cam.y < SPLASH_MAX_CAM_H;
     // More rain → more of the pool active.
     let shown = (rain * SPLASHES as f32) as usize;
+    let visible = rain > 0.02 && cam.y < SPLASH_MAX_CAM_H && shown > 0;
+
+    // Same idle rule as the drops: with no rain (or from cruise altitude) the
+    // pool is invisible, so hide it once and skip the per-frame sweep.
+    if !visible {
+        if !*hidden {
+            for (_, mut vis, _) in &mut splashes {
+                if *vis != Visibility::Hidden {
+                    *vis = Visibility::Hidden;
+                }
+            }
+            *hidden = true;
+        }
+        return;
+    }
+    *hidden = false;
 
     for (i, (mut tf, mut vis, mut splash)) in splashes.iter_mut().enumerate() {
-        if !visible || i >= shown {
-            *vis = Visibility::Hidden;
+        if i >= shown {
+            if *vis != Visibility::Hidden {
+                *vis = Visibility::Hidden;
+            }
             continue;
         }
-        *vis = Visibility::Inherited;
+        if *vis != Visibility::Inherited {
+            *vis = Visibility::Inherited;
+        }
 
         splash.age += dt;
         if splash.age >= splash.life {

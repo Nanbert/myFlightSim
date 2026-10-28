@@ -380,19 +380,33 @@ fn tear_down(flow: &mut FlowCard, commands: &mut Commands, popup: &Query<Entity,
 
 fn hide_prompt(prompt: &mut Query<(&mut Text, &mut Node), With<FlowPrompt>>) {
     if let Ok((mut text, mut node)) = prompt.single_mut() {
-        text.0 = String::new();
-        node.display = Display::None;
+        if !text.0.is_empty() {
+            text.0.clear();
+        }
+        if node.display != Display::None {
+            node.display = Display::None;
+        }
     }
 }
 
 fn show_prompt(prompt: &mut Query<(&mut Text, &mut Node), With<FlowPrompt>>, live: Option<String>) {
     if let Ok((mut text, mut node)) = prompt.single_mut() {
         if let Some(body) = live {
-            text.0 = body;
-            node.display = Display::Flex;
+            // The prompt's numbers change often, but the hidden/empty state
+            // must not rewrite the text (and re-shape it) every frame.
+            if text.0 != body {
+                text.0 = body;
+            }
+            if node.display != Display::Flex {
+                node.display = Display::Flex;
+            }
         } else {
-            text.0 = String::new();
-            node.display = Display::None;
+            if !text.0.is_empty() {
+                text.0.clear();
+            }
+            if node.display != Display::None {
+                node.display = Display::None;
+            }
         }
     }
 }

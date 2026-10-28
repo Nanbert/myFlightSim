@@ -118,6 +118,14 @@ fn reset_takeoff(mut state: ResMut<TakeoffState>) {
     *state = TakeoffState { best, ..default() };
 }
 
+/// Park a graded attempt: the card keeps the frozen numbers for its window,
+/// and the state lets go of the liftoff so the next one grades fresh.
+fn finish_attempt(state: &mut TakeoffState, now: f32) {
+    state.lift = None;
+    state.since_lift = 0.0;
+    state.report_until = now + REPORT_SECS;
+}
+
 fn update_takeoff(
     time: Res<Time>,
     sim: Res<Sim>,
@@ -224,8 +232,9 @@ fn update_takeoff(
                 state.best.unwrap_or(score),
             );
             node.display = Display::Flex;
-            state.report_until = now + REPORT_SECS;
-            state.since_lift = 0.0;
+            // Free the attempt so the next liftoff — touch-and-go included —
+            // records a fresh one, and so the hide rule below can run.
+            finish_attempt(&mut state, now);
         } else {
             state.lift = Some(lift);
         }
@@ -300,7 +309,7 @@ fn score(lift: Liftoff) -> (u32, &'static str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{score, Kind, Liftoff};
+    use super::{finish_attempt, score, Kind, Liftoff, TakeoffState};
 
     fn liftoff(kind: Kind, cas: f64, pitch: f64) -> Liftoff {
         Liftoff {
@@ -324,6 +333,19 @@ mod tests {
             gear_up_s: None, // the Cessna's gear never moves: the row is FIXED
             ..liftoff(Kind::C172, cas, pitch)
         }
+    }
+
+    #[test]
+    fn grading_frees_the_liftoff_for_the_next_attempt() {
+        let mut state = TakeoffState {
+            lift: Some(jet(179.0, 10.0)),
+            since_lift: 12.0,
+            ..Default::default()
+        };
+        finish_attempt(&mut state, 100.0);
+        assert!(state.lift.is_none(), "the attempt is consumed");
+        assert_eq!(state.since_lift, 0.0);
+        assert_eq!(state.report_until, 112.0);
     }
 
     #[test]
