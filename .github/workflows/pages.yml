@@ -1,0 +1,85 @@
+name: Deploy to GitHub Pages
+
+# Builds the wasm bundle and publishes `dist/` to GitHub Pages on every push to
+# the default branch. The build never links JSBSim: Trunk.toml sets
+# `no_default_features`, and the workflow repeats the flag explicitly so the
+# intent survives a config edit.
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Bevy + fat LTO is memory hungry; keep the runner from thrashing.
+  CARGO_BUILD_JOBS: 4
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (wasm32)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # LTO artifacts are large; cache only what speeds up reruns.
+          cache-targets: true
+          shared-key: wasm-release
+
+      - name: Install Trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+
+      - name: Assert JSBSim is not in the wasm dependency graph
+        run: |
+          if cargo tree --no-default-features --target wasm32-unknown-unknown -e normal \
+              | grep -q jsbsim-sys; then
+            echo "::error::jsbsim-sys leaked into the web build; the wasm must stay pure Rust"
+            exit 1
+          fi
+
+      - name: Build (release, pure Rust FDM)
+        run: |
+          trunk build --release --no-default-features \
+            --public-url "/${{ github.event.repository.name }}/"
+
+      - name: Report bundle size
+        run: |
+          du -sh dist
+          find dist -type f -size +95M -printf '%s %p\n' | sort -nr | head
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -43,6 +43,23 @@ opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
 
+# Web release: the wasm shipped to GitHub Pages. Without these knobs the bundle
+# is ~177 MB (no optimisation at all); `s` + fat LTO + wasm-opt -Oz brings it
+# into the tens of MB. `fdm`/`flight-model` keep full optimisation because the
+# physics runs at 120 Hz and must not lose accuracy or speed to size tuning.
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release.package.fdm]
+opt-level = 3
+
+[profile.release.package.flight-model]
+opt-level = 3
+
 # Look-dev harnesses on demand (see autoexamples above).
 [[example]]
 name = "ah64_cockpit_shot"

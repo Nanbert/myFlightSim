@@ -15,11 +15,19 @@
   </style>
 </head>
 <body>
-  <div id="boot">Loading myFlightSim — the hangar models stream in over the network.</div>
+  <div id="boot">
+    Loading myFlightSim — the hangar models stream in over the network.
+    <br />
+    <a href="CREDITS.md" style="color:#5f7fa0">Credits &amp; license</a>
+  </div>
   <!-- Trunk hooks: build the crate to wasm, and copy the runtime assets
-       (models/shaders/fonts the app fetches by path at run time). -->
-  <link data-trunk rel="rust" />
+       (models/shaders/fonts the app fetches by path at run time). `wasm-opt -Oz`
+       is what keeps the release bundle from being tens of megabytes larger;
+       the attribution files ride along so the published site is self-contained. -->
+  <link data-trunk rel="rust" data-wasm-opt="z" />
   <link data-trunk rel="copy-dir" href="assets" />
+  <link data-trunk rel="copy-file" href="CREDITS.md" />
+  <link data-trunk rel="copy-file" href="LICENSE" />
   <script>
     // Web Audio autoplay policy: browsers keep an AudioContext created before
     // any user gesture in the "suspended" state, and only a resume() call made

@@ -1,5 +1,15 @@
 # myFlightSim
 
+**在线玩：<https://nanbert.github.io/myFlightSim/>**（纯 Rust 物理的 wasm 版，
+首次进入需下载约 200 MB 模型与音频）
+
+## 许可证
+
+代码按 **LGPL-2.1** 发布（见 [`LICENSE`](LICENSE)、[`NOTICE.md`](NOTICE.md)）：
+`crates/fdm` 的气动数据转录自 JSBSim（LGPL-2.1）。`assets/` 不在该许可范围内，
+其中的模型/音频/着色器按各自条款分发，见 [`CREDITS.md`](CREDITS.md)；其中两件是
+CC BY-NC-SA，因此**整个项目不得商用**。
+
 一个用 **Rust + Bevy** 写的飞行模拟器外壳，飞行力学默认由项目自带的**纯 Rust
 FDM**（`crates/fdm`）驱动，设置 `FDM_BACKEND=jsbsim` 可切到 **JSBSim**。Bevy
 负责渲染、相机、HUD 和输入；FDM 负责真正的气动与运动解算。默认模型是
@@ -74,11 +84,15 @@ Web 版不带 JSBSim（C++ 库无法链入 wasm），物理始终走纯 Rust 引
 rustup target add wasm32-unknown-unknown
 cargo install trunk --locked
 
-trunk serve --no-default-features            # 开发：http://localhost:8080
-trunk build --release --no-default-features  # 发布：dist/ 即静态站点目录
+trunk serve                     # 开发：http://localhost:8080/myFlightSim/
+trunk build                     # 发布：dist/ 即静态站点目录
 ```
 
-`dist/` 可部署到任何静态托管（GitHub Pages、itch.io 等）。菜单机库的 4 个
+`Trunk.toml` 已经把 `--no-default-features`、`--release` 和
+`--public-url /myFlightSim/` 写好，本地命令与 CI 完全一致。`dist/` 可部署到任何
+静态托管；本仓库的 GitHub Pages 由
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml) 在每次 push 时自动
+构建并发布。菜单机库的 4 个
 机型模型按需异步加载；首次驾驶 737 会现场取 83 MB 的座舱模型，网络慢时
 座舱会先空一段。
 

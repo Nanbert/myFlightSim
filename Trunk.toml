@@ -1,0 +1,19 @@
+# Trunk configuration — single source of truth for the web build.
+#
+# `no_default_features = true` is load-bearing: libJSBSim is C++ and cannot be
+# linked into wasm, so the default `jsbsim` feature must stay off. Keeping it
+# here means a bare `trunk build` / `trunk serve` cannot accidentally try to
+# compile the C++ backend (whose build script panics without a JSBSim checkout).
+[build]
+dist = "dist"
+release = true
+no_default_features = true
+# GitHub Pages project site: https://<user>.github.io/myFlightSim/
+# Must match the repository name, otherwise the hashed wasm/js 404 and the
+# page stays on the boot line.
+public_url = "/myFlightSim/"
+
+[serve]
+open = false
+
+# Trunk appends `-Oz`-style optimisations via `data-wasm-opt` in index.html.
