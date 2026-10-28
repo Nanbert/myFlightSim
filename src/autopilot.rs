@@ -607,13 +607,39 @@ pub fn advance(
     model.set("fcs/elevator-cmd-norm", elevator);
 }
 
+/// Mach band the vertical loop's gain is scheduled over: full authority below
+/// `VS_GAIN_M0`, `VS_GAIN_FLOOR` of it by `VS_GAIN_M1`.
+const VS_GAIN_M0: f64 = 0.62;
+const VS_GAIN_M1: f64 = 0.80;
+const VS_GAIN_FLOOR: f64 = 0.45;
+
+/// Gain schedule for the vertical-speed error -> pitch law.
+///
+/// That law closes around the airframe's flight-path mode: its loop gain rises
+/// with true airspeed while the mode's relative damping falls as the air thins,
+/// so a gain that is crisp at 10,000 ft drives the 737 into a self-sustained
+/// oscillation in the cruise — 4.5 s period, ±5° of pitch (FL350/280 kt,
+/// FL280/320 kt), invisible in the chase view but violent in the cockpit, where
+/// the camera is bolted to the airframe.
+///
+/// Taper by Mach, the variable the boundary actually tracks. The approach
+/// (M0.25) and every low-altitude regime keep their current response; only the
+/// top of the envelope softens, where the fixed gain was unstable.
+fn vs_gain_sched(mach: f64) -> f64 {
+    let t = ((mach - VS_GAIN_M0) / (VS_GAIN_M1 - VS_GAIN_M0)).clamp(0.0, 1.0);
+    1.0 - (1.0 - VS_GAIN_FLOOR) * t
+}
+
 /// Vertical-speed -> pitch command, with integral trim for the demanded rate.
 /// The integrator freezes while the command is saturated, so a large initial
 /// error cannot wind it up into an overshoot.
 fn vs_pitch(vs_cmd: f64, s: &Sensors, integral: &mut f64, dt: f64) -> f64 {
+    // Both terms are the same law, so the schedule scales the whole command
+    // rather than just its proportional half.
+    let gain = vs_gain_sched(s.mach);
     let err = vs_cmd - s.vs_fpm;
-    let p = VS_TO_PITCH_GAIN * err;
-    integrate(&mut *integral, VS_PITCH_KI * err, p, dt);
+    let p = gain * VS_TO_PITCH_GAIN * err;
+    integrate(&mut *integral, gain * VS_PITCH_KI * err, p, dt);
     (p + *integral).clamp(-PITCH_CMD_MAX_DEG, PITCH_CMD_MAX_DEG)
 }
 
@@ -933,6 +959,43 @@ mod tests {
         let alt = m.get("position/h-sl-ft");
         assert!((alt - 12_000.0).abs() < 200.0, "altitude {alt}");
         assert_eq!(ap.vert, VertMode::AltHold, "should capture ALT HOLD");
+    }
+
+    /// Cruise is where the fixed-gain vertical loop used to break: at FL350
+    /// and 280 kt (M0.82) it sustained a 4.5 s, 10° peak-to-peak pitch
+    /// oscillation that never decayed. The cockpit camera is bolted to the
+    /// airframe, so that read as the whole view shaking.
+    #[test]
+    fn cruise_holds_altitude_without_oscillating() {
+        for (alt, kt) in [(35_000.0, 280.0), (28_000.0, 320.0)] {
+            let mut m = rust_737(alt, kt);
+            let mcp = Mcp {
+                alt_ft: alt,
+                ias_kts: kt,
+                ..default()
+            };
+            let mut ap = Autopilot {
+                engaged: true,
+                at: AtMode::Speed,
+                vert: VertMode::AltHold,
+                alt_hold_ft: alt,
+                ..default()
+            };
+
+            run(&mut *m, &mcp, &mut ap, 60.0);
+            let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+            for _ in 0..(30.0 / DT) as usize {
+                advance(&mut *m, &mcp, &mut ap, DT, &crate::ils::Ils::none());
+                m.step();
+                let theta = m.get("attitude/theta-deg");
+                lo = lo.min(theta);
+                hi = hi.max(theta);
+            }
+            assert!(
+                hi - lo < 1.0,
+                "{alt:.0} ft / {kt:.0} kt: pitch oscillates {lo:.2}..{hi:.2} deg"
+            );
+        }
     }
 
     #[test]
